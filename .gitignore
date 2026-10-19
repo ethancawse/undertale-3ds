@@ -1,0 +1,26 @@
+# Build output
+build/
+out/
+dist/
+*.3dsx
+*.cia
+*.elf
+*.smdh
+*.map
+
+# Game files: never commit them (bring your own copy)
+data.win
+*.win
+game-data/
+gamefiles/
+*.ogg
+
+# Tools and editors
+__pycache__/
+*.py[cod]
+.venv/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

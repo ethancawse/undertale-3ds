@@ -4,6 +4,8 @@ An unofficial runtime that lets you play your own copy of UNDERTALE on a Nintend
 
 **Status: work in progress, not released yet.**
 
+**Trailer:** coming soon.
+
 ## Bring your own game
 
 This project contains no game files, art, music, text or game code. You build the 3DS version yourself from a copy of
