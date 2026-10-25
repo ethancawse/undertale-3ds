@@ -1,0 +1,93 @@
+# The 3DS button glyphs for UNDERTALE's console prompts (btnprompt; drawn for this project, not taken
+# from any game or console). Each glyph is a line "glyph <button>" and then 14 rows of 12 pixels:
+# . clear, r rim, f face, s shadow, w letter (the colours are in platform/3ds/source/z_btnprompt_ctr.c).
+glyph A
+....rrrr....
+..rrffffrr..
+.rffwwwfffr.
+.rfwfffwffr.
+rffwfffwfffr
+rffwwwwwfffr
+rffwfffwfffr
+rffwfffwfffr
+srfwfffwffrs
+srffffffffrs
+.srrffffrrs.
+.sssrrrrsss.
+..ssssssss..
+....ssss....
+glyph B
+....rrrr....
+..rrffffrr..
+.rfwwwwfffr.
+.rfwfffwffr.
+rffwfffwfffr
+rffwwwwffffr
+rffwfffwfffr
+rffwfffwfffr
+srfwwwwfffrs
+srffffffffrs
+.srrffffrrs.
+.sssrrrrsss.
+..ssssssss..
+....ssss....
+glyph X
+....rrrr....
+..rrffffrr..
+.rfwfffwffr.
+.rfwfffwffr.
+rfffwfwffffr
+rffffwfffffr
+rfffwfwffffr
+rffwfffwfffr
+srfwfffwffrs
+srffffffffrs
+.srrffffrrs.
+.sssrrrrsss.
+..ssssssss..
+....ssss....
+glyph Y
+....rrrr....
+..rrffffrr..
+.rfwfffwffr.
+.rfwfffwffr.
+rfffwfwffffr
+rffffwfffffr
+rffffwfffffr
+rffffwfffffr
+srfffwffffrs
+srffffffffrs
+.srrffffrrs.
+.sssrrrrsss.
+..ssssssss..
+....ssss....
+glyph L
+............
+...rrrrrr...
+.rrffffffrr.
+.rfwffffffr.
+rffwfffffffr
+rffwfffffffr
+rffwfffffffr
+rffwfffffffr
+rffwfffffffr
+rffwwwwwfffr
+srffffffffrs
+ssrrrrrrrrss
+.ssssssssss.
+..ssssssss..
+glyph R
+............
+...rrrrrr...
+.rrffffffrr.
+.rfwwwwfffr.
+rffwfffwfffr
+rffwfffwfffr
+rffwwwwffffr
+rffwfwfffffr
+rffwffwffffr
+rffwfffwfffr
+srffffffffrs
+ssrrrrrrrrss
+.ssssssssss.
+..ssssssss..

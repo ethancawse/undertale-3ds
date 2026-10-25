@@ -1,0 +1,364 @@
+{
+  "components": [
+    {
+      "name": "Butterscotch compatibility headers (getopt and stdint)",
+      "license": "AGPL-3.0",
+      "paths": [
+        "engine/compat/"
+      ],
+      "provenance": "Imported with Butterscotch 342371d44746; these headers carry no separate third-party licence. Native 3DS uses toolchain headers; retained here for source completeness.",
+      "texts": [
+        {
+          "file": "engine/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "bzip2/libbzip2 1.0.8",
+      "license": "bzip2-1.0.6",
+      "paths": [
+        "engine/vendor/bzip2/"
+      ],
+      "provenance": "Julian Seward; upstream bzip2-1.0.8/LICENSE (https://github.com/libarchive/bzip2/blob/bzip2-1.0.8/LICENSE).",
+      "texts": [
+        {
+          "file": "engine/vendor/bzip2/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "miniz",
+      "license": "MIT",
+      "paths": [
+        "engine/vendor/miniz/"
+      ],
+      "provenance": "Vendored source and its own LICENSE.",
+      "texts": [
+        {
+          "file": "engine/vendor/miniz/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "RSA Data Security, Inc. MD5 Message-Digest Algorithm (derived implementation)",
+      "license": "RSA-MD",
+      "paths": [
+        "engine/vendor/md5/"
+      ],
+      "provenance": "Notice embedded in md5.c.",
+      "texts": [
+        {
+          "file": "engine/vendor/md5/md5.c",
+          "start": "/* Copyright (C) 1991-2,",
+          "end": "#include \"md5.h\""
+        }
+      ]
+    },
+    {
+      "name": "base64 by WEI Zhicheng",
+      "license": "Public domain",
+      "paths": [
+        "engine/vendor/base64/"
+      ],
+      "provenance": "Declaration embedded in base64.c.",
+      "texts": [
+        {
+          "file": "engine/vendor/base64/base64.c",
+          "end": "#include \"base64.h\""
+        }
+      ]
+    },
+    {
+      "name": "SHA-1 by Steve Reid",
+      "license": "Public domain",
+      "paths": [
+        "engine/vendor/sha1/"
+      ],
+      "provenance": "Declaration embedded in sha1.c.",
+      "texts": [
+        {
+          "file": "engine/vendor/sha1/sha1.c",
+          "end": "Test Vectors"
+        }
+      ]
+    },
+    {
+      "name": "stb_ds",
+      "license": "MIT OR Unlicense",
+      "paths": [
+        "engine/vendor/stb/ds/stb_ds.h"
+      ],
+      "provenance": "Sean Barrett and contributors; dual licence retained from the source trailer.",
+      "texts": [
+        {
+          "file": "engine/vendor/stb/ds/stb_ds.h",
+          "start": "This software is available under 2 licenses"
+        }
+      ]
+    },
+    {
+      "name": "stb_image",
+      "license": "MIT OR Unlicense",
+      "paths": [
+        "engine/vendor/stb/image/stb_image.h"
+      ],
+      "provenance": "Sean Barrett and contributors; dual licence retained from the source trailer.",
+      "texts": [
+        {
+          "file": "engine/vendor/stb/image/stb_image.h",
+          "start": "This software is available under 2 licenses"
+        }
+      ]
+    },
+    {
+      "name": "stb_image_write",
+      "license": "MIT OR Unlicense",
+      "paths": [
+        "engine/vendor/stb/image/stb_image_write.h"
+      ],
+      "provenance": "Sean Barrett and contributors; dual licence retained from the source trailer.",
+      "texts": [
+        {
+          "file": "engine/vendor/stb/image/stb_image_write.h",
+          "start": "This software is available under 2 licenses"
+        }
+      ]
+    },
+    {
+      "name": "stb_vorbis (fallback)",
+      "license": "MIT OR Unlicense",
+      "paths": [
+        "engine/vendor/stb/vorbis/stb_vorbis.c"
+      ],
+      "provenance": "Sean Barrett and contributors; dual licence retained from the source trailer.",
+      "texts": [
+        {
+          "file": "engine/vendor/stb/vorbis/stb_vorbis.c",
+          "start": "This software is available under 2 licenses"
+        }
+      ]
+    },
+    {
+      "name": "PacketVideo AAC decoder",
+      "license": "Apache-2.0",
+      "paths": [
+        "platform/3ds/vendor/pvaac/"
+      ],
+      "provenance": "OpenCORE 2.04, PacketVideo Corporation; see vendor README for local changes. Linked even by UNDERTALE.",
+      "texts": [
+        {
+          "file": "platform/3ds/vendor/pvaac/LICENSE"
+        },
+        {
+          "file": "platform/3ds/vendor/pvaac/NOTICE"
+        }
+      ]
+    },
+    {
+      "name": "Cinnamon: cleanupAsyncMap and dispatchVideoAsync",
+      "license": "GPL-3.0",
+      "paths": [
+        "engine/src/vm_builtins.c"
+      ],
+      "provenance": "Project-Sunshine-Native/cinnamon DELTARUNE-3DS revision 606200280b54944f750a2fe332162efb2b84ac8a, src/vm_builtins.c lines 4428-4457. https://github.com/Project-Sunshine-Native/cinnamon/blob/606200280b54944f750a2fe332162efb2b84ac8a/src/vm_builtins.c#L4428 Adapted upstream via Butterscotch 342371d44746 (runner argument and map allocation). This pins the cited source, not an independently recorded historical copying date.",
+      "texts": [
+        {
+          "file": "tools/release/licenses/cinnamon-LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "Tremor (libvorbisidec 1.2.1)",
+      "license": "BSD-3-Clause",
+      "paths": [
+        "platform/3ds/CMakeLists.txt"
+      ],
+      "provenance": "Own COPYING installed by 3ds-libvorbisidec 1.2.1-3; Xiph.org Foundation.",
+      "texts": [
+        {
+          "file": "tools/release/licenses/tremor-COPYING"
+        }
+      ],
+      "link_names": [
+        "vorbisidec"
+      ]
+    },
+    {
+      "name": "libogg 1.3.6",
+      "license": "BSD-3-Clause",
+      "paths": [
+        "platform/3ds/CMakeLists.txt"
+      ],
+      "provenance": "Own COPYING installed by 3ds-libogg 1.3.6-1; Xiph.org Foundation.",
+      "texts": [
+        {
+          "file": "tools/release/licenses/libogg-COPYING"
+        }
+      ],
+      "link_names": [
+        "ogg"
+      ]
+    },
+    {
+      "name": "libctru",
+      "license": "Zlib",
+      "paths": [
+        "platform/3ds/CMakeLists.txt"
+      ],
+      "provenance": "Own upstream v2.7.0 README licence section: https://github.com/devkitPro/libctru/blob/v2.7.0/README.md. Byte-identical to captured master text; installed library 2.7.0-1.",
+      "texts": [
+        {
+          "file": "tools/release/licenses/libctru-README.md",
+          "start": "# License"
+        }
+      ],
+      "link_names": [
+        "ctru"
+      ]
+    },
+    {
+      "name": "citro3d",
+      "license": "Zlib",
+      "paths": [
+        "platform/3ds/CMakeLists.txt"
+      ],
+      "provenance": "Own upstream v1.7.1 LICENSE: https://github.com/devkitPro/citro3d/blob/v1.7.1/LICENSE. Byte-identical to captured master text; installed library 1.7.1-2.",
+      "texts": [
+        {
+          "file": "tools/release/licenses/citro3d-LICENSE"
+        }
+      ],
+      "link_names": [
+        "citro3d"
+      ]
+    },
+    {
+      "name": "newlib (C library and libm)",
+      "license": "Various permissive licences; see complete upstream text",
+      "paths": [
+        "platform/3ds/CMakeLists.txt"
+      ],
+      "provenance": "Own COPYING.NEWLIB from https://sourceware.org/pub/newlib/newlib-4.6.0.20260123.tar.gz (source tar SHA-256 6ff27e3bf022666f43f7802255be680eeff722ac181b1725d21e2e8318604ee3). Byte-identical to the checked-in text; installed newlib 4.6.0.20260123-5. Complete upstream multi-author licence collection retained.",
+      "texts": [
+        {
+          "file": "tools/release/licenses/newlib-COPYING"
+        }
+      ],
+      "link_names": [
+        "c",
+        "m"
+      ]
+    },
+    {
+      "name": "GCC libgcc runtime",
+      "license": "GPL-3.0 WITH GCC-exception-3.1",
+      "paths": [
+        "platform/3ds/CMakeLists.txt"
+      ],
+      "provenance": "GCC 16.1.0 COPYING.RUNTIME, paired with COPYING3: https://github.com/gcc-mirror/gcc/tree/releases/gcc-16.1.0.",
+      "texts": [
+        {
+          "file": "tools/release/licenses/gcc-COPYING.RUNTIME"
+        },
+        {
+          "file": "tools/release/licenses/gcc-COPYING3"
+        }
+      ],
+      "link_names": [
+        "gcc",
+        "stdc++"
+      ]
+    },
+    {
+      "name": "devkitARM 3DS startup (3dsx_crt0.o)",
+      "license": "MPL-2.0",
+      "paths": [
+        "platform/3ds/CMakeLists.txt"
+      ],
+      "provenance": "devkitPro/devkitarm-crtls v1.2.6, 3dsx_crt0.s. https://github.com/devkitPro/devkitarm-crtls/blob/v1.2.6/3dsx_crt0.s. Unmodified source included so the startup object has corresponding source. Full licence from the Mozilla URL referenced by the source notice.",
+      "texts": [
+        {
+          "file": "tools/release/licenses/3dsx_crt0.s",
+          "end": "@---------------------------------------------------------------------------------"
+        },
+        {
+          "file": "tools/release/licenses/MPL-2.0"
+        }
+      ],
+      "link_names": [
+        "3dsx_crt0"
+      ]
+    },
+    {
+      "name": "devkitARM libsysbase (libgloss)",
+      "license": "Libgloss default permissive terms; see complete upstream text",
+      "paths": [
+        "platform/3ds/CMakeLists.txt"
+      ],
+      "provenance": "Own COPYING.LIBGLOSS from newlib-4.6.0.20260123.tar.gz. libsysbase is added under libgloss by devkitPro/buildscripts 174e0edc3f320f53025cd9c662493e22dffbd84e, patches/newlib-4.6.0.20260123-5.patch (SHA-256 44edc33674524010c3e8469b6b0cbbc41dbe4c5f00b2a648950b2ab91c3d13fb). The 27 members used across the four release link maps have no overriding licence headers. The separate BSD-4-Clause fnmatch.c is not linked. https://github.com/devkitPro/buildscripts/blob/174e0edc3f320f53025cd9c662493e22dffbd84e/patches/newlib-4.6.0.20260123-5.patch",
+      "texts": [
+        {
+          "file": "tools/release/licenses/libgloss-COPYING"
+        }
+      ],
+      "link_names": [
+        "sysbase"
+      ]
+    },
+    {
+      "name": "Cisco OpenH264 2.6.0 (optional video decoder)",
+      "license": "BSD-2-Clause",
+      "paths": [
+        "tools/deps/openh264/"
+      ],
+      "provenance": "https://raw.githubusercontent.com/cisco/openh264/v2.6.0/LICENSE",
+      "texts": [
+        {
+          "file": "tools/release/licenses/openh264-LICENSE"
+        }
+      ],
+      "link_names": [
+        "${OPENH264_DIR}/libopenh264dec.a"
+      ]
+    },
+    {
+      "name": "font8x8_basic (builder fallback font)",
+      "license": "Public Domain",
+      "paths": [
+        "tools/release/builder/gui.py"
+      ],
+      "provenance": "https://raw.githubusercontent.com/dhepper/font8x8/master/font8x8_basic.h (original header)",
+      "texts": [
+        {
+          "file": "tools/release/licenses/font8x8-PUBLIC-DOMAIN"
+        }
+      ]
+    },
+    {
+      "name": "MinGW-w64 runtime (Windows texprep)",
+      "license": "See complete runtime notices",
+      "paths": [
+        "tools/texprep/"
+      ],
+      "provenance": "Unmodified notice supplied by the MSYS2 UCRT64 compiler runtime used for texprep. Upstream: https://github.com/mingw-w64/mingw-w64/tree/master/mingw-w64-crt",
+      "texts": [
+        {
+          "file": "tools/release/licenses/mingw-w64-runtime-COPYING"
+        }
+      ]
+    },
+    {
+      "name": "winpthreads (Windows texprep)",
+      "license": "MIT and BSD-3-Clause",
+      "paths": [
+        "tools/texprep/"
+      ],
+      "provenance": "Unmodified notice supplied by the MSYS2 UCRT64 libwinpthread package. Upstream: https://github.com/mingw-w64/mingw-w64/blob/master/mingw-w64-libraries/winpthreads/COPYING",
+      "texts": [
+        {
+          "file": "tools/release/licenses/winpthreads-COPYING"
+        }
+      ]
+    }
+  ]
+}

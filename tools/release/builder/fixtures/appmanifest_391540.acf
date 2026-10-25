@@ -1,0 +1,14 @@
+"AppState"
+{
+	"appid"		"391540"
+	"universe"		"1"
+	"name"		"Undertale"
+	"StateFlags"		"{STATE}"
+	"installdir"		"Undertale"
+	"buildid"		"4279148"
+	"LastOwner"		"{OWNER}"
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+}

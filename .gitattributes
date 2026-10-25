@@ -1,10 +1,5 @@
 * text=auto eol=lf
-*.bat text eol=crlf
-*.ps1 text eol=crlf
 *.png binary
-*.jpg binary
-*.gif binary
-*.mp4 binary
-*.bin binary
-*.t3x binary
+*.bmp binary
 *.wav binary
+*.cmd text eol=crlf

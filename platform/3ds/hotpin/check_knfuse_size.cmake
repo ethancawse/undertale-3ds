@@ -1,0 +1,17 @@
+# Check this retained function before the general hot-address guard runs.
+execute_process(COMMAND "${NM}" -S --defined-only "${ELF}"
+                OUTPUT_VARIABLE symbols RESULT_VARIABLE rc)
+if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "knfuse: could not read ${ELF}")
+endif()
+string(REGEX MATCH "[0-9a-f]+ ([0-9a-f]+) [tT] ctrDrawSpriteTiled[\r\n]" match "${symbols}")
+if(NOT match)
+    file(REMOVE "${ELF}")
+    message(FATAL_ERROR "knfuse: ctrDrawSpriteTiled symbol missing")
+endif()
+math(EXPR actual "0x${CMAKE_MATCH_1}")
+if(NOT actual EQUAL EXPECTED)
+    file(REMOVE "${ELF}")
+    message(FATAL_ERROR "knfuse: ctrDrawSpriteTiled is ${actual} B; expected ${EXPECTED} B. Check configuration-specific dead filler.")
+endif()
+message(STATUS "knfuse: ctrDrawSpriteTiled retained size ${actual} B")

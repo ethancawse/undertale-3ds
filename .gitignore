@@ -1,26 +1,50 @@
+# Game data and anything derived from it never goes into the repo.
+gamedata/
+analysis-out/
+*.win
+*.dat
+*.ogg
+*.mp4
+*.bcwav
+*.t3x
+romfs-out/
+corpus/
+
+# Console firmware and system files are never redistributed.
+*.cdc
+
 # Build output
 build/
+build-*/
 out/
-dist/
 *.3dsx
 *.cia
-*.elf
+*.3ds
 *.smdh
+*.elf
 *.map
 
-# Game files: never commit them (bring your own copy)
-data.win
-*.win
-game-data/
-gamefiles/
-*.ogg
-
-# Tools and editors
+# Tooling
 __pycache__/
-*.py[cod]
 .venv/
 .vscode/
 .idea/
-*.swp
-.DS_Store
-Thumbs.db
+
+# Local editor and tool state
+.claude/
+
+# Builds collected for testing on hardware, and logs pulled back from it.
+dist/
+
+# Local scratch output
+scratch/
+
+# Disassembly, generated AOT sources, and stray analysis dumps
+*.dis
+*.dump
+*.dmp
+aot-*/
+/base.c
+/dump*/
+# texprep binaries: the release package carries them (pinned in tools/release/builder/texcache.py)
+tools/release/builder/bin/

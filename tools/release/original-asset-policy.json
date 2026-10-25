@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "decision": "Original port assets, lead 2026-10-22",
+  "generator": "platform/3ds/assets/make_art.py",
+  "generator_sha256": "e7b4a280b228cc7839a4e69b1cce87b0dbb3954448db4012c747dd1273606d17",
+  "entries": [
+    {
+      "member": "platform/3ds/assets/banner-undertale-n3ds.png",
+      "sha256": "fbb25e2f1e02e92cdb6848fcec43f1d20ea8a42167548eddb51dbe8dcb443551",
+      "bytes": 3047,
+      "justification": "Original port geometry and hand-made font from the reviewed generator; no game pixels.",
+      "evidence_sha256": [
+        "2f484a3839af3695b5e407bb205ef0d1dd10c06d801f0535ef995d3015b47f06"
+      ]
+    },
+    {
+      "member": "platform/3ds/assets/banner-undertale-o3ds.png",
+      "sha256": "aa55228601ed7bedf87aaafb02a258d19b6070502f3291d4843340334fccd03f",
+      "bytes": 3067,
+      "justification": "Original port geometry and hand-made font from the reviewed generator; no game pixels.",
+      "evidence_sha256": [
+        "2f484a3839af3695b5e407bb205ef0d1dd10c06d801f0535ef995d3015b47f06"
+      ]
+    },
+    {
+      "member": "platform/3ds/assets/banner.wav",
+      "sha256": "d04b0223af5da5adb3065ca2cda0077c462c1959ac62490bdb319c61fe0d1ba6",
+      "bytes": 76844,
+      "justification": "Original two-note synthesized port chime from the reviewed generator.",
+      "evidence_sha256": [
+        "710a74a4abd8dc3436460d2e96268f3796cce3afc4be7a0c00c863fc83c60626",
+        "aa2594061546279c047a644b1ebb70f6a90b51e91be345dd94d741edcfc6ffb6"
+      ]
+    },
+    {
+      "member": "platform/3ds/assets/icon-undertale-n3ds.png",
+      "sha256": "3ece38c731dba4ba7b41f709173dde873f2c2c6db4533b303789e7f84dcf2be9",
+      "bytes": 710,
+      "justification": "Original port geometry and hand-made font from the reviewed generator; no game pixels.",
+      "evidence_sha256": [
+        "2f484a3839af3695b5e407bb205ef0d1dd10c06d801f0535ef995d3015b47f06"
+      ]
+    },
+    {
+      "member": "platform/3ds/assets/icon-undertale-o3ds.png",
+      "sha256": "3bb35fa492e698946532c90cd739accf1a4060fd7bee602694ed2960d4f07262",
+      "bytes": 697,
+      "justification": "Original port geometry and hand-made font from the reviewed generator; no game pixels.",
+      "evidence_sha256": [
+        "2f484a3839af3695b5e407bb205ef0d1dd10c06d801f0535ef995d3015b47f06"
+      ]
+    },
+    {
+      "member": "platform/3ds/source/ctr_pixfix_press.c",
+      "sha256": "62c5249a4f01b716e3852ff596a6614824da2fc0cd19246d9f5c7189c07dc3c3",
+      "bytes": 9030,
+      "glyph_rows_sha256": "18b5b8bfb01ce5c56672c567a1bbb8ba8f833dd92b32faab1706ff6275ca07e7",
+      "approved_by": "Ethan",
+      "approval_date": "2026-10-22",
+      "approval_quote": "tbh the PRESS glyph is proibably fine to include in the repo, its literally just one word, i dont think ill get into trouble.",
+      "justification": "Hand-drawn original port label, approved by Ethan on 2026-10-22 via the lead; no private font derivation. Identifiers require their separate policy.",
+      "evidence_sha256": [
+        "c242d5c2ef6f6b4bc64d96d8fdb049e074ce3bacab522c6b2ddf85c3b344cb9b"
+      ]
+    },
+    {
+      "member": "platform/3ds/assets/banner-deltarune-n3ds.png",
+      "sha256": "f1e4fb5a8a66fc1ac5032c2976a0674a0fedbc2954cb59e75eadfd7d3628e387",
+      "bytes": 2949,
+      "justification": "Original port geometry and hand-made font from the reviewed generator; no game pixels. Unchanged since the original placeholder-art commit b2b4fda31.",
+      "evidence_sha256": [
+        "2f484a3839af3695b5e407bb205ef0d1dd10c06d801f0535ef995d3015b47f06"
+      ]
+    },
+    {
+      "member": "platform/3ds/assets/banner-deltarune-o3ds.png",
+      "sha256": "660c14d8d69781bfc0626fa8608121dd7206c98d09117dc6d65e0524c232fdb9",
+      "bytes": 2979,
+      "justification": "Original port geometry and hand-made font from the reviewed generator; no game pixels. Unchanged since the original placeholder-art commit b2b4fda31.",
+      "evidence_sha256": [
+        "2f484a3839af3695b5e407bb205ef0d1dd10c06d801f0535ef995d3015b47f06"
+      ]
+    },
+    {
+      "member": "platform/3ds/assets/icon-deltarune-n3ds.png",
+      "sha256": "51ac353fccd42ff79806b47ab513f3de5c3f3871ddebdfd6c3e496aed3335125",
+      "bytes": 723,
+      "justification": "Original port geometry and hand-made font from the reviewed generator; no game pixels. Unchanged since the original placeholder-art commit b2b4fda31.",
+      "evidence_sha256": [
+        "2f484a3839af3695b5e407bb205ef0d1dd10c06d801f0535ef995d3015b47f06"
+      ]
+    },
+    {
+      "member": "platform/3ds/assets/icon-deltarune-o3ds.png",
+      "sha256": "43216eadeb46b1a13f23916abaf13766e23874b72468604290361df055e095e6",
+      "bytes": 711,
+      "justification": "Original port geometry and hand-made font from the reviewed generator; no game pixels. Unchanged since the original placeholder-art commit b2b4fda31.",
+      "evidence_sha256": [
+        "2f484a3839af3695b5e407bb205ef0d1dd10c06d801f0535ef995d3015b47f06"
+      ]
+    }
+  ]
+}

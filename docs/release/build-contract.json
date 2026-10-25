@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "tested_compiler": {"id": "GNU", "version": "16.1.0", "target": "arm-none-eabi"},
+  "version_file": "VERSION",
+  "cia_prerelease_versions": {"1.0.0-beta.1": "0.63.1"},
+  "archive_id_prefix": "archive-",
+  "build_id_storage_bytes": 40,
+  "legal_columns": 38,
+  "legal_lines": 22,
+  "package_stem": "{game}-3ds-{model}",
+  "development_source_base": "https://github.com/ethancawse/"
+}

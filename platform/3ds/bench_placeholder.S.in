@@ -1,0 +1,9 @@
+/* Retain main 65726574's bench data slot, including bin2s's symbols, alignment and section name.
+   This is deliberately zero-filled: the editable scene list lives only in the romfs. */
+.section .rodata.bench_scenes_txt, "a"
+.balign 4
+.global bench_scenes_txt
+bench_scenes_txt:
+.space @BENCH_RETAINED_SIZE@, 0
+.global bench_scenes_txt_end
+bench_scenes_txt_end:

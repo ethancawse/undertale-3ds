@@ -1,0 +1,11 @@
+Windows Registry Editor Version 5.00
+
+; Fixture: HKCU Steam key as regedit exports it. {STEAM_REG} is the Steam folder with doubled backslashes.
+[HKEY_CURRENT_USER\Software\Valve\Steam]
+"SteamPath"="{STEAM_FWD}"
+"SteamExe"="{STEAM_FWD}/steam.exe"
+"AutoLoginUser"="not-read"
+"Language"="english"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam]
+"InstallPath"="{STEAM_REG}"

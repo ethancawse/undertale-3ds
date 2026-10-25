@@ -1,0 +1,8 @@
+# names only: the engine ran both entries as hand-written native versions until aotclean (2026-10-21); they are
+# generated from your data.win like the rest.
+#
+# Hot on the 3DS: the tiled backgrounds call it about 100 times a frame in barrier (54 instructions)
+root gml_Script_ossafe_fill_rectangle
+# barrier's colours, every frame; ranked just past the end of the 4 MB set, so it goes on top of the budget (71
+# instructions) rather than in place of something ranked
+root gml_Script_scr_colorcycle extra

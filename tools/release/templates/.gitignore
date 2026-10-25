@@ -1,0 +1,48 @@
+# Game data and anything derived from it never goes into the repo.
+gamedata/
+analysis-out/
+*.win
+*.dat
+*.ogg
+*.mp4
+*.bcwav
+*.t3x
+romfs-out/
+corpus/
+
+# Console firmware and system files are never redistributed.
+*.cdc
+
+# Build output
+build/
+build-*/
+out/
+*.3dsx
+*.cia
+*.3ds
+*.smdh
+*.elf
+*.map
+
+# Tooling
+__pycache__/
+.venv/
+.vscode/
+.idea/
+
+# Local editor and tool state
+.claude/
+
+# Builds collected for testing on hardware, and logs pulled back from it.
+dist/
+
+# Local scratch output
+scratch/
+
+# Disassembly, generated AOT sources, and stray analysis dumps
+*.dis
+*.dump
+*.dmp
+aot-*/
+/base.c
+/dump*/

@@ -1,0 +1,9 @@
+Windows Registry Editor Version 5.00
+
+; Fixture: GOG's per-game key from a 64-bit export (under WOW6432Node).
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\GOG.com\Games\1456487183]
+"exe"="{GOG_REG}\UNDERTALE.exe"
+"gameID"="1456487183"
+"gameName"="Undertale"
+"path"="{GOG_REG}"
+"buildId"=dword:0000000c

@@ -1,0 +1,24 @@
+// Fixture: the current libraryfolders.vdf format, with a second library. {STEAM} and {LIB} are filled in by the tests.
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"{STEAM}"
+		"label"		""
+		"contentid"		"1000000000000000001"
+		"apps"
+		{
+			"228980"		"0"
+		}
+	}
+	"1"
+	{
+		"path"		"{LIB}"
+		"label"		"Games"
+		"apps"
+		{
+			"391540"		"62921978"
+			"1690940"		"1"
+		}
+	}
+}

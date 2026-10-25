@@ -1,0 +1,4 @@
+# Frame skip's Draw classes for UNDERTALE (docs/perf/deepskip.md): no census yet, so every Draw event is muted (it
+# runs, and the renderer leaves out its draws on surfaces drawn before), and instances drawn as themselves are left out.
+default mute
+self skip

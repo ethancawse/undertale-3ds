@@ -1,0 +1,3 @@
+# Names only. Typed AOT tier (tools/aot/typed.py, gmlaot.py --typed): the code entries whose
+# loops get typed regions, "<data.win folder> <code entry>" per line ("root" for UNDERTALE's one data.win).
+# build.sh typed uses this list for UNDERTALE.

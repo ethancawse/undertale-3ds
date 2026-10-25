@@ -1,0 +1,167 @@
+# the port makerom ROM spec: Old 3DS / 3DS XL / 2DS build (CTRPORT_TARGET=o3ds).
+#
+# CMake fills in the $(...) values with makerom -D (see platform/3ds/CMakeLists.txt):
+#   APP_TITLE, APP_PRODUCT_CODE, APP_UNIQUE_ID  per game and target, so every variant installs side by side:
+#       UNDERTALE n3ds 0xDE170 CTR-H-UT3N    UNDERTALE o3ds 0xDE171 CTR-H-UT3O
+#       DELTARUNE n3ds 0xDE172 CTR-H-DR3N    DELTARUNE o3ds 0xDE173 CTR-H-DR3O
+#   APP_SYSTEM_MODE      CTRPORT_O3DS_MEMORY: 80MB (default), 72MB or 64MB
+#
+# Memory (application region):
+#   80MB   The largest Old 3DS mode that keeps the HOME Menu working. The SYSTEM region shrinks from 44 MB to 28 MB,
+#          which still covers the HOME Menu and library applets. Costs: the console reboots into this mode when the
+#          app starts and reboots back to the normal layout when it exits, and expect the Internet Browser to be
+#          unavailable over the game.
+#   96MB   Not offered. The SYSTEM region drops to 12 MB, under the 18 MB the system reserves for applets, so the
+#          HOME Menu gets about 6 MB and crashes as the game starts; library applets (software keyboard, error
+#          display) get nothing.
+#   64MB   The normal layout: no reboot, 16 MB less for the game.
+# On a New 3DS this build keeps the normal New 3DS layout (no reboot) and is capped at the Old 3DS amount above.
+#
+# CPU: an Old 3DS always runs at 268 MHz without L2. The New 3DS settings below only matter when this build runs on a
+# New 3DS, where it then gets 804 MHz and the L2 cache like the n3ds build.
+
+BasicInfo:
+  Title                   : $(APP_TITLE)        # 8 characters max, shown in process lists, not on the HOME Menu
+  ProductCode             : $(APP_PRODUCT_CODE)
+  Logo                    : Homebrew            # makerom's homebrew boot logo, not Nintendo's
+
+TitleInfo:
+  Category                : Application
+  UniqueId                : $(APP_UNIQUE_ID)
+
+Option:
+  UseOnSD                 : true                # installs to the SD card
+  FreeProductCode         : true
+  MediaFootPadding        : false
+  EnableCrypt             : false
+  EnableCompress          : true                # compresses exefs:/.code
+
+AccessControlInfo:
+  CoreVersion                   : 2
+  DescVersion                   : 2
+  ReleaseKernelMajor            : "02"
+  ReleaseKernelMinor            : "33"
+
+  UseExtSaveData                : false         # saves live on the SD card next to data.win
+
+  # data.win, music, saves and log.txt are all read and written under sdmc:/3ds/<game>-3ds/.
+  FileSystemAccess:
+   - DirectSdmc
+
+  MemoryType                    : Application
+  SystemMode                    : $(APP_SYSTEM_MODE)
+  IdealProcessor                : 0
+  AffinityMask                  : 1
+  Priority                      : 16
+  # Core 1 (syscore) time the app may claim with APT_SetAppCpuTimeLimit: bit 7 = "multi" scheduling, low bits = max
+  # percent. 0xD9 = multi, 89%, which is what Luma3DS grants a .3dsx; makerom's usual 0x9E caps it at 30%.
+  MaxCpu                        : 0xD9
+  HandleTableSize               : 0x200
+  DisableDebug                  : false
+  EnableForceDebug              : false
+  CanWriteSharedPage            : true
+  CanUsePrivilegedPriority      : false
+  CanUseNonAlphabetAndNumber    : true
+  PermitMainFunctionArgument    : true
+  CanShareDeviceMemory          : true
+  RunnableOnSleep               : false
+  SpecialMemoryArrange          : true
+
+  # New 3DS only (ignored on Old 3DS)
+  SystemModeExt                 : Legacy        # use the Old 3DS SystemMode above
+  CpuSpeed                      : 804MHz
+  EnableL2Cache                 : true
+  CanAccessCore2                : true
+
+  IORegisterMapping:
+   - 1ff00000-1ff7ffff   # DSP memory
+  MemoryMapping:
+   - 1f000000-1f5fffff:r # VRAM
+
+  SystemCallAccess:
+    ArbitrateAddress: 34
+    Break: 60
+    CancelTimer: 28
+    ClearEvent: 25
+    ClearTimer: 29
+    CloseHandle: 35
+    ConnectToPort: 45
+    ControlMemory: 1
+    CreateAddressArbiter: 33
+    CreateEvent: 23
+    CreateMemoryBlock: 30
+    CreateMutex: 19
+    CreateSemaphore: 21
+    CreateThread: 8
+    CreateTimer: 26
+    DuplicateHandle: 39
+    ExitProcess: 3
+    ExitThread: 9
+    FlushProcessDataCache: 84
+    GetCurrentProcessorNumber: 17
+    GetHandleInfo: 41
+    GetProcessId: 53
+    GetProcessIdOfThread: 54
+    GetProcessIdealProcessor: 6
+    GetProcessInfo: 43
+    GetResourceLimit: 56
+    GetResourceLimitCurrentValues: 58
+    GetResourceLimitLimitValues: 57
+    GetSystemInfo: 42
+    GetSystemTick: 40
+    GetThreadContext: 59
+    GetThreadId: 55
+    GetThreadIdealProcessor: 15
+    GetThreadInfo: 44
+    GetThreadPriority: 11
+    MapMemoryBlock: 31
+    OutputDebugString: 61
+    QueryMemory: 2
+    ReleaseMutex: 20
+    ReleaseSemaphore: 22
+    SendSyncRequest1: 46
+    SendSyncRequest2: 47
+    SendSyncRequest3: 48
+    SendSyncRequest4: 49
+    SendSyncRequest: 50
+    SetThreadPriority: 12
+    SetTimer: 27
+    SignalEvent: 24
+    SleepThread: 10
+    UnmapMemoryBlock: 32
+    WaitSynchronization1: 36
+    WaitSynchronizationN: 37
+    Backdoor: 123
+    ControlProcessMemory: 112   # AOT modules: making a chapter's generated code executable (ctr_aot_module.c)
+
+  # Only what the app uses (34 entries max). Uncomment a planned one together with its Dependency below.
+  ServiceAccessControl:
+   - APT:U       # applet manager: HOME Menu, sleep, exit
+   - fs:USER     # SD card
+   - gsp::Gpu    # GPU and framebuffers
+   - gsp::Lcd    # backlight and screen power
+   - hid:USER    # buttons, Circle Pad, touch screen
+   - ir:rst      # New 3DS C-Stick and ZL/ZR
+   - dsp::DSP    # audio through NDSP
+   - cfg:u       # system language, region and model
+   - ptm:u       # battery and lid state
+   - ptm:sysm    # libctru osSetSpeedupEnable (804 MHz + L2)
+  #- mic:u       # planned: DELTARUNE Chapter 4 microphone
+  #- y2r:u       # planned: hardware YUV->RGB for the intro videos
+
+SystemControlInfo:
+  RemasterVersion: 0
+  # The kernel's initial main-thread stack. libctru moves main() onto a heap stack of __stacksize__ (32 KB unless the
+  # app overrides it) during startup, the same as for a .3dsx.
+  StackSize: 0x4000
+  # System modules providing the services above. A module missing from the console makes the title hang at the
+  # boot logo, so list only ones every firmware has.
+  Dependency:
+    cfg: 0x0004013000001702
+    dsp: 0x0004013000001a02
+    gsp: 0x0004013000001c02
+    hid: 0x0004013000001d02
+    ir: 0x0004013000003302
+    ptm: 0x0004013000002202
+   #mic: 0x0004013000002002
+   #camera: 0x0004013000001602   # provides y2r:u
