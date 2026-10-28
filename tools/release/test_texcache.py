@@ -569,12 +569,15 @@ class DataVersion(unittest.TestCase):
             self.assertFalse(os.path.exists(self.card_file(fx)))
             card_dw = self.put(fx)
             st = os.stat(card_dw)
-            os.utime(card_dw, (st.st_atime, st.st_mtime + 60))                   # same size, another file
+            # Even matching dates cannot turn different bytes into a verified copy.
+            write(card_dw, bytes(b ^ 1 for b in fx.dw))
+            os.utime(card_dw, (st.st_atime, st.st_mtime))
             rec = Recorder()
             res = self.deliver(fx, rec, put=False)
             self.assertEqual((res.used, rec.ops), (False, []))
             self.assertFalse(os.path.exists(self.card_file(fx)))
-            os.utime(card_dw, (st.st_atime, st.st_mtime + 1.5))                  # within FAT's 2 s: the copy
+            self.put(fx)
+            os.utime(card_dw, (st.st_atime, st.st_mtime + 60))                  # Same bytes, dates don't matter.
             self.assertEqual(self.deliver(fx, put=False).written, 1)
 
     def test_no_revision_writes_nothing(self):
@@ -647,6 +650,80 @@ class DataVersion(unittest.TestCase):
             self.assertIn("data.win -> sd:/3ds/undertale-3ds/cache/data-version.txt", lines[1])
             self.assertIn('"sdmc:/3ds/undertale-3ds/data.win"', lines[1])
             self.assertEqual(os.listdir(fx.sd), ["3ds"])
+
+
+class HalfArt(unittest.TestCase):
+    """products.HALFART: the half-resolution art build's own folder, from the build's patch and patched pages."""
+
+    def build_files(self, fx, page_hash=None, dw_size=None):
+        blob = png(40, 300, 1)                          # Fixture's page 1
+        off = fx.dw.find(blob)
+        h = page_hash if page_hash is not None else texcache._fnv1a(fx.dw[off:off + 4096])
+        patch = (texcache.HALFART_HEADER.pack(b"DTHR", 1, dw_size or len(fx.dw), 12345, 1700000000, 0, 1, 0, 0) +
+                 struct.pack("<4I", 1, h, 0, 0))
+        # The patched page: the same size, its top half cleared (as a patch's clears do).
+        rows = zlib.decompress(blob[blob.index(b"IDAT") + 4:-16])
+        stride = 1 + 40 * 4
+        raw = bytes(stride * 150) + rows[stride * 150:]
+
+        idat = zlib.compress(raw, 9)
+        start = blob.index(b"IDAT") - 4
+        new = (blob[:start] + struct.pack(">I", len(idat)) + b"IDAT" + idat +
+               struct.pack(">I", zlib.crc32(b"IDAT" + idat) & 0xffffffff) + blob[-12:])
+        self.assertLessEqual(len(new), len(blob))
+        pages = (struct.pack("<4sII", b"DTHP", 1, 1) + hashlib.sha256(patch).digest() +
+                 struct.pack("<4I", 1, off, len(blob), len(new)) + new)
+        base = os.path.join(fx.work, "src", *texcache.HALFART_PATCH)
+        write(base + ".dthr", patch)
+        write(base + ".pages", pages)
+        patched = fx.dw[:off] + new + bytes(len(blob) - len(new)) + fx.dw[off + len(blob):]
+        return patch, patched
+
+    def test_off_by_default(self):
+        self.assertFalse(products.HALFART)
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(tmp)
+            self.build_files(fx)
+            self.assertEqual([s.sd_dir for s in fx.prepare()], ["3ds/undertale-3ds/cache"])
+
+    def test_own_folder_from_patched_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(tmp)
+            patch, patched = self.build_files(fx)
+            n = int(hashlib.sha256(patch).hexdigest()[:8], 16) | 0x80000000
+            with mock.patch.object(products, "HALFART", True):
+                sets, problems = texcache.prepare(FAKE_TOOL, UT, fx.game, fx.work, run=fake_run, log=lambda s: None)
+            self.assertEqual(problems, [])
+            self.assertEqual([s.sd_dir for s in sets], ["3ds/undertale-3ds/cache", "3ds/undertale-3ds/cache_lt_%d" % n])
+            half = sets[1].local_dir
+            self.assertEqual(read(os.path.join(half, "page001.dtx")), fake_page(patched, 1))
+            self.assertEqual(read(os.path.join(half, "page000.dtx")), fake_page(patched, 0))
+            self.assertNotEqual(read(os.path.join(half, "page001.dtx")), read(os.path.join(sets[0].local_dir, "page001.dtx")))
+            self.assertEqual(sets[1].data_win, os.path.join(fx.game, "data.win"))
+            self.assertFalse(os.path.exists(os.path.join(fx.work, "texcache", "halfart", "data.win")))   # copy removed
+            # Both folders go to the card; the player's data.win is untouched.
+            self.assertEqual(texcache.write_plans(fx.sd, texcache.plan(fx.sd, sets))[0], 2)
+            self.assertEqual(read(os.path.join(fx.game, "data.win")), fx.dw)
+            # DELTARUNE never gets one.
+            with mock.patch.object(products, "HALFART", True):
+                self.assertFalse(products.halfart("deltarune"))
+
+    def test_wrong_inputs_leave_it_to_the_console(self):
+        for kw in (dict(page_hash=1), dict(dw_size=7)):
+            with tempfile.TemporaryDirectory() as tmp:
+                fx = Fixture(tmp)
+                self.build_files(fx, **kw)
+                sets, problems = texcache.prepare(FAKE_TOOL, UT, fx.game, fx.work, run=fake_run, log=lambda s: None,
+                                                  halfart=True)
+                self.assertEqual([s.sd_dir for s in sets], ["3ds/undertale-3ds/cache"])
+                self.assertEqual(len(problems), 1)
+                self.assertIn("half-resolution art", problems[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(tmp)                           # no build files at all
+            sets, problems = texcache.prepare(FAKE_TOOL, UT, fx.game, fx.work, run=fake_run, log=lambda s: None,
+                                              halfart=True)
+            self.assertEqual(len(sets), 1)
+            self.assertEqual(len(problems), 1)
 
 
 @unittest.skipUnless(real_binary(), "no texprep binary (TEXPREP_TEST_BINARY)")

@@ -627,3 +627,33 @@ __asm__(
     "    .ltorg\n"
     "    .size CtrLab_guardSleep, . - CtrLab_guardSleep\n"
     "    .previous\n");
+
+// leavekeep (credfix, 2026-10-27): points hb:ldr at the lab host. own: for a thread that ends the run itself
+// through _exit, without newlib's exit and its atexit handlers (ctr_exit_files.c's filesRecover when the exit's file
+// batch stalls): it takes the leave first and says "--after <exit note>" as onExit would, so the main thread's
+// onExit, should it still run, can't point hb:ldr at the Homebrew Launcher (aptShouldClose) or race this one. The
+// o2DS's et3 row (2026-10-27 11:48) fell back to the Homebrew Launcher after exactly such an exit. A lab leave already
+// in progress keeps its own target. Not own: "--after died" again, unless a leave is under way. CtrLab_start's
+// "died" target never reached hb:ldr in a release build: z_argcrash.c's CtrHbldr_setNext wrap drops every target
+// until CtrMemory_markGameThread has seen lab mode (realLabMode), which main calls after CtrLab_start; the lab host's
+// log showed 0 "after died" in 391 starts. z_leavekeep.c calls this on the main loop's first CtrLab_poll.
+// active, exitNote and leaver are read through plain pointers: a volatile read here makes GCC name a temporary,
+// which renumbers crashMain's switch table (CSWTCH.110) and fails check_layout --full; so does a ?: here.
+__attribute__((noinline, section(".text.leavekeep_late"))) void CtrLab_aimHost(bool own) {
+    const bool* on = (const bool*)&active;
+    const char* const* note = (const char* const*)&exitNote;
+    const void* const* who = (const void* const*)&leaver;
+    const void* expected = NULL;
+    const char* after = "died";
+    if (!*on) return;
+    if (own) {
+        if (!__atomic_compare_exchange_n(&leaver, &expected, getThreadLocalStorage(), false, __ATOMIC_ACQ_REL,
+                                         __ATOMIC_ACQUIRE))
+            return;
+        after = *note;
+    } else if (*who != NULL) {
+        return;
+    }
+    const char* args[] = { hostArg0, "--after", after };
+    CtrHbldr_setNext(hostPath, args, 3);
+}

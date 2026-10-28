@@ -79,18 +79,37 @@ def scene_tiles(info, scene):
     return sorted((df, p, t) for (p, t), df in first.items())
 
 
+def _series(closure, sprite):
+    """The other sprites of sprite's numbered series (closure.py), [] for a closure without series."""
+    all_series = getattr(closure, 'sprite_series', [])
+    return all_series[sprite] if 0 <= sprite < len(all_series) else []
+
+
 def whole_set(info, closure, room, scene, tiles):
     """UNDERTALE: the tiles the room can draw that its record didn't see, as (LATER, page, tile) after the record's
     (platform/3ds/source/z_utstall.c, item 5): every frame of each sprite the record drew from, and the room's own
     content (tools/roomplan/closure.py). A battle group adds every frame of the sprite of each object whose code the
     group ran, visible or not: a monster's object is invisible, and its sprite is the one drawn when it is hit, a
-    texture load on the game thread at the first hit (rule A). build() passes a group's battle_code
-    list, so the objects whose other events or shared code the group may run (the FIGHT target and strike, the dust
-    of a kill) count too. Sorted by page and tile."""
+    texture load on the game thread at the first hit (rule A). A battle group also takes the other sprites of each
+    numbered series it draws from or runs the code of (closure.py: Mettaton EX's arm poses). build() passes a
+    group's battle_code list, so the objects whose other events or shared code the group may run (the FIGHT target and strike, the dust
+    of a kill) count too. Ordinary rooms add only objects with a recorded nonnegative-frame Create: these are
+    dynamically created after the room's placed objects were marked. Sorted by page and tile."""
     if closure is None:
         return []
     have = {(p, t) for _df, p, t in tiles}
     extra = set()
+
+    # Tile-level observations can come from the renderer probe when a natural
+    # battle reaches art absent from its short TPAG recorder visit. The record
+    # is qualified by data SHA and this builder's grid, not by another group's
+    # whole sprite union. Preserve ordinary first-use ordering and bucket 255.
+    for page, tile in scene.get('observed_late_tiles', ()):
+        if (type(page) is not int or type(tile) is not int or
+                not 0 <= page < len(info.pages) or info.pages[page] is None or
+                not 0 <= tile < info.pages[page].tiles_x * info.pages[page].tiles_y or tile > 255):
+            raise ValueError('invalid observed late tile %r' % ((page, tile),))
+        extra.add((page, tile))
 
     def add(tpag, rect=None):
         page, ts = info.item_tiles(tpag, rect)
@@ -99,13 +118,26 @@ def whole_set(info, closure, room, scene, tiles):
     for tpag in {t for _df, t in scene['items']} | {part[1] for part in scene['parts']}:
         for frame in closure.frames(tpag):
             add(frame)
-    if 0 <= scene['sub'] < NO_SUB:
-        code_sprite = getattr(closure, 'code_sprite', [])
-        for c in sorted({c for df, c in scene['code'] if df >= 0}):
-            s = code_sprite[c] if 0 <= c < len(code_sprite) else -1
-            if 0 <= s < len(closure.sprite_items):
-                for tpag in closure.sprite_items[s]:
-                    add(tpag)
+    code_sprite = getattr(closure, 'code_sprite' if 0 <= scene['sub'] < NO_SUB else 'code_create_sprite', [])
+    battle = 0 <= scene['sub'] < NO_SUB
+    series = set()
+    for c in sorted({c for df, c in scene['code'] if df >= 0}):
+        s = code_sprite[c] if 0 <= c < len(code_sprite) else -1
+        if 0 <= s < len(closure.sprite_items):
+            for tpag in closure.sprite_items[s]:
+                add(tpag)
+            if battle:
+                series.update(_series(closure, s))
+    if battle:
+        # A battle group's drawn sprites and code sprites bring the rest of their numbered series (closure.py).
+        sprite_of = getattr(closure, 'sprite_of', {})
+        for tpag in {t for _df, t in scene['items']} | {part[1] for part in scene['parts']}:
+            s = sprite_of.get(tpag)
+            if s is not None:
+                series.update(_series(closure, s))
+        for s in sorted(series):
+            for tpag in closure.sprite_items[s]:
+                add(tpag)
     if 0 <= room < len(closure.plan_items):
         for tpag in closure.plan_items[room]:
             add(tpag)
@@ -235,6 +267,7 @@ def main(argv=None):
     ap.add_argument('--data-win', help='the data.win itself (tests)')
     ap.add_argument('--records', default=os.path.join(HERE, 'records'))
     ap.add_argument('--out', required=True)
+    ap.add_argument('--halfart', help='prototype (build.sh halfart=): the remap tools/analysis/halfart_pack.py wrote')
     a = ap.parse_args(argv)
     if a.data_win is not None:
         found = [('root', a.data_win, 0)]
@@ -248,7 +281,7 @@ def main(argv=None):
         print('Room plan: no %s data.win found' % a.game)
         return 3
     if a.game == 'undertale':
-        return write_plan(found[0][1], a.records, a.out, whole=True)
+        return write_plan(found[0][1], a.records, a.out, whole=True, halfart=a.halfart)
     written = 0
     for part, path, _chapter in found:
         rc = write_plan(path, a.records, os.path.join(a.out, part + '.dtp'))
@@ -258,7 +291,7 @@ def main(argv=None):
     return 0 if written else 3
 
 
-def write_plan(path, records, out, whole=False):
+def write_plan(path, records, out, whole=False, halfart=None):
     """0 written, 3 no record for this data.win, 2 a record that doesn't fit. whole: add each scene's whole set (UNDERTALE)."""
     info = dwinfo.DataWinInfo(path)
     record = find_record(records, info.sha256)
@@ -268,6 +301,17 @@ def write_plan(path, records, out, whole=False):
     if record.get('format') != 1 or record.get('room_count') != info.room_count or record.get('tpag_count') != len(info.tpag):
         print('Room plan: the record for SHA-256 %s does not fit this data.win' % info.sha256, file=sys.stderr)
         return 2
+    if halfart:
+        # The halved items' new rectangles (and so tiles), as the console patches them.
+        import json
+        with open(halfart, encoding='utf-8') as f:
+            remap = json.load(f)
+        for key, item in remap.items():
+            t = list(info.tpag[int(key)])
+            assert t[0:4] == item['old'][0:4] and t[6:8] == item['old'][4:6], key
+            t[0:4], t[6:8] = item['new'][0:4], item['new'][4:6]
+            info.tpag[int(key)] = tuple(t)
+        print('Room plan: %d half-resolution items from %s' % (len(remap), halfart))
     closure = None
     if whole:
         closure = closure_mod.Closure(path)

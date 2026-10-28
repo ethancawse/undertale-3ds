@@ -47,6 +47,9 @@ __attribute__((section(".bss.late.roomplan"))) static struct {
     uint8_t* seenCode;
     uint8_t* seenSound;
     uint32_t tpagBits, tileBits, codeBits, soundBits;
+    int32_t* smallSprite; // per page item: the small sprite it is a frame of (recSmallMap), or -1
+    uint32_t smallCount;  // its items: the data.win's, as loaded (items added later, for surface sprites, are past it)
+    DataWin* smallFor;
     CtrTextureCache* cache;
     Renderer* renderer;
     const RendererVtable* inner;
@@ -73,6 +76,50 @@ ROOMPLAN_TEXT static void recTpag(int32_t tpag) {
     fprintf(rec.out, "T %lu %ld\n", (unsigned long) recDframe(), (long) tpag);
 }
 
+// DELTARUNE's HUD draws one frame of a small sprite at a time and picks it by state: a battle button lit when chosen,
+// a heart facing the way it moves, a menu button. A record holds the frames its playthrough happened to show, and the
+// others then load on the game thread the first time a player sees them. So a sprite of at most REC_SMALL_FRAMES
+// frames, each at most REC_SMALL_SIDE texels a side, has every frame noted when any is drawn (room 109 with the
+// Knight's scenes: 8 more tiles; every frame of every sprite: 34). Big or long animations are left as recorded.
+// UNDERTALE's plans already add every frame of each drawn sprite at build time (build_plan.py whole_set).
+#define REC_SMALL_FRAMES 8u
+#define REC_SMALL_SIDE 64u
+
+ROOMPLAN_TEXT static void recSmallMap(DataWin* dw) {
+#ifndef ENABLE_WAD16
+    if (rec.smallFor == dw) return;
+    free(rec.smallSprite);
+    rec.smallCount = dw->tpag.count;
+    rec.smallSprite = malloc(rec.smallCount * sizeof(int32_t) + 1);
+    rec.smallFor = rec.smallSprite != nullptr ? dw : nullptr;
+    if (rec.smallSprite == nullptr) return;
+    for (uint32_t i = 0; rec.smallCount > i; i++) rec.smallSprite[i] = -1;
+    for (uint32_t i = 0; dw->sprt.count > i; i++) {
+        const Sprite* sp = &dw->sprt.sprites[i];
+        if (sp->tpagIndices == nullptr || 2 > sp->textureCount || REC_SMALL_FRAMES < sp->textureCount) continue;
+        bool small = true;
+        for (uint32_t f = 0; small && sp->textureCount > f; f++) {
+            int32_t t = sp->tpagIndices[f];
+            small = 0 <= t && rec.smallCount > (uint32_t) t && REC_SMALL_SIDE >= dw->tpag.items[t].sourceWidth &&
+                    REC_SMALL_SIDE >= dw->tpag.items[t].sourceHeight;
+        }
+        for (uint32_t f = 0; small && sp->textureCount > f; f++) {
+            if (0 > rec.smallSprite[sp->tpagIndices[f]]) rec.smallSprite[sp->tpagIndices[f]] = (int32_t) i;
+        }
+    }
+#else
+    (void) dw;
+#endif
+}
+
+ROOMPLAN_TEXT static void recFrames(int32_t tpag) {
+    recTpag(tpag);
+    DataWin* dw = rec.dataWin;
+    if (rec.smallSprite == nullptr || rec.smallFor != dw || 0 > tpag || rec.smallCount <= (uint32_t) tpag || 0 > rec.smallSprite[tpag]) return;
+    const Sprite* sp = &dw->sprt.sprites[rec.smallSprite[tpag]];
+    for (uint32_t f = 0; sp->textureCount > f; f++) recTpag(sp->tpagIndices[f]);
+}
+
 #define REC_PARTS 16384
 __attribute__((section(".bss.late.roomplan"))) static uint32_t recParts[REC_PARTS];
 
@@ -97,12 +144,22 @@ ROOMPLAN_TEXT static void recFont(Renderer* renderer) {
     DataWin* dw = renderer->dataWin;
     int32_t font = renderer->drawFont;
     if (dw == nullptr || 0 > font || (uint32_t) font >= dw->font.count) return;
-    recTpag(dw->font.fonts[font].tpagIndex);
+    const Font* f = &dw->font.fonts[font];
+    // A font the game made from a sprite (font_add_sprite(_ext): DELTARUNE's damage and HP numbers) has no page
+    // item of its own (tpagIndex -1): its glyphs are the sprite's frames, and any of them can be drawn next (the
+    // numbers change), so every frame is noted.
+    if (f->isSpriteFont) {
+        if (0 > f->spriteIndex || (uint32_t) f->spriteIndex >= dw->sprt.count) return;
+        const Sprite* s = &dw->sprt.sprites[f->spriteIndex];
+        for (uint32_t i = 0; s->tpagIndices != nullptr && s->textureCount > i; i++) recTpag(s->tpagIndices[i]);
+        return;
+    }
+    recTpag(f->tpagIndex);
 }
 
 ROOMPLAN_TEXT static void recDrawSprite(Renderer* r, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale,
                                         float angleDeg, uint32_t color, float alpha) {
-    recTpag(tpagIndex);
+    recFrames(tpagIndex);
     rec.inner->drawSprite(r, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
 }
 
@@ -122,7 +179,7 @@ ROOMPLAN_TEXT static void recDrawSpritePartColor(Renderer* r, int32_t tpagIndex,
 
 ROOMPLAN_TEXT static void recDrawSpritePos(Renderer* r, int32_t tpagIndex, float x1, float y1, float x2, float y2, float x3, float y3, float x4,
                                            float y4, float alpha) {
-    recTpag(tpagIndex);
+    recFrames(tpagIndex);
     rec.inner->drawSpritePos(r, tpagIndex, x1, y1, x2, y2, x3, y3, x4, y4, alpha);
 }
 
@@ -156,10 +213,13 @@ ROOMPLAN_TEXT static void recDrawTextUI(Renderer* r, const char* text, float x, 
     rec.inner->drawTextUI(r, text, x, y, xscale, yscale, angleDeg, c1, c2, c3, c4, alpha, lineSeparation);
 }
 
-// Puts the outer table in front of whatever the renderer has now (view_snap, pixgrid and the frame-skip wrappers
-// install theirs earlier; with frame skip off nothing swaps entries later).
+// Install once per renderer lifetime. Later wrappers can save our callbacks: wrapping their table again would
+// make rec.inner point back through those saved callbacks and loop (the tower decoration queue installs at draw).
 ROOMPLAN_TEXT static void recInstall(Renderer* renderer) {
-    if (renderer == nullptr || renderer->vtable == &rec.outer) return;
+    // Once per renderer (Runner_create's wrap, before the first room change). Crisp text (z_smalltext.c) installs its
+    // table at a room change over whatever is on top and calls through it, and again whenever its table isn't on top:
+    // wrapping it, or letting it wrap us twice, made each table call the other forever (a hang in the first draw).
+    if (renderer == nullptr || renderer == rec.renderer || renderer->vtable == &rec.outer) return;
     rec.renderer = renderer;
     rec.inner = renderer->vtable;
     rec.outer = *rec.inner;
@@ -199,6 +259,7 @@ ROOMPLAN_TEXT static void recVisit(CtrTextureCache* cache, Runner* runner) {
                 (unsigned long) dw->tpag.count, (unsigned long) cache->pageCount, (unsigned long) dw->code.count);
     }
     rec.dataWin = dw;
+    recSmallMap(dw);
     recAlloc(&rec.seenTpag, &rec.tpagBits, dw->tpag.count);
     recAlloc(&rec.seenTile, &rec.tileBits, cache->pageCount * CTR_PAGE_MAX_TILES);
     recAlloc(&rec.seenCode, &rec.codeBits, dw->code.count);
@@ -318,8 +379,12 @@ Runner* __wrap_Runner_create(DataWin* dataWin, VMContext* vm, Renderer* renderer
 ROOMPLAN_TEXT Runner* __wrap_Runner_create(DataWin* dataWin, VMContext* vm, Renderer* renderer, FileSystem* fileSystem,
                                            AudioSystem* audioSystem, uint32_t randomSeed) {
     rec.runner = nullptr;
+    rec.renderer = nullptr; // main creates a new renderer per runner; its allocation can reuse the old address
+    // Our table goes in before the first room change, so that Crisp text's (z_smalltext.c, installed there) lies on top.
+    recInstall(renderer);
     rec.cache = nullptr;
     rec.headerFor = nullptr; // a new data.win can reuse the last one's address
+    rec.smallFor = nullptr;
     if (dataWin->bytecodeFile == nullptr && dataWin->bytecodeBuffer != nullptr) {
         mkdir(REC_DIR "/cache", 0777);
 #ifdef ENABLE_WAD16

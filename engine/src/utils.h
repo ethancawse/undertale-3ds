@@ -273,3 +273,23 @@ static inline void dropMappedRange(uint8_t *base, size_t off, size_t len) {
 }
 
 #endif /* _BS_UTILS_H_ */
+
+// freewins (diagnostic builds only, build.sh ... freewins; platform/3ds/source/z_freewins.c): timing probes at the
+// ends of existing lines in runner.c and ctr_renderer.c. Empty in every other build, so those files compile to the
+// release code with unchanged line numbers.
+#ifndef BS_FREEWINS_PROBES
+#define BS_FREEWINS_PROBES
+#ifdef CTRPORT_FREEWINS
+#include <stdint.h>
+uint64_t FreeWins_tick(void);
+void FreeWins_acc(int id, uint64_t t0);
+void FreeWins_count(int id, int32_t n);
+#define FW_T(var) uint64_t var = FreeWins_tick()
+#define FW_ACC(id, var) FreeWins_acc((id), (var))
+#define FW_N(id, n) FreeWins_count((id), (int32_t) (n))
+#else
+#define FW_T(var)
+#define FW_ACC(id, var) ((void) 0)
+#define FW_N(id, n) ((void) 0)
+#endif
+#endif

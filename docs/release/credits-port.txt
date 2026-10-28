@@ -1,0 +1,30 @@
+# The options menu's Credits page, after the game's own credits (tools/aot/credits.py puts both in romfs:/credits.txt).
+# Each line: H a heading (in the game's heading colour), N a name; an empty line is a gap; # starts a comment.
+# Public text: Ethan approves every change to this file before it ships. Acknowledgements only: nothing here may
+# suggest that anyone named endorses or works with this port.
+
+HNintendo 3DS
+NNintendo
+
+HGameMaker
+NYoYo Games
+
+HBuilt on
+NButterscotch and its contributors
+NCinnamon
+
+HTools and libraries
+NdevkitARM, libctru, citro3d
+Nnewlib, GCC
+NTremor, libogg
+Nstb_ds, stb_image, stb_image_write
+Nstb_vorbis, miniz, bzip2
+NPacketVideo AAC decoder
+NCisco OpenH264
+Nbase64 by WEI Zhicheng
+NSHA-1 by Steve Reid
+NRSA Data Security MD5
+Nfont8x8_basic, MinGW-w64, winpthreads
+
+H3DS port
+NEthan Cawse (3lit3hax)

@@ -5,7 +5,7 @@ import struct
 import tempfile
 import unittest
 
-from tools.release.prepare_legal import paginate, prepare
+from tools.release.prepare_legal import paginate, prepare, reflow
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,6 +21,14 @@ class LegalPagesTests(unittest.TestCase):
         self.assertEqual(struct.unpack('<I', output[4:8])[0], 3)
         self.assertEqual(self.rows(output, 4), [b'abcd', b'efgh', b'ijk', b'', b'last', b''])
         self.assertEqual(len(output), 8 + 3 * 2 * 5)
+
+    def test_reflow_joins_hard_wrapped_prose_only(self):
+        long = 'The GNU Affero General Public License is a free, copyleft license'
+        self.assertEqual(reflow(['  ' + long, 'for software and other kinds of works.', '', 'next']),
+                         ['  ' + long + ' for software and other kinds of works.', '', 'next'])
+        kept = [long, '  1. Definitions.', long, 'Licence: MIT', long, 'Copyright (c) 2020 Someone', long,
+                '        Preamble', long, '====', 'short line', 'stays']
+        self.assertEqual(reflow(kept), kept)
 
     def test_empty_file_and_utf8_boundaries(self):
         self.assertEqual(self.rows(paginate(b'', 4, 1), 4), [b''])

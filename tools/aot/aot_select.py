@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """AOT selection lists from a profile corpus (docs/aot.md, "Byte-budget selection").
 
-  select.py rank     --game G --data DIR --corpus CORPUS [--out FILE] [--hints FILE] [--max-mb 16] [--per-part] [--weigh ops]
-  select.py evaluate --game G --data DIR --corpus CORPUS [--hints FILE] [--per-part] [--weigh ops]
-  select.py layout   --game G --data DIR --corpus CORPUS [--selection FILE] [--out FILE] [--exclude [PART:]PREFIX]...
+  aot_select.py rank     --game G --data DIR --corpus CORPUS [--out FILE] [--hints FILE] [--max-mb 16] [--per-part] [--weigh ops]
+  aot_select.py evaluate --game G --data DIR --corpus CORPUS [--hints FILE] [--per-part] [--weigh ops]
+  aot_select.py layout   --game G --data DIR --corpus CORPUS [--selection FILE] [--out FILE] [--exclude [PART:]PREFIX]...
 
   --game G         undertale or deltarune
   --data DIR       the game folder the corpus was made from (tools/aot/corpus.py --data)
@@ -186,7 +186,7 @@ def cmd_rank(o):
     sizes = Sizes(dws)
     hints = read_list(o.hints, o.extra) if o.hints else []
     if o.per_part:
-        # Each part on its own: its profiles weighed as select.py weighs a whole game, its hints first.
+        # Each part on its own: its profiles weighed as aot_select.py weighs a whole game, its hints first.
         groups = [(part, [p for p in profiles if p[0] == part], [h for h in hints if h[0] == part]) for part in sorted(dws)]
         groups = [g for g in groups if g[1]]
     else:
@@ -197,13 +197,13 @@ def cmd_rank(o):
         chosen.append((part, profs, taken, used))
     counts = {k: sum(1 for p in profiles if p[1] == k) for k in KINDS}
     with open(o.out, "w", encoding="utf-8", newline="\n") as f:
-        f.write("# AOT selection for %s: code entries, best gain per byte of code first. Made by tools/aot/select.py from\n"
+        f.write("# AOT selection for %s: code entries, best gain per byte of code first. Made by tools/aot/aot_select.py from\n"
                 "# %d bench scenes, %d rooms and %d encounters; it fills %g MB%s at %g bytes an instruction. Names only: the\n"
                 "# code is generated from your own data.win at build time (gmlaot.py --selection, platform/3ds/build.sh %s).\n"
                 % (o.game.upper(), counts["scenes"] + counts["added-scenes"], counts["rooms"], counts["battles"], o.max_mb,
                    " for each part" if o.per_part else "", o.bytes, "aot=chapters" if o.per_part else "aot"))
         if o.weigh == "ops":
-            f.write("# Gain is GML instructions a frame (select.py --weigh ops, each profile counted up to %d a frame).\n"
+            f.write("# Gain is GML instructions a frame (aot_select.py --weigh ops, each profile counted up to %d a frame).\n"
                     % o.ops_cap)
         if counts["added-scenes"]:
             f.write("# Added scenes: %d profiles, nominal total weight %g times each original corpus kind.\n"
@@ -323,7 +323,7 @@ def cmd_layout(o):
         chosen.setdefault(part, []).append(name)
     with open(o.out, "w", encoding="utf-8", newline="\n") as f:
         f.write("# AOT code layout for %s: the order gmlaot.py --layout places generated functions in, each part's functions\n"
-                "# that run together next to each other. Made by tools/aot/select.py layout from %d rooms and %d encounters\n"
+                "# that run together next to each other. Made by tools/aot/aot_select.py layout from %d rooms and %d encounters\n"
                 "# (no bench scenes; %d profiles held out). Names only: the code is generated from your own data.win at build\n"
                 "# time. Functions it doesn't list follow in the selection's order.\n"
                 "# <data.win folder> <code entry>\n" % (o.game.upper(), sum(1 for p in used if p[1] == "rooms"),

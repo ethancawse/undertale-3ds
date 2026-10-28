@@ -19,7 +19,15 @@ ENTRY_POINTS = ('tools/release/builder/builder.py', 'tools/release/builder_platf
 OPTIONAL_PACKERS = {'tools/analysis/crispart_pack.py', 'tools/analysis/smalltext_pack.py'}
 GAME_ONLY = {'tools/aot/pixgrid.py': 'undertale', 'tools/aot/btnprompt_build.py': 'undertale',
              'tools/aot/loadscreen_art.py': 'deltarune', 'tools/aot/chapter_manifest.py': 'deltarune',
-             'tools/roomplan/build_sfxplan.py': 'undertale'}
+             'tools/roomplan/build_sfxplan.py': 'undertale', 'tools/aot/gog_smart.py': 'undertale',
+             # UNDERTALE Old's half-resolution art (build.sh halfart, the builder's products.HALFART setting).
+             'tools/analysis/halfart_pack.py': 'undertale',
+             # stpack.py and stglyphs.py make both games' glyph packs (DELTARUNE New's Crisp text, sansfont round 3).
+             'tools/roomplan/build_tracks.py': 'deltarune', 'tools/aot/stmenu.py': 'undertale',
+             # flowfull's chapter-5 code plan (build.sh flowcode, DELTARUNE New only).
+             'tools/roomplan/build_flowcode.py': 'deltarune',
+             # offkill's early-destroy entries (build.sh runs it for UNDERTALE only; pipeline.py's source_wanted agrees).
+             'tools/aot/offkill.py': 'undertale'}
 
 
 class Repository:
@@ -113,8 +121,13 @@ def module_paths(name, searches, files):
 
 
 def relevant(path, game):
+    # Shared fontverdict imports the GOG helper only for a verified UNDERTALE container.
+    # Apply product scoping to transitive imports as well as build-driver invocations.
+    if path in GAME_ONLY and GAME_ONLY[path] != game:
+        return False
     # Records/selections are chosen per product; shared scaffold imports still belong to both packages.
-    if path.startswith(('tools/roomplan/records/', 'tools/aot/selection/')):
+    if path.startswith(('tools/roomplan/records/', 'tools/roomplan/phases/', 'tools/roomplan/tracks/',
+                        'tools/aot/selection/')):
         other = 'deltarune' if game == 'undertale' else 'undertale'
         return not pp.basename(path).startswith((other + '-', other + '.')) and pp.basename(path) != 'typed-' + other + '.txt'
     return True
@@ -263,7 +276,10 @@ def check(repository, manifest, game, entry_points=None, drivers=None):
                 candidate = pp.normpath(directory).lstrip('/')
                 # Sound records live one level below records/. Do not lose them merely because the
                 # final component is "sounds" (the generator selects its JSON by the player's hash).
-                if any(part in ('records', 'fixtures', 'selection') for part in candidate.split('/')):
+                if any(part in ('records', 'fixtures', 'selection', 'tracks') for part in candidate.split('/')):
+                    # An argparse default can name a fixed record rather than a directory.
+                    if candidate in files and not candidate.endswith('.pyc'):
+                        need(candidate, '%s:%d fixed record' % (path, getattr(node, 'lineno', 0)))
                     for child in files:
                         if child.startswith(candidate + '/') and not child.endswith('.pyc'):
                             need(child, '%s:%d fixed directory' % (path, getattr(node, 'lineno', 0)))

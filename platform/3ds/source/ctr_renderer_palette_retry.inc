@@ -27,6 +27,21 @@ bool __wrap_CtrTextures_lendBudget(CtrTextureCache* cache, uint32_t bytes, uint3
 
 __attribute__((noipa, section(".text.late.thrashport")))
 void __wrap_CtrTextures_beginFrame(CtrTextureCache* cache, uint32_t frame) {
+#ifdef CTRPORT_DR_OLD_CIA80_TILES
+    // DR palette admission now evicts decoded tiles directly. It can also
+    // fail at the palette cap or at TexInit, neither of which reaches the
+    // old lendBudget failure hook. Inspect empty backoff records after frame
+    // maintenance instead, at most one reopening every four renderer frames.
+    __asm__ volatile("@ flowervramg-early-retry");
+    if (paletteRetryFailed.cache != cache || frame <= cache->frame) {
+        paletteRetryFailed.cache = cache;
+        paletteRetryFailed.retryFrom = frame;
+        paletteRetryFailed.cursor = 0;
+    }
+    paletteRetryFailed.frame = frame;
+    __real_CtrTextures_beginFrame(cache, frame);
+    if (frame < paletteRetryFailed.retryFrom) return;
+#else
     bool retry = paletteRetryFailed.cache == cache && paletteRetryFailed.frame <= cache->frame &&
         cache->frame - paletteRetryFailed.frame < PAL_RETRY_FRAMES && frame > cache->frame;
     // A renderer recreated at a chapter change starts its cache at frame 0;
@@ -34,6 +49,7 @@ void __wrap_CtrTextures_beginFrame(CtrTextureCache* cache, uint32_t frame) {
     if (!retry) paletteRetryFailed.cache = nullptr;
     __real_CtrTextures_beginFrame(cache, frame);
     if (!retry || cache->roomThrashed || frame < paletteRetryFailed.retryFrom) return;
+#endif
     CtrRenderer* r = (CtrRenderer*) ((char*) cache - __builtin_offsetof(CtrRenderer, textures));
     // Frame-start lending retry rule: cache maintenance and deferred frees
     // can make yesterday's refused loan possible before the 30-frame delay.
@@ -41,8 +57,9 @@ void __wrap_CtrTextures_beginFrame(CtrTextureCache* cache, uint32_t frame) {
     // frames, rotating through records so failed copies cannot retry en masse
     // each frame. Ordinary 30-frame retries retain their original schedule.
     // Only a draw that needs the reopened copy allocates it.
-    // Keep the lender's 60-frame idle rule and room-thrashing policy intact:
-    // retry never evicts a hot tile or overrides the unshaded fallback.
+    // Reopening alone neither allocates nor evicts. Ordinary targets keep
+    // their lender/thrashing rules; CIA80 applies palette priority
+    // while protecting tiles referenced by this frame's GPU work.
     uint32_t count = (uint32_t) arrlen(r->palCopies);
     for (uint32_t n = 0; count > n; n++) {
         uint32_t i = (paletteRetryFailed.cursor + n) % count;

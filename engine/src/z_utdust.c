@@ -21,7 +21,7 @@
 //   first; the rest go the full way.
 //
 // Everything here is late code and data (platform/3ds/late_reserve.ld), and uses no .rodata: UNDERTALE Old's late
-// constants reserve was 139 B. The callers in runner.c keep their slots (RULES.md, "body-size change with retained
+// constants reserve was 139 B. The callers in runner.c keep their slots (layout rule "body-size change with retained
 // slot"; tools/analysis/check_utdust_slots.py).
 
 #include "runner.h"

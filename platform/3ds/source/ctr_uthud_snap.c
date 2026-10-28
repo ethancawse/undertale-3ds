@@ -37,7 +37,7 @@
 #include "matrix_math.h"
 #include "renderer.h"
 #include "runner.h"
-
+#include "ctr_wrap_chain.h"
 #define UTHUD_TEXT __attribute__((noinline, section(".text.late.uthud")))
 
 #ifndef ENABLE_WAD17
@@ -184,7 +184,7 @@ static __attribute__((naked, noinline, section(".text.late.uthud"))) void uthudS
 
 // CtrDisplayCaps is two bools, returned in r0 (AAPCS: a composite of 4 bytes or less): passed through as a word, so
 // the wrapper doesn't unpack and repack it.
-uint32_t __real_CtrRenderer_getDisplayCaps(Renderer* renderer);
+uint32_t CTR_DISPLAYCAPS_AFTER_UTHUD(Renderer* renderer);
 uint32_t __wrap_CtrRenderer_getDisplayCaps(Renderer* renderer);
 
 // Whole words each, in its own read-only section (a string literal would grow .rodata).
@@ -203,7 +203,7 @@ static const char uthudSnapLog[UTHUD_WORDS(UTHUD_SNAP_LOG)] __attribute__((align
 // The vtable entries go back in whenever they are not already the hooks: CtrRenderer_create fills ctrVtable again
 // each time it runs.
 UTHUD_TEXT uint32_t __wrap_CtrRenderer_getDisplayCaps(Renderer* renderer) {
-    uint32_t caps = __real_CtrRenderer_getDisplayCaps(renderer);
+    uint32_t caps = CTR_DISPLAYCAPS_AFTER_UTHUD(renderer);
     int value = UTHUD_SNAP_DEFAULT;
     FILE* f = fopen(uthudSnapPath, uthudSnapRead);
     if (f != nullptr) {
@@ -221,6 +221,91 @@ UTHUD_TEXT uint32_t __wrap_CtrRenderer_getDisplayCaps(Renderer* renderer) {
         vtable->beginView = uthudSnapBeginView;
         vtable->applyProjection = UthudSnap_applyProjection;
         vtable->setRenderTarget = UthudSnap_setRenderTarget;
+    }
+    return caps;
+}
+
+// ===[ soulshake: the snap stands down while the view scrolls ]===
+// The snap is for shakes: a view that swings back and forth around a rest, with the content fixed in the room. A view
+// that scrolls one way usually carries content with it (Photoshop Flowey's intro: the SOUL's y is set to its rest plus
+// the view's, so the PC holds it still). Snapping each odd view of such a scroll moves that content by half an output
+// pixel every other frame: the SOUL hopped 1 px at 15 Hz (playtest, 2026-10-26). So view 0's position is followed per
+// frame (beginView), and while either axis scrolls steadily, view_snap is off for the frame: the picture is then the
+// view_snap = 0 picture, which is what native drawing gives everywhere else.
+//
+// Steady, per axis: the view cut (a jump of more than 64 px, or a new view size), then moved, and has kept moving one
+// way since, resting no more than 3 frames at a time. A reversal or a longer rest ends it until the next cut. Flowey's
+// intro cuts the view 0 -> 478 and scrolls 477, 476, ... at once, and its first scroll frame is odd. A shake is not
+// steady: it reverses within a frame or two, and only a shake that starts within 3 frames of a cut can show a steady
+// first move (2% of laugh-shake frames in that case, simulated). Without a cut nothing is steady: the sans shaker's
+// decaying shake (+-10, +-9, ... +-1, a random sign each frame) often runs 4 or more 1 px moves one way, and a rule
+// counting such runs stood the snap down for its last frames (21% of shakes, simulated; seen in UT10's Sans scene).
+//
+// How it is reached without moving anything: the display-caps chain passes through CtrRenderer_chainCapsSoulshake
+// (ctr_wrap_chain.h), which runs before uthud's own install above. On a fresh table it puts soulshakeBeginView in
+// the beginView slot, so uthud saves it as original.beginView and its stub calls it. It runs the renderer's
+// beginView, follows the view, and sets UthudSnap_state.on for the frame (the configured value, or 0), before the stub
+// tail-calls UthudSnap_resnap. The configured value is whatever display-caps last wrote there.
+#define SOULSHAKE_TEXT __attribute__((noinline, section(".text.soulshake_late")))
+#define SOULSHAKE_CUT 64
+#define SOULSHAKE_IDLE 3
+
+typedef void (*SoulshakeBeginView)(Renderer* renderer, int32_t viewX, int32_t viewY, int32_t viewW, int32_t viewH,
+                                   int32_t portX, int32_t portY, int32_t portW, int32_t portH, float viewAngle);
+typedef struct {
+    int32_t last, lastMove, idle, fresh;
+} SoulshakeAxis;
+typedef struct {
+    SoulshakeBeginView real;
+    SoulshakeAxis axis[2];
+    int32_t viewW, viewH;
+    uint32_t configured, written;
+} SoulshakeState;
+__attribute__((aligned(4), section(".bss.soulshake_late"))) SoulshakeState Soulshake_state;
+
+SOULSHAKE_TEXT static bool soulshakeFollow(SoulshakeAxis* a, int32_t pos, bool reset) {
+    int32_t move = pos - a->last;
+    a->last = pos;
+    if (reset || move > SOULSHAKE_CUT || -SOULSHAKE_CUT > move) {
+        a->lastMove = a->idle = 0;
+        a->fresh = 1;
+        return false;
+    }
+    if (move == 0) {
+        if (++a->idle > SOULSHAKE_IDLE) a->fresh = 0;
+    } else {
+        if (a->lastMove != 0 && (move ^ a->lastMove) < 0) a->fresh = 0; // a reversal
+        a->lastMove = move;
+        a->idle = 0;
+    }
+    return a->fresh && a->lastMove != 0;
+}
+
+SOULSHAKE_TEXT static void soulshakeBeginView(Renderer* renderer, int32_t viewX, int32_t viewY, int32_t viewW,
+                                              int32_t viewH, int32_t portX, int32_t portY, int32_t portW, int32_t portH,
+                                              float viewAngle) {
+    SoulshakeState* s = &Soulshake_state;
+    s->real(renderer, viewX, viewY, viewW, viewH, portX, portY, portW, portH, viewAngle);
+    bool reset = viewW != s->viewW || viewH != s->viewH;
+    s->viewW = viewW;
+    s->viewH = viewH;
+    // Both axes follow every frame (no short-circuit), so neither misses a move.
+    bool steadyX = soulshakeFollow(&s->axis[0], viewX, reset);
+    bool steadyY = soulshakeFollow(&s->axis[1], viewY, reset);
+    if (UthudSnap_state.on != s->written) s->configured = UthudSnap_state.on;
+    s->written = steadyX || steadyY ? 0 : s->configured;
+    UthudSnap_state.on = s->written;
+}
+
+uint32_t CTR_DISPLAYCAPS_AFTER_SOULSHAKE(Renderer* renderer);
+uint32_t CTR_DISPLAYCAPS_SOULSHAKE(Renderer* renderer);
+SOULSHAKE_TEXT uint32_t CTR_DISPLAYCAPS_SOULSHAKE(Renderer* renderer) {
+    uint32_t caps = CTR_DISPLAYCAPS_AFTER_SOULSHAKE(renderer);
+    RendererVtable* vtable = renderer->vtable;
+    // A fresh table holds the renderer's own beginView: neither uthud's stub nor this hook.
+    if (vtable->beginView != uthudSnapBeginView && vtable->beginView != soulshakeBeginView) {
+        Soulshake_state.real = vtable->beginView;
+        vtable->beginView = soulshakeBeginView;
     }
     return caps;
 }

@@ -93,6 +93,13 @@ static void shaFinish(Sha256* sha, char digest[65]) {
     for (size_t i = 0; i < 8; i++) snprintf(digest + i * 8, 9, "%08lx", (unsigned long) sha->h[i]);
 }
 
+// Builder-verified receipts bind to the real FAT archive time on first use. They are not independent
+// per-boot content proofs: they authorize chapter guards, crisp art, room and sound plans as well as the notice.
+// AOT dispatch separately validates actual bytecode. See builder-version-receipts.md for the trust boundary.
+FILE* BxReceipt_open(const char* cachePath, const char* mode);
+#if defined(__3DS__) || defined(BX_RECEIPT_HOST_TEST)
+#define fopen BxReceipt_open
+#endif
 static bool readCache(const char* cachePath, const char* path, const struct stat* st, char digest[65]) {
     FILE* f = fopen(cachePath, "r");
     if (f == NULL) return false;
@@ -108,6 +115,7 @@ static bool readCache(const char* cachePath, const char* path, const struct stat
     return revision == DATA_VERSIONS_REVISION && size == (uint64_t) st->st_size && mtime == (long long) st->st_mtime
         && strcmp(savedPath, path) == 0 && strlen(digest) == 64 && strspn(digest, "0123456789abcdef") == 64;
 }
+#undef fopen
 
 static void writeCache(const char* cachePath, const char* path, const struct stat* st, const char* digest) {
     if (strpbrk(path, "\r\n") != NULL) return;
@@ -190,3 +198,8 @@ __attribute__((noinline, section(".text.late.nativemac"))) CtrDataVersionResult 
     }
     return result;
 }
+
+// DR cold verification only; UNDERTALE keeps its original implementation and bytes.
+#if defined(ENABLE_WAD17) && (defined(__3DS__) || defined(BX_COLD_HOST_TEST))
+#include "ctr_data_version_cold.inc"
+#endif

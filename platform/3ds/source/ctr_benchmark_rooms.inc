@@ -50,7 +50,7 @@ ROOMS_CONST(roomsDips, "DIPS");
 ROOMS_CONST(roomsUnder, "UNDER");
 ROOMS_CONST(roomsHeadroomFormat,
     "Bench: %s: HEADROOM=%s work_contract=work/v1 frames=%lu hidden_load_excluded=%lu other_excluded=%lu "
-    "cpu_mean_ms=%.3f cpu_slowest1_ms=%.3f gpu_mean_ms=%.3f gpu_slowest1_ms=%.3f limit_ms=30.000\n");
+    "cpu_mean_ms=%.3f cpu_slowest1_ms=%.3f gpu_mean_ms=%.3f gpu_slowest1_ms=%.3f limit_ms=30.000 cpu_max_ms=%.3f gpu_max_ms=%.3f\n");
 ROOMS_CONST(roomsHeadroomResultFormat,
     "headroom %s work_contract=work/v1 HEADROOM=%s frames=%lu hidden_load_excluded=%lu other_excluded=%lu "
     "cpu_mean_ms=%.3f cpu_slowest1_ms=%.3f gpu_mean_ms=%.3f gpu_slowest1_ms=%.3f limit_ms=30.000\n");
@@ -311,7 +311,7 @@ static BenchScriptState ROOMS_LATE benchRoomsTick(BenchScript* script, Runner* r
     // No extra script tick on an explicitly terminated departure. Default
     // route scenes still run the exact original tick, including their final one.
     BenchScriptState state = departed ? BENCH_SCRIPT_MEASURING : benchPreTick(script, runner);
-    benchfidRoomsCollect(runner);
+    benchshownRoomsCollect(runner);
     if (departed) {
         copyText(benchRooms.destination, sizeof(benchRooms.destination), benchRoomsName(runner));
         benchRooms.departurePending = true;
@@ -350,7 +350,7 @@ static bool ROOMS_LATE benchRoomsTakeShot(BenchScript* script) {
 static void ROOMS_LATE benchRoomsRelease(void* buffer) {
     SceneResult* r = currentResult();
     if (benchRooms.active && bench.phase == PHASE_MEASURE && !sweep.on && r != nullptr && r->measured)
-        benchfidRoomsReport();
+        benchshownRoomsReport();
     benchRooms.active = false;
     free(buffer);
 }

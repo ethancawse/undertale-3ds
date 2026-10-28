@@ -12,4 +12,7 @@ typedef struct {
 
 extern const CtrExitFilesLinkState CtrExit_filesLinkState;
 
+// z_leavekeep.c: _exit for the lab leaves and filesRecover, without libctru's heap unmap (live threads' stacks stay).
+void CtrLeavekeep_exit(int status) __attribute__((noreturn));
+
 #endif

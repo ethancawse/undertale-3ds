@@ -449,7 +449,7 @@ static void Runner_executeCallLaterCallback(VMContext* ctx, RValue callback) {
 // This mirrors what the official YoYo runner does.
 static bool isEventBlockedByPendingRoom(Runner* runner, Instance* instance, int32_t eventType) {
     if (eventType == EVENT_CLEANUP) return false;
-    if (0 > runner->pendingRoom)
+    if (runner->pendingRoom == -1)
         return false;
 
     bool persistent = (instance != nullptr && instance->persistent) || (runner->currentRoom != nullptr && runner->currentRoom->persistent);
@@ -1009,13 +1009,13 @@ int32_t Runner_loadDrawSkip(Runner* runner, const char* list, const char* sectio
     free(named);
     return found;
 }
-
-static void fireDrawSubtype(Runner* runner, Drawable* drawables, int32_t drawableCount, int32_t subtype) {
+void FreewinsMap_freeKey(char* key); SavedRoomState** FreewinsRoom_alloc(uint32_t count); SavedRoomState* FreewinsRoom_entry(Runner* runner, int32_t roomIndex); SavedRoomState* FreewinsRoom_persist(Runner* runner, int32_t roomIndex); void FreewinsRoom_free(Runner* runner); static uint64_t drawPassFirst(Runner*, int32_t, const Drawable*, int32_t); static bool drawPassMore(Runner*, int32_t, const Instance*); static int32_t drawPassSkipClass(Runner* runner, const Instance* inst); // late code, at this file's end
+static void fireDrawSubtype(Runner* runner, Drawable* drawables, int32_t drawableCount, int32_t subtype) { FW_T(fwD0);
     if (!runner->drawEnabled) return;
     int32_t slot = EventSlotMap_lookup(&runner->eventSlotMap, EVENT_DRAW, subtype);
-    if (slot == -1) return;
-
-    repeat(drawableCount, i) {
+    if (slot == -1) return; FW_N(14, drawableCount); uint64_t part = drawPassFirst(runner, slot, drawables, drawableCount); int32_t stop = (int32_t) (part >> 32);
+    // drawPassFirst and drawPassMore (at this file's end): the part of the list whose entries can run the event
+    for (int32_t i = (int32_t) part; drawableCount > i && (i != stop || drawPassMore(runner, slot, drawables[i - 1].instance)); ++i) {
         Drawable* d = &drawables[i];
         if (d->type != DRAWABLE_INSTANCE)
             continue;
@@ -1038,17 +1038,17 @@ static void fireDrawSubtype(Runner* runner, Drawable* drawables, int32_t drawabl
         int32_t ownerObjectIndex = -1;
         int32_t codeId = ResolvedEventTable_lookup(&runner->eventTable, inst->objectIndex, slot, &ownerObjectIndex);
         if (0 > codeId) continue;
-        int32_t skipClass = drawSkipClass(runner, inst);
-        if (skipClass == DRAW_SKIP_SKIP) {
-            runner->drawSkip.skippedEvents++;
-            continue;
-        }
+        // The draw skip class and the skipped events' count: late code at this file's end, so that this function keeps
+        // its place and size with the scan bounds above (drawPassFirst, drawPassMore).
+        int32_t skipClass = drawPassSkipClass(runner, inst);
+        if (skipClass == DRAW_SKIP_SKIP) continue;
+
         int32_t previousShader = Runner_pushLayerShader(runner, inst->layer);
-        runner->drawDepth = inst->depth;
-        executeDrawEvent(runner, inst, subtype, codeId, ownerObjectIndex, skipClass);
+        runner->drawDepth = inst->depth; FW_T(fwD1);
+        executeDrawEvent(runner, inst, subtype, codeId, ownerObjectIndex, skipClass); FW_ACC(5, fwD1);
         Runner_popLayerShader(runner, previousShader);
     }
-    runner->drawDepth = DRAW_DEPTH_NONE;
+    runner->drawDepth = DRAW_DEPTH_NONE; FW_ACC(4, fwD0);
 }
 
 // GMS2 tilemap cell bit layout (matches HTML5 Function_Layers.js TileIndex/Mirror/Flip/Rotate masks)
@@ -1108,11 +1108,11 @@ bool Runner_visibleWorldRect(Runner* runner, float* outX0, float* outY0, float* 
     return true;
 }
 
-// False when a legacy tile drawn at its position plus (offsetX, offsetY)
-// can't touch the visible area.
-static bool legacyTileVisible(Runner* runner, const RoomTile* tile, float offsetX, float offsetY) {
-    float cullX0, cullY0, cullX1, cullY1;
-    if (!Runner_visibleWorldRect(runner, &cullX0, &cullY0, &cullX1, &cullY1)) return true;
+// Whether a legacy tile can show in the view rectangle cull ({x0, y0, x1, y1} from Runner_visibleWorldRect, or nullptr
+// when there is none, and then everything can). drawLegacyTileRun works the rectangle out once for a run of tiles.
+static TILERUN_LATE bool legacyTileVisible(const float* cull, const RoomTile* tile, float offsetX, float offsetY) {
+    if (cull == nullptr) return true;
+    float cullX0 = cull[0], cullY0 = cull[1], cullX1 = cull[2], cullY1 = cull[3];
     float x0 = (float) tile->x + offsetX, y0 = (float) tile->y + offsetY;
     float x1 = x0 + (float) tile->width * tile->scaleX;
     float y1 = y0 + (float) tile->height * tile->scaleY;
@@ -1401,7 +1401,7 @@ void Runner_draw(Runner* runner) {
     UTK_DRAW_ROOM(runner);
     RUNNER_ZONE_EXIT(runner);
 }
-static LAYERFIX_LATE void drawLayerInstances(Runner*, int32_t, int32_t, uint32_t); static LAYERFIX_LATE int32_t flushPendingDrawDepthChanges(Runner*, int32_t);
+static LAYERFIX_LATE void drawLayerInstances(Runner*, int32_t, int32_t, uint32_t); static LAYERFIX_LATE int32_t flushPendingDrawDepthChanges(Runner*, int32_t); static TILERUN_LATE int32_t drawLegacyTileRun(Runner*, Room*, int32_t, int32_t, DrawKey*);
 static void drawRoom(Runner* runner) {
     Room* room = runner->currentRoom;
 
@@ -1469,46 +1469,46 @@ static void drawRoom(Runner* runner) {
         runner->drawDepth = d->depth;
 
         if (d->type == DRAWABLE_TILE) {
-            if (runner->renderer != nullptr) {
-                RoomTile* tile = &room->tiles[d->tileIndex];
-                // Skip tiles whose layer was hidden via tile_layer_hide(). Filtered here (not in the cache) so toggling layer visibility doesn't invalidate.
-                ptrdiff_t layerIdx = hmgeti(runner->tileLayerMap, tile->tileDepth);
-                if (layerIdx >= 0 && !runner->tileLayerMap[layerIdx].value.visible) continue;
-                float offsetX = 0.0f, offsetY = 0.0f;
-                if (layerIdx >= 0) {
-                    offsetX = runner->tileLayerMap[layerIdx].value.offsetX;
-                    offsetY = runner->tileLayerMap[layerIdx].value.offsetY;
-                }
-                if (!legacyTileVisible(runner, tile, offsetX, offsetY)) continue;
-
-#ifdef ENABLE_VM_TRACING
-                // Trace tile drawing if requested
-                if (shlen(runner->vmContext->tilesToBeTraced) > 0) {
-                    DataWin* dataWin = runner->dataWin;
-                    const char* bgName = (tile->backgroundDefinition >= 0 && dataWin->bgnd.count > (uint32_t) tile->backgroundDefinition) ? dataWin->bgnd.backgrounds[tile->backgroundDefinition].name : "<none>";
-                    const char* roomName = room->name;
-
-                    bool shouldTrace = shgeti(runner->vmContext->tilesToBeTraced, "*") != -1 || shgeti(runner->vmContext->tilesToBeTraced, bgName) != -1 || shgeti(runner->vmContext->tilesToBeTraced, roomName) != -1;
-
-                    if (shouldTrace) {
-                        int32_t tpagIndex = Renderer_resolveObjectTPAGIndex(dataWin, tile);
-                        if (tpagIndex >= 0) {
-                            TexturePageItem* tpag = &dataWin->tpag.items[tpagIndex];
-                            logInfo("Runner: [%s] Drawing tile #%d bg=%s(%d) tpag(srcX=%d srcY=%d srcW=%d srcH=%d tgtX=%d tgtY=%d bndW=%d bndH=%d page=%d) tile(srcX=%d srcY=%d w=%u h=%u) at pos=(%d,%d) depth=%d\n", roomName, d->tileIndex, bgName, tile->backgroundDefinition, tpag->sourceX, tpag->sourceY, tpag->sourceWidth, tpag->sourceHeight, tpag->targetX, tpag->targetY, tpag->boundingWidth, tpag->boundingHeight, tpag->texturePageId, tile->sourceX, tile->sourceY, tile->width, tile->height, tile->x, tile->y, tile->tileDepth);
-
-                            // Warn if tile source rect exceeds TPAG content bounds
-                            if ((uint32_t) (tile->sourceX + tile->width) > (uint32_t) tpag->sourceWidth || (uint32_t) (tile->sourceY + tile->height) > (uint32_t) tpag->sourceHeight) {
-                                logWarn("Runner: [%s] Tile #%d source rect (%d,%d %ux%u) exceeds TPAG content bounds (%dx%d)\n", roomName, d->tileIndex, tile->sourceX, tile->sourceY, tile->width, tile->height, tpag->sourceWidth, tpag->sourceHeight);
-                            }
-                        } else {
-                            logInfo("Runner: [%s] Drawing tile #%d bg=%s(%d) tpag=UNRESOLVED tile(srcX=%d srcY=%d w=%u h=%u) at pos=(%d,%d) depth=%d\n", roomName, d->tileIndex, bgName, tile->backgroundDefinition, tile->sourceX, tile->sourceY, tile->width, tile->height, tile->x, tile->y, tile->tileDepth);
-                        }
-                    }
-                }
-#endif
-
-                Renderer_drawTile(runner->renderer, tile, offsetX, offsetY);
-            }
+            // The whole run of tiles from here (drawLegacyTileRun, at the end of the file). The empty comment lines below
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            //
+            // keep every later line number (the __LINE__ of the checks further down) as it was.
+            if (runner->renderer != nullptr) i = drawLegacyTileRun(runner, room, i, drawableCount, &lastProcessedDrawKey);
         } else if (d->type == DRAWABLE_INSTANCE) {
             Instance* inst = d->instance;
             if (d->layerOrder != 0) continue;
@@ -1595,8 +1595,8 @@ static void drawRoom(Runner* runner) {
                 size_t tileElementCount = arrlenu(runtimeLayer->elements);
                 // The elements were created in legacyTiles order, so each search
                 // resumes after the previous match instead of starting over
-                // (which made big tile layers quadratic per frame).
-                size_t tileElementCursor = 0;
+                // (which made big tile layers quadratic per frame). No GML runs in this loop, so the view rectangle is worked out once.
+                size_t tileElementCursor = 0; float tileRect[4]; const float* tileCull = runner->renderer != nullptr && Runner_visibleWorldRect(runner, &tileRect[0], &tileRect[1], &tileRect[2], &tileRect[3]) ? tileRect : nullptr;
                 repeat(data->legacyTileCount, j) {
                     if (runner->renderer != nullptr) {
                         RoomTile* tile = &data->legacyTiles[j];
@@ -1608,7 +1608,7 @@ static void drawRoom(Runner* runner) {
                             offsetX = runner->tileLayerMap[layerIdx].value.offsetX;
                             offsetY = runner->tileLayerMap[layerIdx].value.offsetY;
                         }
-                        if (!legacyTileVisible(runner, tile, offsetX, offsetY)) continue;
+                        if (!legacyTileVisible(tileCull, tile, offsetX, offsetY)) continue;
                         // Find the matching RuntimeLayerElement so we can honor per-element visibility
                         RuntimeLayerElement* tileEl = nullptr;
                         repeat(tileElementCount, n) {
@@ -2103,7 +2103,7 @@ static void initRoom(Runner* runner, int32_t roomIndex) {
         { extern void DataWin_loadRoomPayloadSized(DataWin*, int32_t); DataWin_loadRoomPayloadSized(dataWin, roomIndex); }
     }
 
-    SavedRoomState* savedState = &runner->savedRoomStates[roomIndex];
+    SavedRoomState* savedState = FreewinsRoom_entry(runner, roomIndex); // the state, or only its flag (at this file's end)
 
     // Kept so carried persistent instances can be re-homed onto the new room's layer with the same name.
     Room* previousRoom = runner->currentRoom;
@@ -2536,17 +2536,17 @@ static void cleanupState(Runner* runner) {
 
     // Free saved room states
     if (runner->savedRoomStates != nullptr) {
-        repeat(runner->dataWin->room.count, i) {
-            SavedRoomState* state = &runner->savedRoomStates[i];
-            int32_t savedCount = (int32_t) arrlen(state->instances);
-            repeat(savedCount, j) {
-                hmdel(runner->instancesById, state->instances[j]->instanceId);
-                Instance_free(state->instances[j]);
-            }
-            arrfree(state->instances);
-            hmfree(state->tileLayerMap);
-            freeRuntimeLayersArray(&state->runtimeLayers);
-        }
+        // A room's state is allocated on first use (FreewinsRoom_entry and FreewinsRoom_persist, at this file's end).
+        // FreewinsRoom_free frees the rooms' states there are, in room order, as this loop did for every room: each
+        // state's saved instances leave instancesById and are freed, then its tile layer map, its runtime layers and
+        // the state itself. Then the table of pointers and flags goes.
+        FreewinsRoom_free(runner);
+
+
+
+
+
+
         free(runner->savedRoomStates);
     }
     runner->savedRoomStates = nullptr;
@@ -2566,7 +2566,7 @@ static void cleanupState(Runner* runner) {
         DsMapEntry* map = runner->dsMapPool[i];
         if (map != nullptr) {
             repeat(shlen(map), j) {
-                free(map[j].key);
+                FreewinsMap_freeKey(map[j].key);
                 RValue_free(&map[j].value);
             }
             shfree(map);
@@ -2779,7 +2779,7 @@ void Runner_reset(Runner* runner) {
     runner->currentRoomIndex = -1;
     runner->currentRoomOrderPosition = -1;
     runner->nextInstanceId = runner->dataWin->gen8.lastObj + 1; REACH_GATE_HOOK(ReachGate_onReset(runner));
-    runner->savedRoomStates = (SavedRoomState *)safeCalloc(runner->dataWin->room.count, sizeof(SavedRoomState));
+    runner->savedRoomStates = FreewinsRoom_alloc(runner->dataWin->room.count); // a pointer and a flag a room (this file's end)
     runner->nextLayerId = 1;
     runner->audioSystem->vtable->stopAll(runner->audioSystem);
 
@@ -4568,7 +4568,7 @@ static void dispatchOutsideViewEvents(Runner* runner, int32_t viewIndex) {
 }
 
 static void persistRoomState(Runner* runner, int32_t roomIndex) {
-    SavedRoomState* state = &runner->savedRoomStates[roomIndex];
+    SavedRoomState* state = FreewinsRoom_persist(runner, roomIndex); // allocated on first use (at this file's end)
 
     // Free any previously saved instances (from an earlier visit)
     int32_t prevSavedCount = (int32_t) arrlen(state->instances);
@@ -4857,7 +4857,7 @@ static void dispatchSpriteMessages(Runner* runner, PendingSpriteMessage* pending
         mapPtr = &runner->dsMapPool[mapId];
         if (*mapPtr != nullptr) {
             repeat(shlen(*mapPtr), j) {
-                free((*mapPtr)[j].key);
+                FreewinsMap_freeKey((*mapPtr)[j].key);
                 RValue_free(&(*mapPtr)[j].value);
             }
             shfree(*mapPtr);
@@ -5080,7 +5080,7 @@ static void stepFrame(Runner* runner) {
         }
     }
 
-    RUNNER_PHASE(runner, "<runner: input>");
+    RUNNER_PHASE(runner, "<runner: input>"); FW_T(fwS0);
     RunnerKeyboardState* kb = runner->keyboard;
     for (int32_t key = 0; GML_KEY_COUNT > key; key++) {
         if (kb->keyDown[key]) {
@@ -5100,12 +5100,12 @@ static void stepFrame(Runner* runner) {
 
     if (RunnerKeyboard_check(kb, VK_NOKEY)) Runner_executeEventForAll(runner, EVENT_KEYBOARD, VK_NOKEY);
     if (RunnerKeyboard_checkPressed(kb, VK_NOKEY)) Runner_executeEventForAll(runner, EVENT_KEYPRESS, VK_NOKEY);
-    if (RunnerKeyboard_checkReleased(kb, VK_NOKEY)) Runner_executeEventForAll(runner, EVENT_KEYRELEASE, VK_NOKEY);
+    if (RunnerKeyboard_checkReleased(kb, VK_NOKEY)) Runner_executeEventForAll(runner, EVENT_KEYRELEASE, VK_NOKEY); FW_ACC(0, fwS0); FW_T(fwS1);
 
     // Tick timelines
-    tickTimelines(runner);
+    tickTimelines(runner); FW_ACC(1, fwS1); FW_T(fwS2);
 
-    dispatchMouseEvents(runner);
+    dispatchMouseEvents(runner); FW_ACC(2, fwS2);
 
     // Execute Normal Step for all instances
     RUNNER_PHASE(runner, "<runner: normal step>");
@@ -5201,7 +5201,7 @@ static void stepFrame(Runner* runner) {
             mapPtr = &runner->dsMapPool[mapId];
             if (*mapPtr != nullptr) {
                 repeat(shlen(*mapPtr), j) {
-                    free((*mapPtr)[j].key);
+                    FreewinsMap_freeKey((*mapPtr)[j].key);
                     RValue_free(&(*mapPtr)[j].value);
                 }
                 shfree(*mapPtr);
@@ -5231,7 +5231,7 @@ static void stepFrame(Runner* runner) {
         mapPtr = &runner->dsMapPool[mapId];
         if (*mapPtr != nullptr) {
             repeat(shlen(*mapPtr), j) {
-                free((*mapPtr)[j].key);
+                FreewinsMap_freeKey((*mapPtr)[j].key);
                 RValue_free(&(*mapPtr)[j].value);
             }
             shfree(*mapPtr);
@@ -5264,7 +5264,7 @@ static void stepFrame(Runner* runner) {
             mapPtr = &runner->dsMapPool[mapId];
             if (*mapPtr != nullptr) {
                 repeat(shlen(*mapPtr), j) {
-                    free((*mapPtr)[j].key);
+                    FreewinsMap_freeKey((*mapPtr)[j].key);
                     RValue_free(&(*mapPtr)[j].value);
                 }
                 shfree(*mapPtr);
@@ -5293,9 +5293,9 @@ static void stepFrame(Runner* runner) {
     // Update view following
     updateViews(runner);
 
-    RUNNER_PHASE(runner, "<runner: cleanup>");
+    RUNNER_PHASE(runner, "<runner: cleanup>"); FW_T(fwS3);
     Runner_cleanupDestroyedInstances(runner);
-    Runner_sweepDeadStructs(runner);
+    Runner_sweepDeadStructs(runner); FW_ACC(3, fwS3);
 
     // Measure fps builtin
     if (nowNanos() - runner->fpsWindowStartNanos >= (uint64_t)1000000000) {
@@ -6246,9 +6246,9 @@ static __attribute__((noinline, section(".text.late.utkill"))) bool utkRunDraw(R
 // before: the first not drawn by utkRunDraw, the rest back in the loop. Returns the next i, or -1 when inst's draw
 // isn't the run's (the run is over and inst goes the loop's way, as utkRunDraw's false).
 #define UTK_BATCH 64
-static __attribute__((noinline, section(".text.late.utkill"))) int32_t utkRunBatch(Runner* runner, Instance* inst, UtkPlainRun* run, int32_t i,
+static __attribute__((noinline, section(".text.late.utflpk"))) int32_t utflTurnBatch(Runner* runner, Instance* inst, UtkPlainRun* run, int32_t i, int32_t drawableCount); static __attribute__((noinline, section(".text.late.utkill"))) int32_t utkRunBatch(Runner* runner, Instance* inst, UtkPlainRun* run, int32_t i,
                                                                                     int32_t drawableCount) {
-    if (!utkSamePlain(run, inst)) {
+    if (0 > run->objectIndex) return utflTurnBatch(runner, inst, run, i, drawableCount); if (!utkSamePlain(run, inst)) {
         run->on = false;
         return -1;
     }
@@ -6284,9 +6284,9 @@ static __attribute__((noinline, section(".text.late.utkill"))) int32_t utkRunBat
 // An armed draw that doesn't prove plain stops the object's arms for the frame only the second time: the first draw
 // of an item smart smoothing hasn't judged yet goes the full way (utkCoarse), which judges it, so the next instance
 // with that item can prove plain. Monster dust's pixels show a new subimage each frame for their first 12 frames.
-static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawArmed(Runner* runner, Instance* inst, const Instance* next,
+static __attribute__((noinline, section(".text.late.utflpk"))) bool utflTurnKey(Runner* runner, const Instance* inst, const Instance* next, UtkPlainRun* run); static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawArmed(Runner* runner, Instance* inst, const Instance* next,
                                                                                   UtkPlainRun* run) {
-    bool arm = false;
+    bool arm = (utkBits((float) inst->imageAngle) << 1) != 0 && inst->spriteIndex == next->spriteIndex && !utkSameDraw(inst, next) && utflTurnKey(runner, inst, next, run);
     if (utkSameDraw(inst, next)) {
         arm = !utkHasDrawEvent(runner, inst->objectIndex);
         if (arm) utkPlainKey(run, inst);
@@ -6318,13 +6318,13 @@ static __attribute__((noinline, section(".text.late.utswarm"))) void utswDrawSpa
     const UtswPixel* p = Utsw_span(d, &n, &inst);
     run->on = false;
     if (n == 0 || !inst->active || !inst->visible) return;
-    float xy[2 * UTK_BATCH];
+    float xy[2 * UTK_BATCH]; p += n - 1; // drawn newest (last) first, as the list orders equal depths (utorder)
     int32_t k = 0;
     while (n > k) {
-        Utsw_place(inst, &p[k]);
-        int32_t sub = (int32_t) p[k].imageIndex;
+        Utsw_place(inst, &p[-k]);
+        int32_t sub = (int32_t) p[-k].imageIndex;
         // utkDrawArmed: arm when the next pixel has the same draw (no Draw event: swBind's event check)
-        bool arm = n > k + 1 && (int32_t) p[k + 1].imageIndex == sub && inst->objectIndex != run->noRunObject &&
+        bool arm = n > k + 1 && (int32_t) p[-(k + 1)].imageIndex == sub && inst->objectIndex != run->noRunObject &&
                    runner->renderer != nullptr;
         if (arm) {
             utkPlainKey(run, inst);
@@ -6340,22 +6340,22 @@ static __attribute__((noinline, section(".text.late.utswarm"))) void utswDrawSpa
         }
         k++;
         // utkRunBatch for the run's next pixels (all the run's draw but the position)
-        while (run->on && n > k && (int32_t) p[k].imageIndex == sub) {
+        while (run->on && n > k && (int32_t) p[-k].imageIndex == sub) {
             int32_t m = 0;
-            while (UTK_BATCH > m && n > k + m && (int32_t) p[k + m].imageIndex == sub) {
-                xy[2 * m] = p[k + m].x, xy[2 * m + 1] = p[k + m].y;
+            while (UTK_BATCH > m && n > k + m && (int32_t) p[-(k + m)].imageIndex == sub) {
+                xy[2 * m] = p[-(k + m)].x, xy[2 * m + 1] = p[-(k + m)].y;
                 m++;
             }
             int32_t got = CtrUtk_plainBatch(runner->renderer, xy, m);
             if (StateHash_hashing()) {
                 for (int32_t g = 0; got > g; g++) {
-                    Utsw_place(inst, &p[k + g]);
+                    Utsw_place(inst, &p[-(k + g)]);
                     utkHashRunDraw(runner, inst);
                 }
             }
             k += got;
             if (got != m) {
-                Utsw_place(inst, &p[k]);
+                Utsw_place(inst, &p[-k]);
                 utkRunDraw(runner, inst, run);
                 k++;
             }
@@ -6451,7 +6451,7 @@ static inline __attribute__((always_inline)) bool utkKeepTry(Runner* runner) {
                     break;
                 }
             }
-            if (0 > at || (int32_t) live[at]->instanceId != d->order) continue;
+            if (0 > at || UTORDER_KEY(live[at]) != d->order) continue;
             if (seen[at]) return false;
             seen[at] = 1;
             found++;
@@ -6474,14 +6474,14 @@ static inline __attribute__((always_inline)) bool utkKeepTry(Runner* runner) {
         if (pool[p].used && pool[p].automaticDraw) particles--;
     }
     if (particles != 0) return false;
-
-    // The new instances, in runner->instances order, sorted, merged in
+    // The new instances, sorted, merged in: newest first under utorder (keys go down), so a batch is in order
     int32_t added = liveCount - found;
     arrsetlen(runner->cachedDrawables, kept + added);
     list = runner->cachedDrawables;
     Drawable* tail = &list[kept];
     int32_t a = 0;
-    repeat(liveCount, i) {
+    repeat(liveCount, n) {
+        int32_t i = UTORDER_ADD_AT(liveCount, n);
         if (seen[i]) continue;
         Instance* inst = live[i];
         Drawable* d = &tail[a++];
@@ -6489,7 +6489,7 @@ static inline __attribute__((always_inline)) bool utkKeepTry(Runner* runner) {
         d->type = DRAWABLE_INSTANCE;
         d->depth = inst->depth;
         d->instance = inst;
-        d->order = (int32_t) inst->instanceId;
+        d->order = UTORDER_KEY(inst);
         d->objectIndex = inst->objectIndex;
     }
     for (int32_t j = 1; added > j; j++) {
@@ -6514,7 +6514,7 @@ static inline __attribute__((always_inline)) bool utkKeepTry(Runner* runner) {
             else list[w--] = t[b--];
         }
     }
-    runner->drawableListStructureDirty = false;
+    runner->drawableListStructureDirty = UTORDER_KEPT(runner);
     return true;
 }
 
@@ -6529,7 +6529,7 @@ bool Utk_keepDrawList(Runner* runner) {
 
 // rebuildDrawableCacheIfDirty, keeping the list when it can (a depth change still takes the sort pass after a keep)
 static __attribute__((noinline, section(".text.late.utkill"))) void utkRebuildIfDirty(Runner* runner) {
-    if (runner->drawableListStructureDirty) Utk_keepDrawList(runner);
+    UTORDER_KEEP(runner); // the keep (or the full rebuild by key, utorder) if the structure changed
     rebuildDrawableCacheIfDirty(runner);
 }
 
@@ -6598,20 +6598,9 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawRoom(
         runner->drawDepth = d->depth;
 
         if (d->type == DRAWABLE_TILE) {
+            // The whole run of tiles from here, as drawRoom draws it (drawLegacyTileRun; utkDrawableKey is its key).
             run.on = false;
-            if (runner->renderer != nullptr) {
-                RoomTile* tile = &room->tiles[d->tileIndex];
-                // Skip tiles whose layer was hidden via tile_layer_hide().
-                ptrdiff_t layerIdx = hmgeti(runner->tileLayerMap, tile->tileDepth);
-                if (layerIdx >= 0 && !runner->tileLayerMap[layerIdx].value.visible) continue;
-                float offsetX = 0.0f, offsetY = 0.0f;
-                if (layerIdx >= 0) {
-                    offsetX = runner->tileLayerMap[layerIdx].value.offsetX;
-                    offsetY = runner->tileLayerMap[layerIdx].value.offsetY;
-                }
-                if (!legacyTileVisible(runner, tile, offsetX, offsetY)) continue;
-                Renderer_drawTile(runner->renderer, tile, offsetX, offsetY);
-            }
+            if (runner->renderer != nullptr) i = drawLegacyTileRun(runner, room, i, drawableCount, &lastProcessedDrawKey);
         } else if (d->type == DRAWABLE_INSTANCE) {
             Instance* inst = d->instance;
             if (d->layerOrder != 0) continue;
@@ -6662,6 +6651,15 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawRoom(
     // Draw foreground backgrounds (in front of instances, behind GUI)
     drawGMS1Backgrounds(runner, true);
 }
+// utflames (tilerun): utkDrawRoom's tile branch is a call to drawLegacyTileRun now, 64 B shorter; these zero bytes
+// after it in .text.late.utkill keep the late code after it where it was. Never executed or referenced. The same on Old
+// and New (GCC 16.1.0 Release).
+#if defined(__GNUC__)
+#define TILERUN_UTK_PAD ".space 64"
+// utkDrawRoomTail (these 64 B) went in argcheck's UT late-text reclaim, a lead-ruled layout event;
+// the late code after it moved down (tools/analysis/check_shrink_layout.py). Lines kept: __LINE__.
+
+#endif
 #endif
 #if defined(__3DS__) && defined(NDEBUG) && !defined(ENABLE_VM_GML_PROFILER) && defined(ENABLE_WAD16)
 // utdust, retained slots: Runner_cleanupDestroyedInstances and stepFrame are shorter now that their destroyed-
@@ -6741,4 +6739,329 @@ DRSTEP_LATE void Runner_clearInstanceRefsLate(Runner* runner, uint32_t instanceI
 __asm__(".pushsection .text.Runner_destroyInstance,\"ax\",%progbits\n.subsection 1\n.space " DRSTEP_STR(DRSTEP_DESTROY_SLOT_PAD)
         "\n.popsection\n");
 #endif
+#endif
+
+// A run of consecutive tiles in the draw list, from the one drawRoom (or utkDrawRoom) just took (i - 1): its tile
+// branch, moved here.
+// Nothing between two tiles runs GML or touches the draw list or the matrices, so for the whole run the tile layer
+// map and the view stay as they are: a depth's lookup is kept until the depth changes, and the view rectangle
+// (legacyTileVisible's test) is worked out once. Each tile is drawn at its own draw depth (runner->drawDepth, which
+// the renderer's stereo depth reads), as the loop sets it. Returns the cursor past the run, with the last tile's key
+// set as the loop would have.
+static TILERUN_LATE int32_t drawLegacyTileRun(Runner* runner, Room* room, int32_t i, int32_t drawableCount, DrawKey* lastProcessedDrawKey) {
+    float rect[4];
+    const float* cull = Runner_visibleWorldRect(runner, &rect[0], &rect[1], &rect[2], &rect[3]) ? rect : nullptr;
+    Drawable* d = &runner->cachedDrawables[i - 1];
+    int32_t depth = room->tiles[d->tileIndex].tileDepth;
+    ptrdiff_t layerIdx = hmgeti(runner->tileLayerMap, depth);
+    Drawable* first = d;
+    while (true) {
+        RoomTile* tile = &room->tiles[d->tileIndex];
+        if (tile->tileDepth != depth) {
+            depth = tile->tileDepth;
+            layerIdx = hmgeti(runner->tileLayerMap, depth);
+        }
+        // Tiles whose layer was hidden via tile_layer_hide() are skipped here (not in the cache) so toggling layer
+        // visibility doesn't invalidate.
+        if (layerIdx < 0 || runner->tileLayerMap[layerIdx].value.visible) {
+            float offsetX = 0.0f, offsetY = 0.0f;
+            if (layerIdx >= 0) {
+                offsetX = runner->tileLayerMap[layerIdx].value.offsetX;
+                offsetY = runner->tileLayerMap[layerIdx].value.offsetY;
+            }
+            if (legacyTileVisible(cull, tile, offsetX, offsetY)) {
+#ifdef ENABLE_VM_TRACING
+                // Trace tile drawing if requested
+                if (shlen(runner->vmContext->tilesToBeTraced) > 0) {
+                    DataWin* dataWin = runner->dataWin;
+                    const char* bgName = (tile->backgroundDefinition >= 0 && dataWin->bgnd.count > (uint32_t) tile->backgroundDefinition) ? dataWin->bgnd.backgrounds[tile->backgroundDefinition].name : "<none>";
+                    const char* roomName = room->name;
+
+                    bool shouldTrace = shgeti(runner->vmContext->tilesToBeTraced, "*") != -1 || shgeti(runner->vmContext->tilesToBeTraced, bgName) != -1 || shgeti(runner->vmContext->tilesToBeTraced, roomName) != -1;
+
+                    if (shouldTrace) {
+                        int32_t tpagIndex = Renderer_resolveObjectTPAGIndex(dataWin, tile);
+                        if (tpagIndex >= 0) {
+                            TexturePageItem* tpag = &dataWin->tpag.items[tpagIndex];
+                            logInfo("Runner: [%s] Drawing tile #%d bg=%s(%d) tpag(srcX=%d srcY=%d srcW=%d srcH=%d tgtX=%d tgtY=%d bndW=%d bndH=%d page=%d) tile(srcX=%d srcY=%d w=%u h=%u) at pos=(%d,%d) depth=%d\n", roomName, d->tileIndex, bgName, tile->backgroundDefinition, tpag->sourceX, tpag->sourceY, tpag->sourceWidth, tpag->sourceHeight, tpag->targetX, tpag->targetY, tpag->boundingWidth, tpag->boundingHeight, tpag->texturePageId, tile->sourceX, tile->sourceY, tile->width, tile->height, tile->x, tile->y, tile->tileDepth);
+
+                            // Warn if tile source rect exceeds TPAG content bounds
+                            if ((uint32_t) (tile->sourceX + tile->width) > (uint32_t) tpag->sourceWidth || (uint32_t) (tile->sourceY + tile->height) > (uint32_t) tpag->sourceHeight) {
+                                logWarn("Runner: [%s] Tile #%d source rect (%d,%d %ux%u) exceeds TPAG content bounds (%dx%d)\n", roomName, d->tileIndex, tile->sourceX, tile->sourceY, tile->width, tile->height, tpag->sourceWidth, tpag->sourceHeight);
+                            }
+                        } else {
+                            logInfo("Runner: [%s] Drawing tile #%d bg=%s(%d) tpag=UNRESOLVED tile(srcX=%d srcY=%d w=%u h=%u) at pos=(%d,%d) depth=%d\n", roomName, d->tileIndex, bgName, tile->backgroundDefinition, tile->sourceX, tile->sourceY, tile->width, tile->height, tile->x, tile->y, tile->tileDepth);
+                        }
+                    }
+                }
+#endif
+                Renderer_drawTile(runner->renderer, tile, offsetX, offsetY);
+            }
+        }
+        if (i >= drawableCount || runner->cachedDrawables[i].type != DRAWABLE_TILE) break;
+        d = &runner->cachedDrawables[i++];
+        runner->drawDepth = d->depth;
+    }
+    if (d != first) *lastProcessedDrawKey = drawableKey(d);
+    return i;
+}
+
+// ===[ Turned runs (utflowey) ]===
+// Mettaton's opera (room_fire_operatest) holds hundreds of obj_cherrypetal instances in a row of the draw list (one
+// made each frame, none destroyed): one object with no Draw event, the same sprite, scale, blend and alpha, but each
+// with its own image_angle, so utkSameDraw never armed a run and every petal went the whole way: drawInstanceNormally's
+// event look-up, Renderer_drawSelf (the subimage's modulo), the vtable's wrappers (smalltext, pixgrid, boxedge, e5x)
+// and utkDrawSprite's checks and page look-up, about 2.5 us a draw on Azahar before utkEmit.
+// A turned run is a run (utkDrawArmed, utkRunBatch) whose draws differ in the angle too, with the same proof: the
+// armed draw goes the full way and CtrUtk_plainReady says it reached utkDrawSprite's plain draw with exactly the
+// runner's arguments; then each later instance is drawn by CtrUtk_turnedAt, CtrUtk_plainAt's way with its own angle in
+// the run's UtkPlain. On that way the angle reaches nothing but utkEmit: every wrapper in front tests it only against
+// 0 (smalltext's Crisp soul and krTpag, cmdlabel's labels, boxedge's fit, which only acts above 2.5x, refused by
+// CtrUtk_plainReady anyway), Renderer_drawSpriteExt passes it on as it is, and utkDrawSprite and its body only pass it
+// on (utkRun.fast is off for a turned armed draw, so no steady or fast draw). So the run takes only angles that aren't
+// +-0, the armed one included, and each wrapper decides every draw of the run as it decided the armed one. The run's
+// key is utkPlainKey's with the object index stored as ~objectIndex (negative): utkSamePlain never matches it,
+// utkRunBatch hands it here, and the next utkPlainKey ends it. Each draw sets the drawable's depth and
+// drawInstanceNormally's context as the loop and utkRunDraw do; the state hash gets the run draw record from the runner
+// (utkHashRunDraw, with the instance's own angle). A draw CtrUtk_turnedAt can't do ends the run and goes back to the
+// loop, which draws it the full way (its object is then noRunObject). No code runs, so nothing marks the list dirty.
+#if defined(UTK_PLAIN_RUNS)
+bool CtrUtk_turnedAt(Renderer* renderer, float x, float y, float angleDeg); bool CtrUtk_turnedFast(Renderer* renderer, float x, float y, float angleDeg); bool CtrUtk_turnedKept(float x, float y, float angleDeg);
+
+// Whether q's default draw is the turned run's but for the position and an angle that isn't +-0.
+static inline __attribute__((always_inline)) bool utflTurnSame(const UtkPlainRun* run, const Instance* q) {
+    return ~run->objectIndex == q->objectIndex && run->spriteIndex == q->spriteIndex && run->subimg == (int32_t) q->imageIndex &&
+           run->layer == q->layer && run->xscale == utkBits((float) q->imageXscale) && run->yscale == utkBits((float) q->imageYscale) &&
+           (utkBits((float) q->imageAngle) << 1) != 0 && run->blend == q->imageBlend && run->alpha == utkBits((float) q->imageAlpha);
+}
+
+// utkDrawArmed's arm when next's draw isn't inst's: whether it is but for the angle (neither +-0) and the object has no
+// Draw event, and then the turned run's key is kept. An object with a Draw event is noRunObject, as utkDrawArmed's.
+bool utflTurnKey(Runner* runner, const Instance* inst, const Instance* next, UtkPlainRun* run) {
+    if (0 > inst->objectIndex || inst->spriteIndex != next->spriteIndex || (int32_t) inst->imageIndex != (int32_t) next->imageIndex ||
+        inst->layer != next->layer || utkBits((float) inst->imageXscale) != utkBits((float) next->imageXscale) ||
+        utkBits((float) inst->imageYscale) != utkBits((float) next->imageYscale) || inst->imageBlend != next->imageBlend ||
+        utkBits((float) inst->imageAlpha) != utkBits((float) next->imageAlpha) || (utkBits((float) inst->imageAngle) << 1) == 0 ||
+        (utkBits((float) next->imageAngle) << 1) == 0) {
+        return false;
+    }
+    if (utkHasDrawEvent(runner, inst->objectIndex)) {
+        run->noRunObject = inst->objectIndex;
+        return false;
+    }
+    utkPlainKey(run, inst);
+    run->objectIndex = ~inst->objectIndex;
+    return true;
+}
+
+// utkRunBatch for a turned run, from inst (the drawable before i): inst and each instance after it that the loop would
+// give the run (instances of the run's draw, skipping the inactive and invisible ones between them), drawn in order.
+// Returns the next i: after the last one drawn, or at one CtrUtk_turnedAt couldn't draw (the run is over and the loop
+// draws it). -1 when inst's draw isn't the run's or inst couldn't be drawn (the run is over and inst goes the loop's way).
+int32_t utflTurnBatch(Runner* runner, Instance* inst, UtkPlainRun* run, int32_t i, int32_t drawableCount) {
+    if (!utflTurnSame(run, inst)) {
+        run->on = false;
+        return -1;
+    }
+    const Drawable* list = runner->cachedDrawables;
+    VMContext* ctx = runner->vmContext;
+    Instance* savedInstance = ctx->currentInstance;
+    int32_t savedEventType = ctx->currentEventType;
+    int32_t at = i - 1;
+    Instance* q = inst;
+    while (true) {
+        runner->drawDepth = list[at].depth; float qx = (float) q->x, qy = (float) q->y, qa = (float) q->imageAngle;
+        bool kept = at != i - 1 && CtrUtk_turnedKept(qx, qy, qa); // a later draw the kept pre-cull drops: nothing else
+        if (!kept) ctx->currentInstance = q, ctx->currentEventType = EVENT_DRAW;
+        bool drawn = kept || CtrUtk_turnedFast(runner->renderer, qx, qy, qa);
+        ctx->currentInstance = savedInstance;
+        ctx->currentEventType = savedEventType;
+        if (!drawn) {
+            run->on = false;
+            run->noRunObject = q->objectIndex;
+            return at == i - 1 ? -1 : at;
+        }
+        if (StateHash_hashing()) utkHashRunDraw(runner, q);
+        int32_t j = at + 1;
+        q = nullptr;
+        for (; drawableCount > j; j++) {
+            const Drawable* e = &list[j];
+            if (e->type != DRAWABLE_INSTANCE || e->layerOrder != 0 || UTSW_IS_SPAN(e)) break;
+            if (!e->instance->active || !e->instance->visible) continue;
+            if (utflTurnSame(run, e->instance)) q = e->instance;
+            break;
+        }
+        if (q == nullptr) return at + 1;
+        at = j;
+    }
+}
+#endif
+
+// ===[ Draw passes with no instance, or one, that can answer (freewins) ]===
+// fireDrawSubtype runs a Draw subtype's event on the draw list's instances, in the list's order, whose object (itself
+// or a parent) has that event. Every instance in runner->instances is in instancesByExactObject under its current
+// object index from its creation (or its room's load, its return as a persistent, instance_change, the dust swarm's
+// materialize) until the cleanup after it is destroyed: destroyed, deactivated and invisible instances stay there until
+// then (the cleanup runs in the step, never in a draw), and the draw list is built from runner->instances, each
+// instance once, and is not rebuilt during a pass. The dust swarm's run entries point at prototype instances outside
+// those lists, of objects with no parent and no event but Create, Step and Other (z_utkill_swarm.c's binds), so never a
+// Draw responder. The slot's responder entries (event_table.c, pass 3) are exactly the objects whose resolved event for
+// the slot exists, and the scan's lookup reads the instance's own object. So an entry does anything (runs the event,
+// or counts it skipped) only if its instance is in one of those objects' lists at that moment, and nothing changes
+// before the first entry that does. drawPassFirst returns the entry fireDrawSubtype's scan starts at (low word) and
+// the entry past which drawPassMore is asked whether to go on (high word, -1 for none):
+// - no instance in those lists: the end; the pass changes nothing but the draw depth, as its scan would;
+// - one instance: its entry (the end if the list has none), the one entry that can act first. Past it drawPassMore
+//   looks again: if that entry left those lists holding no instance or that one only, no later entry can act and the
+//   scan ends, else it goes on, as it would have;
+// - more, or more responder objects than the list has drawables (reading the lists would cost more): the start.
+#if defined(PLATFORM_3DS) && defined(__GNUC__)
+#define FREEWINS_LATE __attribute__((noinline, section(".text.late.freewins")))
+#else
+#define FREEWINS_LATE NOINLINE
+#endif
+#define DRAW_PASS_PART(start, stop) ((uint64_t) (uint32_t) (stop) << 32 | (uint32_t) (start))
+// The slot's one responder instance, nullptr when none, (Instance*) 1 when more.
+static FREEWINS_LATE Instance* drawPassOnly(Runner* runner, int32_t slot) {
+    const ResolvedEventTable* table = &runner->eventTable;
+    Instance* only = nullptr;
+    for (uint32_t at = table->bySlotStart[slot], end = table->bySlotStart[slot + 1]; end > at; at++) {
+        Instance** list = runner->instancesByExactObject[table->bySlot[at].concreteObjectId];
+        if (arrlen(list) == 0) continue;
+        if (arrlen(list) > 1 || only != nullptr) return (Instance*) 1;
+        only = list[0];
+    }
+    return only;
+}
+
+static FREEWINS_LATE uint64_t drawPassFirst(Runner* runner, int32_t slot, const Drawable* drawables, int32_t n) {
+    const ResolvedEventTable* table = &runner->eventTable;
+    if (table->bySlotStart[slot + 1] - table->bySlotStart[slot] > (uint32_t) n || runner->instancesByExactObject == nullptr)
+        return DRAW_PASS_PART(0, -1);
+#ifdef CTRPORT_FREEWINS
+    {
+        // freewins diagnostics: skip bit 8 turns this off (the A arm: the whole scan); the census counts the slot's
+        // responder instances (any state) per pass, timed on its own (dpdiag) so it can be taken out of drawsub.
+        extern bool FreeWins_skip(unsigned bit);
+        if (FreeWins_skip(8)) return DRAW_PASS_PART(0, -1);
+        FW_T(fwC0);
+        uint32_t total = 0, at = table->bySlotStart[slot], end = table->bySlotStart[slot + 1];
+        for (uint32_t k = at; end > k; k++)
+            total += (uint32_t) arrlen(runner->instancesByExactObject[table->bySlot[k].concreteObjectId]);
+        FW_N(18, end - at);
+        if (total == 1) FW_N(16, n);
+        else if (total > 1) FW_N(17, total);
+        else FW_N(15, n);
+        FW_ACC(19, fwC0);
+    }
+#endif
+    Instance* only = drawPassOnly(runner, slot);
+    if (only == (Instance*) 1) return DRAW_PASS_PART(0, -1);
+    for (int32_t k = 0; only != nullptr && n > k; k++) {
+        if (drawables[k].type == DRAWABLE_INSTANCE && drawables[k].instance == only) return DRAW_PASS_PART(k, k + 1);
+    }
+    return DRAW_PASS_PART(n, -1);
+}
+
+// After the one entry ran: whether a later entry can still run the event.
+static FREEWINS_LATE bool drawPassMore(Runner* runner, int32_t slot, const Instance* ran) {
+    Instance* now = drawPassOnly(runner, slot);
+    return now != nullptr && now != ran;
+}
+
+// fireDrawSubtype's draw skip class, as it was there, with the skipped events' count.
+static FREEWINS_LATE int32_t drawPassSkipClass(Runner* runner, const Instance* inst) {
+    int32_t skipClass = drawSkipClass(runner, inst);
+    if (skipClass == DRAW_SKIP_SKIP) runner->drawSkip.skippedEvents++;
+    return skipClass;
+}
+// fireDrawSubtype's split part (fireDrawSubtype.part.0) keeps main's size (660 B on every release target, nm -S)
+// and place with the draw skip class in drawPassSkipClass and the scan's bounds from drawPassFirst and drawPassMore,
+// so that nothing after it moves (proven by tools/analysis/check_freewins_layout.py).
+
+// Saved room states on first use (freewins, win 4). Runner_reset allocated a SavedRoomState (1,976 B) for every
+// room (UNDERTALE 336 rooms = 649 KB of heap, DELTARUNE chapter 5 487 KB), though only a persistent room ever keeps
+// anything in one. runner->savedRoomStates now holds one state pointer a room (nullptr until used), then one
+// "initialized" flag byte a room, and a state is allocated (zeroed, as Runner_reset's calloc left it) the first time
+// it is needed: when a persistent room is left (persistRoomState), or entered again after a visit that saved nothing.
+// Round 3's late code (this block and vm_builtins.c's FreewinsMap_*; z_btnprompt.c's Btnprompt_isSlot in
+// .text.freewins_r3_late, outside late_reserve.ld's .text.late.* catch-all) has its own section, placed after round 2's
+// late code so that nothing moves.
+#if defined(PLATFORM_3DS) && defined(__GNUC__)
+#define FREEWINS_ROOM_LATE __attribute__((noinline, section(".text.late.freewins3")))
+#else
+#define FREEWINS_ROOM_LATE NOINLINE
+#endif
+typedef char freewinsRoomInitializedFirst[offsetof(SavedRoomState, initialized) == 0 ? 1 : -1]; // FreewinsRoom_entry hands initRoom a flag byte as a state
+static inline uint8_t* freewinsRoomFlags(Runner* runner) {
+    return (uint8_t*) (runner->savedRoomStates + runner->dataWin->room.count);
+}
+static FREEWINS_ROOM_LATE void* freewinsRoomCalloc(size_t count, size_t size) {
+    return safeCalloc(count, size);
+}
+FREEWINS_ROOM_LATE SavedRoomState** FreewinsRoom_alloc(uint32_t count) {
+    return (SavedRoomState**) freewinsRoomCalloc(count, sizeof(SavedRoomState*) + 1);
+}
+FREEWINS_ROOM_LATE SavedRoomState* FreewinsRoom_persist(Runner* runner, int32_t roomIndex) {
+    SavedRoomState** states = runner->savedRoomStates;
+    if (states[roomIndex] == nullptr) {
+        states[roomIndex] = (SavedRoomState*) freewinsRoomCalloc(1, sizeof(SavedRoomState));
+        states[roomIndex]->initialized = freewinsRoomFlags(runner)[roomIndex] != 0;
+    }
+    return states[roomIndex];
+}
+// initRoom reads only "initialized" (it restores when the room is persistent and was entered before), then sets it.
+// So: the room's state when it will restore, else its flag byte, standing in for the state ("initialized" is its
+// first member, a bool). A state's flag and its byte agree: both are set when the room is entered.
+FREEWINS_ROOM_LATE SavedRoomState* FreewinsRoom_entry(Runner* runner, int32_t roomIndex) {
+    uint8_t* flag = &freewinsRoomFlags(runner)[roomIndex];
+    if (runner->dataWin->room.rooms[roomIndex].persistent && *flag != 0) return FreewinsRoom_persist(runner, roomIndex);
+    return (SavedRoomState*) (void*) flag;
+}
+// cleanupState: the states there are, in room order, as its loop freed every room's.
+FREEWINS_ROOM_LATE void FreewinsRoom_free(Runner* runner) {
+    SavedRoomState** states = runner->savedRoomStates;
+    repeat(runner->dataWin->room.count, i) {
+        SavedRoomState* state = states[i];
+        if (state == nullptr) continue;
+        int32_t savedCount = (int32_t) arrlen(state->instances);
+        repeat(savedCount, j) {
+            hmdel(runner->instancesById, state->instances[j]->instanceId);
+            Instance_free(state->instances[j]);
+        }
+        arrfree(state->instances);
+        hmfree(state->tileLayerMap);
+        freeRuntimeLayersArray(&state->runtimeLayers);
+        free(state);
+    }
+}
+// The functions that changed keep base's size and place (retained slots, proven by
+// tools/analysis/check_freewins_layout.py), so nothing after them moves: each one's padding is subsection 1 of its own
+// section, after its code and literal pool, outside its symbol size. Sizes by nm -S, the same on every release target:
+// initRoom 6,260 B = 6,240 + 20 (DELTARUNE 6,292 = 6,272 + 20), cleanupState 3,360 = 3,172 + 188 (DELTARUNE 3,716 =
+// 3,528 + 188), Runner_reset 580 = 516 + 64, Runner_handlePendingRoomChange (persistRoomState inlined) 1,092 = 1,088 + 4.
+#if defined(PLATFORM_3DS) && defined(__GNUC__)
+__asm__(".pushsection .text.initRoom,\"ax\",%progbits\n.subsection 1\n.space 20\n.popsection\n"
+        ".pushsection .text.cleanupState,\"ax\",%progbits\n.subsection 1\n.space 188\n.popsection\n"
+        ".pushsection .text.Runner_reset,\"ax\",%progbits\n.subsection 1\n.space 64\n.popsection\n"
+        ".pushsection .text.Runner_handlePendingRoomChange,\"ax\",%progbits\n.subsection 1\n.space 4\n.popsection\n");
+#endif
+#if defined(UTORDER_ON) && defined(UTK_PLAIN_RUNS)
+// utorder (credfix, ruling 2026-10-27; UNDERTALE on the 3DS): the draw list's structure brought up to date
+// with each instance entry's order its draw order key (UTORDER_KEY, platform/3ds/source/z_utorder.c). The keep
+// (Utk_keepDrawList) already orders by key; when it fails, rebuildDrawableCache's full rebuild (which orders instances
+// by id) runs here, then each instance entry takes its key, the list is sorted again (entries never tie) and the draw
+// ranks are recorded again. utkRebuildIfDirty calls it, and z_utorder.c before Runner_drawPre, drawPost and drawGUI,
+// so rebuildDrawableCache's full rebuild by id never stands in UNDERTALE (its sort-only pass still runs, on the keys
+// the list holds). A GameMaker 2 game leaves the failed keep's structure flag to rebuildDrawableCacheIfDirty.
+__attribute__((noinline, section(".text.late.utorder"))) void Utorder_keep(Runner* runner) {
+    if (!runner->drawableListStructureDirty || Utk_keepDrawList(runner)) return;
+    if (DataWin_isVersionAtLeast(runner->dataWin, 2, 0, 0, 0)) return;
+    rebuildDrawableCache(runner);
+    Drawable* list = runner->cachedDrawables;
+    int32_t count = (int32_t) arrlen(list);
+    repeat(count, i) if (list[i].type == DRAWABLE_INSTANCE) list[i].order = UTORDER_KEY(list[i].instance);
+    sortDrawables(runner, list, count);
+    repeat(count, i) if (list[i].type == DRAWABLE_INSTANCE) list[i].instance->drawRank = (int32_t) i;
+}
 #endif

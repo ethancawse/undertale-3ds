@@ -24,12 +24,18 @@
 #include "ctr_file_system.h"
 #include "ctr_frame_pacer.h"
 #include "ctr_gpu_queue.h"
+#ifdef CTRPORT_HEAP_PROFILE
+#include "ctr_heap_profile.h" // heap marks at the bench scene boundaries (heap builds only)
+#endif
+#line 27
 #include "ctr_log.h"
 #include "ctr_renderer.h"
 
 #include "ctr_benchromfs.h"
 #include "ctr_build_id.h" // CTRPORT_COMMIT
-static BenchScriptState benchPreTick(BenchScript*, Runner*); static void benchPreOpen(void); static BenchScriptState benchRoomsTick(BenchScript*, Runner*); static void benchRoomsOpen(void); static bool benchRoomsTakeShot(BenchScript*); static void benchfidRoomsOpen(void); static void benchfidRoomsCollect(Runner*); static void benchfidRoomsReport(void);
+#include "ctr_benchmark_rows.h"
+#line 32
+static BenchScriptState benchPreTick(BenchScript*, Runner*); static void benchPreOpen(void); static BenchScriptState benchRoomsTick(BenchScript*, Runner*); static void benchRoomsOpen(void); static bool benchRoomsTakeShot(BenchScript*); static void benchfidRoomsOpen(void); static void benchfidRoomsCollect(Runner*); static void benchfidRoomsReport(void); static void benchshownRoomsOpen(void); static void benchshownRoomsCollect(Runner*); static void benchshownRoomsReport(void);
 #define WARMUP_SECONDS 3.0
 #define MEASURE_SECONDS 20.0
 // With bench_frames (CtrDisplaySettings.benchFrames): game frames a scene settles for after it is ready, about the
@@ -786,6 +792,10 @@ static void computeResult(SceneResult* r) {
     r->smartBoxes = (double) (rs.smartBoxes - bench.statsAtStart.smartBoxes) / frames;
     r->smartPixels = (double) (rs.smartPixels - bench.statsAtStart.smartPixels) / frames;
     r->underruns = CtrAudioSystem_underruns((CtrAudioSystem*) bench.session.runner->audioSystem) - bench.underrunsAtStart;
+#ifdef CTRPORT_HEAP_PROFILE
+    CtrHeapProfile_mark("measure end");
+#endif
+#line 789
     r->heapPeakMB = (double) bench.heapPeak / (1024.0 * 1024.0);
     r->linearMinFreeMB = (double) bench.linearMinFree / (1024.0 * 1024.0);
     r->vramMinFreeKB = (double) bench.vramMinFree / 1024.0;
@@ -848,7 +858,7 @@ static void finish(void) {
     bench.phaseStart = nowNanos();
     bench.cursor = 0;
     bench.scroll = 0;
-    saveResults();
+    benchRowsSave();
     bench.finished = true;
     CtrLog_beginConsole();
     consoleSelect(bench.console);
@@ -1225,6 +1235,10 @@ static void startNextScene(void) {
     copyText(r.id, sizeof(r.id), scene->id);
     copyText(r.title, sizeof(r.title), scene->title);
     arrput(bench.results, r);
+#ifdef CTRPORT_HEAP_PROFILE
+    CtrHeapProfile_mark("scene start");
+#endif
+#line 1228
     void CtrBench_lateSceneStart(const char* format, ...); CtrBench_lateSceneStart("Bench: scene %s (%s)\n", scene->id, scene->title);
     if (sweep.on) sweepSavePosition("started", bench.queuePos == 0 ? sweepFirstTries + 1 : 1);
     if (scene->chapter > 0) {
@@ -1264,6 +1278,10 @@ static void resetMeasuring(void) {
     bench.underrunsAtStart = CtrAudioSystem_underruns((CtrAudioSystem*) runner->audioSystem);
     struct mallinfo mi = mallinfo();
     bench.heapPeak = (uint32_t) mi.uordblks;
+#ifdef CTRPORT_HEAP_PROFILE
+    CtrHeapProfile_mark("measure start");
+#endif
+#line 1267
     bench.linearMinFree = linearSpaceFree();
     bench.vramMinFree = vramSpaceFree();
     tour.warningsAtStart = CtrLog_warningCount();
@@ -1273,7 +1291,7 @@ static void beginMeasuring(void) {
     Runner* runner = bench.session.runner;
     SceneResult* r = currentResult();
     copyText(r->room, sizeof(r->room), runner->currentRoom != nullptr ? runner->currentRoom->name : "?");
-    benchfidRoomsOpen();
+    benchshownRoomsOpen();
     bench.phase = PHASE_MEASURE;
     bench.phaseStart = nowNanos();
     bench.measureStartFrame = runner->frameCount;
@@ -1291,7 +1309,7 @@ static void onAptEvent(APT_HookType hook, void* param) {
 }
 
 // Starts the scenes in bench.queue.
-static void beginTest(void) {
+static __attribute__((noinline)) void beginTest(void) {
     if (!bench.aptHooked) {
         aptHook(&bench.aptCookie, onAptEvent, nullptr);
         bench.aptHooked = true;
@@ -2154,7 +2172,7 @@ bool CtrBench_autorunList(const char* words, const char* source, PrintConsole* c
         logInfo("Bench: %s asks for a battle sweep (%s): %d battle(s), from %s\n", source, sweep.selection, (int) arrlen(bench.queue),
                 bench.scenes[bench.queue[0]].id);
         logInfo("Sweep columns: %s\n", sweepColumns);
-        beginTest();
+        benchRowsBegin();
         return true;
     }
     if (tourWanted) {
@@ -2165,7 +2183,7 @@ bool CtrBench_autorunList(const char* words, const char* source, PrintConsole* c
         logInfo("Bench: %s asks for a %s tour from chapter %ld %s %ld to chapter %ld %s %ld%s\n", source, tour.battles ? "battle" : "room",
                 (long) tour.chapter, tour.battles ? "encounter" : "room", (long) tour.room, (long) tour.lastChapter,
                 tour.battles ? "encounter" : "room", (long) tour.lastRoom, 0 > tour.lastRoom ? " (its last)" : "");
-        beginTest();
+        benchRowsBegin();
         return true;
     }
     if (arrlen(bench.queue) == 0) {
@@ -2173,7 +2191,7 @@ bool CtrBench_autorunList(const char* words, const char* source, PrintConsole* c
         return false;
     }
     logInfo("Bench: %s asks for %d scene(s)\n", source, (int) arrlen(bench.queue));
-    beginTest();
+    benchRowsBegin();
     return true;
 }
 
@@ -2246,7 +2264,7 @@ CtrBenchFrame CtrBench_beginFrame(u32 down, double frameMs) {
                 }
                 bench.autoDismiss = false;
                 bench.screenshots = false;
-                beginTest();
+                benchRowsBegin();
                 return BENCH_FRAME_PAUSE;
             }
             if (redraw) drawPicker();
@@ -2313,7 +2331,7 @@ CtrBenchFrame CtrBench_beginFrame(u32 down, double frameMs) {
     }
 
     Runner* runner = bench.session.runner;
-    BenchScriptState state = benchRoomsTick(bench.script, runner);
+    BenchScriptState state = benchRowsTick(bench.script, runner);
     if (benchRoomsTakeShot(bench.script)) CtrRenderer_requestScreenshot(bench.session.renderer);
     // Full captures happen before this frame's slot wait. Only the incoming
     // interval carries their I/O; Step/Draw/GPU are timed after the capture.
@@ -2505,3 +2523,11 @@ __attribute__((noinline, noipa, section(".text.late.smartcut"))) void CtrBench_l
 #endif
     if (0.0 < boxes) logInfo(fmt, id, boxes, pixels);
 }
+
+#include "ctr_benchmark_rows.inc"
+
+// Held-frame lines (stallfix rev 3): late code only, hooked by link-time wraps, so it goes last. Not in
+// DELTARUNE Old builds (CMakeLists.txt sets CTRPORT_BENCH_HELD with the wraps).
+#ifdef CTRPORT_BENCH_HELD
+#include "ctr_benchheld.inc"
+#endif

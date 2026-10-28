@@ -65,4 +65,14 @@
 #  error "You need to build Butterscotch with at least one WAD version enabled!"
 #endif
 
+// UNDERTALE's late-text reclaim (argcheck): code and keep-alive references only builds with WAD 17 (DELTARUNE,
+// and hosts) compile. One line each, so that no __LINE__ after them moves.
+#if defined(ENABLE_WAD17)
+#  define WAD17_ONLY(...) __VA_ARGS__
+#  define WAD17_NONE(...)
+#else
+#  define WAD17_ONLY(...)
+#  define WAD17_NONE(...) __VA_ARGS__
+#endif
+
 #endif /* _BS_WAD_VERSIONS_H_ */

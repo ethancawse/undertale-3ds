@@ -18,6 +18,8 @@ void CtrHeapProfile_init(void);
 void CtrHeapProfile_dump(const char* label, int top);
 // The first `count` frames of the call stack that allocated the block at `ptr`, if it is tracked.
 bool CtrHeapProfile_siteOf(const void* ptr, uint32_t* pcs, int count);
+// Logs the live heap bytes' peak since the last mark (and since boot), then starts a new window.
+void CtrHeapProfile_mark(const char* label);
 // Fragmentation census (heapfrag): the game entered another room. Logs the heap's free bytes, pieces and largest
 // free piece, the live blocks by size class and age in rooms, the blocks freed since the last room by size class and
 // age, and every few rooms writes a heap map with each block's birth room (capped in bytes).
@@ -27,6 +29,9 @@ static inline void CtrHeapProfile_roomChanged(int32_t roomIndex) {
     (void) roomIndex;
 }
 static inline void CtrHeapProfile_init(void) {}
+static inline void CtrHeapProfile_mark(const char* label) {
+    (void) label;
+}
 static inline bool CtrHeapProfile_siteOf(const void* ptr, uint32_t* pcs, int count) {
     (void) ptr;
     (void) pcs;
@@ -37,4 +42,12 @@ static inline void CtrHeapProfile_dump(const char* label, int top) {
     (void) label;
     (void) top;
 }
+#endif
+
+// Linear memory and VRAM frees (the allocations: ctr_memory_lock.h's HEAPPROF_NOTE_OTHER).
+#ifdef CTRPORT_HEAP_PROFILE
+void CtrHeapProfile_noteOtherFree(void* ptr);
+#define HEAPPROF_FREE_OTHER(p) CtrHeapProfile_noteOtherFree(p)
+#else
+#define HEAPPROF_FREE_OTHER(p) ((void) 0)
 #endif

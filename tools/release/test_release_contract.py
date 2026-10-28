@@ -157,6 +157,35 @@ class ReleaseContractTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('must precede', result.stderr)
 
+    def test_allocations_must_rise_with_the_version(self):
+        # A later prerelease at or below an earlier one's allocation would not install over it.
+        good = {'1.0.0-beta.1': '0.63.1', '1.0.0-beta.2': '0.63.2', '1.0.0-rc.1': '0.63.8', '1.1.0-alpha.1': '1.0.9'}
+        for allocations, message in ((good, None),
+                                     ({'1.0.0-beta.1': '0.63.1', '1.0.0-beta.2': '0.63.1'}, 'must rise'),
+                                     ({'1.0.0-beta.1': '0.63.2', '1.0.0-beta.10': '0.63.3', '1.0.0-beta.2': '0.63.1'},
+                                      'must rise'),
+                                     ({'1.0.0-beta.1': '0.63.1', '1.0.0-rc.1': '0.63.0'}, 'must rise'),
+                                     ({'1.0.0-beta.1': '0.63.1', '1.0.1-beta.1': '1.0.1'}, 'must precede'),
+                                     ({'1.0.0-beta.1': '0.63.1', '1.0.0': '0.63.2'}, 'not a prerelease')):
+            with self.subTest(allocations=allocations):
+                result = self.query_version('1.0.0-beta.1', allocations)
+                with tempfile.TemporaryDirectory(dir=ROOT / 'scratch') as directory:
+                    root = Path(directory)
+                    (root / 'docs/release').mkdir(parents=True)
+                    contract = json.loads((ROOT / 'docs/release/build-contract.json').read_text())
+                    contract['cia_prerelease_versions'] = allocations
+                    (root / 'docs/release/build-contract.json').write_text(json.dumps(contract))
+                    (root / 'VERSION').write_text('1.0.0-beta.1\n')
+                    if message is None:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn('1.0.0-beta.1|1.0.0|0.63.1|1009', result.stderr)
+                        self.assertEqual(release_contract.read(root)['cia_integer'], 1009)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(message, result.stderr)
+                        with self.assertRaisesRegex(ValueError, message):
+                            release_contract.read(root)
+
     def test_cia_allocation_overflow_fails(self):
         result = self.query_version('1.0.0-beta.1', {'1.0.0-beta.1': '0.63.16'})
         self.assertNotEqual(result.returncode, 0)

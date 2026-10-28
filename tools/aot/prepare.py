@@ -7,7 +7,7 @@ The game folder is --data, else $CTRPORT_UNDERTALE_DATA / $CTRPORT_DELTARUNE_DAT
 Steam library (steamapps/common/UNDERTALE or DELTARUNE). The PC install and the copy for the SD card have the same
 layout, so either works. Code is generated into DIR with gmlaot.py --selection tools/aot/selection/<game>.txt
 --target <target>; when the list, the generator's files and arguments, the target, what gmlaot.py reads from the
-engine sources and the data.win files are the same as last time (DIR/aot_inputs.txt), nothing is done. When tools/aot/selection/<game>-layout.txt is there (tools/aot/select.py layout), it says the order the
+engine sources and the data.win files are the same as last time (DIR/aot_inputs.txt), nothing is done. When tools/aot/selection/<game>-layout.txt is there (tools/aot/aot_select.py layout), it says the order the
 functions go in (gmlaot.py --layout).
 
 --late-numeric ENTRY explicitly generates an experimental separate numeric entry for single-table UNDERTALE.
@@ -272,7 +272,7 @@ def main(argv):
         return 0
     selection = selection_file(game, target, chapters)
     if chapters and not os.path.exists(selection):
-        print("AOT: --chapters needs %s (tools/aot/select.py rank --per-part)" % selection)
+        print("AOT: --chapters needs %s (tools/aot/aot_select.py rank --per-part)" % selection)
         return 2
     stamp = os.path.join(out, "aot_inputs.txt")
     runs = gmlaot_runs(game, target, found, out, selection, chapters, typed, late_numeric)

@@ -31,6 +31,24 @@ EXTRA_FILES = ("tools/release/verify_game.py", "tools/release/release_contract.p
 DIRECTORIES = pipeline.SOURCE_DIRS + ("tools/release/builder",)
 
 
+def opening_instructions(game, platform=None):
+    """Approved unsigned-beta wording (2026-10-26); name the actual launchers.
+
+    Checksum sidecars are optional release metadata, never a player setup step.
+    Wrapper packaging will substitute its EXE/app names when those exist.
+    """
+    lines = ["## Opening the builder",
+             "This beta builder is unsigned. Windows or macOS may warn you the first time you open it."]
+    if platform in (None, "windows"):
+        lines.append('Windows: Extract all files, then open %s-3ds-builder.cmd. '
+                     'If Windows shows "Windows protected your PC", choose "More info", then "Run anyway".' % game)
+    if platform in (None, "macos"):
+        lines.append('Mac: Unpack the download, then open %s-3ds-builder.command. '
+                     'If macOS blocks it, open System Settings > Privacy & Security, '
+                     'choose "Open Anyway", then "Open".' % game)
+    return "\n\n".join(lines) + "\n"
+
+
 def launcher(game, platform):
     if platform == "windows":
         return ("@echo off\r\nsetlocal\r\nset \"HERE=%~dp0tools\\release\\builder\"\r\n"
@@ -129,6 +147,8 @@ def package(root, output, game, platform, runtime=None, texprep=None, release_de
     suffix = {"windows": ".cmd", "linux": ".sh", "macos": ".command"}[platform]
     start = game + "-3ds-builder" + suffix
     files[start] = launcher(game, platform).encode("utf-8")
+    if platform in ("windows", "macos"):
+        files["README.md"] = opening_instructions(game, platform).encode("utf-8")
     stem = "%s-3ds-builder-%s-%s" % (game, version, platform)
     output.mkdir(parents=True, exist_ok=True)
     path = output / (stem + (".zip" if platform == "windows" else ".tar.gz"))
@@ -144,7 +164,7 @@ def package(root, output, game, platform, runtime=None, texprep=None, release_de
                 info.mode = 0o755 if rel == start or rel.endswith(".sh") or rel.startswith(BIN) else 0o644
                 t.addfile(info, io.BytesIO(data))
     sha = pipeline.sha256_file(path)
-    path.with_name(path.name + ".sha256").write_text(sha + "  " + path.name + "\n", encoding="ascii")
+    path.with_name(path.name + ".sha256").write_bytes((sha + "  " + path.name + "\n").encode("ascii"))
     return path
 
 

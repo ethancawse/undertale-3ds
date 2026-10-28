@@ -5,7 +5,7 @@
 #       UNDERTALE n3ds 0xDE170 CTR-H-UT3N    UNDERTALE o3ds 0xDE171 CTR-H-UT3O
 #       DELTARUNE n3ds 0xDE172 CTR-H-DR3N    DELTARUNE o3ds 0xDE173 CTR-H-DR3O
 #   APP_SYSTEM_MODE_EXT  CTRPORT_N3DS_MEMORY: 124MB (default) or 178MB
-#   APP_SYSTEM_MODE      CTRPORT_O3DS_MEMORY: 80MB (default), 72MB or 64MB
+#   APP_SYSTEM_MODE      DELTARUNE: CTRPORT_O3DS_MEMORY, 80MB (default), 72MB or 64MB; UNDERTALE: always 64MB
 #
 # Memory (application region):
 #   124MB  The normal New 3DS layout, what most homebrew .cias use: no reboot, every applet works.

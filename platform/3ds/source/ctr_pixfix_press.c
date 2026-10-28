@@ -71,10 +71,16 @@ PIXPRESS_TEXT void __wrap_CtrPacer_init(void) {
 
 void __real_CtrTextures_init(CtrTextureCache* cache, DataWin* dataWin, FileSystem* fileSystem, uint32_t budgetBytes);
 void __wrap_CtrTextures_init(CtrTextureCache* cache, DataWin* dataWin, FileSystem* fileSystem, uint32_t budgetBytes);
+void Repack_texturesInit(CtrTextureCache* cache, DataWin* dataWin, FileSystem* fileSystem, uint32_t budgetBytes);
 
 PIXPRESS_TEXT void __wrap_CtrTextures_init(CtrTextureCache* cache, DataWin* dataWin, FileSystem* fileSystem, uint32_t budgetBytes) {
     pixpress.count = 0;
+#ifndef CTRPORT_TARGET_O3DS
+    // repack (ctr_repack.inc in ctr_renderer.c) adds the extra pages there.
+    Repack_texturesInit(cache, dataWin, fileSystem, budgetBytes);
+#else
     __real_CtrTextures_init(cache, dataWin, fileSystem, budgetBytes);
+#endif
     for (uint32_t i = 0; dataWin->sprt.count > i; i++) {
         const Sprite* sp = &dataWin->sprt.sprites[i];
         if (sp->name == nullptr || strcmp(sp->name, pixpressName) != 0 || sp->width != 75 || sp->height != 38) continue;

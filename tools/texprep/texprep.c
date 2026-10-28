@@ -29,7 +29,16 @@ static int texprep_mkdir(const char* path, int mode) {
 #define fsync(fd) _commit(fd)
 #endif
 
+// The PC driver calls the original packer directly. Console-only game-thread
+// wrappers are included with that source, but this host link has no --wrap
+// support on every platform; bind their real calls to the original functions.
+#define __real_CtrPackWorker_poll CtrPackWorker_poll
+#define __real_CtrPack_isComplete CtrPack_isComplete
+#define __real_CtrPackWorker_setKeepPacked CtrPackWorker_setKeepPacked
 #include "ctr_texture_pack.c"
+#undef __real_CtrPackWorker_poll
+#undef __real_CtrPack_isComplete
+#undef __real_CtrPackWorker_setKeepPacked
 
 #include <stdlib.h>
 #include <string.h>

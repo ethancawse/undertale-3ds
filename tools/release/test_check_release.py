@@ -22,6 +22,39 @@ spec.loader.exec_module(gate)
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def test_product_selects_its_own_default_manifest(self):
+        self.assertEqual(gate.export_product(None, None), ('tools/release/manifest-ut.txt', 'undertale'))
+        for game, short in (('undertale', 'ut'), ('deltarune', 'dr')):
+            manifest = 'tools/release/manifest-' + short + '.txt'
+            self.assertEqual(gate.export_product(None, game), (manifest, game))
+            self.assertEqual(gate.export_product(manifest, None), (manifest, game))
+            self.assertEqual(gate.export_product(manifest, game), (manifest, game))
+            other = 'deltarune' if game == 'undertale' else 'undertale'
+            with self.assertRaisesRegex(ValueError, 'conflicts with'):
+                gate.export_product(manifest, other)
+            self.assertEqual(gate.export_product('custom.txt', game), ('custom.txt', game))
+        with self.assertRaisesRegex(ValueError, 'custom manifest needs --game'):
+            gate.export_product('custom.txt', None)
+
+    def test_game_only_cli_checks_the_matching_manifest_closure(self):
+        for game, short in (('undertale', 'ut'), ('deltarune', 'dr')):
+            with self.subTest(game=game), tempfile.TemporaryDirectory(dir=gate.ROOT / 'scratch') as directory:
+                root = Path(directory)
+                manifest = root / ('tools/release/manifest-' + short + '.txt')
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text('LICENSE\n')
+                with mock.patch.object(gate, 'ROOT', root), \
+                     mock.patch.object(sys, 'argv', ['check_release.py', '--game', game]), \
+                     mock.patch.object(gate, 'read_manifest', return_value=(['LICENSE'], {}, {})) as reader, \
+                     mock.patch.object(gate.import_closure, 'Repository'), \
+                     mock.patch.object(gate.import_closure, 'check', return_value={'missing': []}) as closure, \
+                     mock.patch.object(gate.generate_notices, 'generate', side_effect=ValueError('stop after closure')), \
+                     contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(gate.main(), 2)
+                reader.assert_called_once_with(manifest)
+                self.assertEqual(closure.call_args.args[1:], ({'LICENSE'}, game))
+                self.assertEqual(list((root / 'scratch').iterdir()), [])
+
     def test_release_refuses_stale_notices_before_creating_archive(self):
         with tempfile.TemporaryDirectory(dir=gate.ROOT / 'scratch') as directory:
             root = Path(directory)
@@ -96,6 +129,17 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn('flagged-game-names', self.rules(b'content', name='room_synthetic.txt'))
         findings = self.scan(b'mus_caseA mus_casea')
         self.assertEqual(findings[0]['evidence']['names'], ['mus_caseA', 'mus_casea'])
+
+    def test_working_name_only_in_the_old_sd_names(self):
+        word = 'delta' + 'tale'
+        for payload in (word, word.upper() + '_RENDER_TIMING', 'see ' + word + '-3ds', word.title() + ' builder'):
+            for encoding in ('utf-8', 'utf-16-le', 'utf-16-be'):
+                self.assertIn('internal-name', self.rules(payload.encode(encoding)))
+        self.assertIn('internal-name', self.rules(b'content', name='docs/' + word + '.md'))
+        for payload in ('"sdmc:/3ds/' + word + '"', '"' + word + '.ini";', 'settings.ini there is ' + word + '.ini.'):
+            self.assertEqual(self.rules(payload.encode()), set())
+        findings = self.scan('\n'.join(('a', word, 'b', word.upper() + '.ini2', '')).encode())
+        self.assertEqual(findings[0]['evidence'], {'count': 2, 'lines': [2, 4]})
 
     def test_opaque_containers_and_large_embedded_blobs(self):
         self.assertIn('nested-container', self.rules(b'PK\x03\x04hidden'))
@@ -307,10 +351,12 @@ class ReleaseGateTests(unittest.TestCase):
                     gate.read_identifier_policy(path)
         policy = gate.read_identifier_policy(gate.ROOT / 'tools/release/identifier-allowlist.json')
         records = {e['member'] for e in policy['entries'] if e['class'] == 'roomplan-record'}
-        self.assertEqual(len(records), 7)
+        self.assertEqual(len(records), 11)  # 9 room plan records (2 GOG), 1 phase record (phaseplan, DELTARUNE),
+        # 1 track record (drresid, DELTARUNE New)
         for game, filename in (('undertale', 'manifest-ut.txt'), ('deltarune', 'manifest-dr.txt')):
             manifest = set((gate.ROOT / 'tools/release' / filename).read_text().splitlines())
-            required = {record for record in records if Path(record).name.startswith(game + '-')}
+            required = {record for record in records
+                        if Path(record).name.startswith(game + '-') or Path(record).name == game + '.json'}
             self.assertTrue(required <= manifest)
             self.assertFalse((records - required) & manifest)
             self.assertIn('tools/roomplan/records.py', manifest)

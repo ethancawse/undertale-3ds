@@ -12,6 +12,13 @@ For a scene the closure adds:
 - for a battle group, every frame of the sprite of each object whose code the group ran, visible or not
   (code_sprite: UNDERTALE's monster objects are invisible, and the sprite they name is the one drawn when they are
   hit; build_plan.whole_set).
+- for an ordinary room, the sprite of each object whose Create event first ran in a shown frame
+  (code_create_sprite): these instances did not exist when the room's placed objects were marked.
+- for a battle group, the other sprites of each numbered series it draws from (series_of): UNDERTALE's scripts pick a
+  pose from a numbered run of sprites (Mettaton EX's arm poses are eight sprites that differ in their last digit), and
+  a recording of one run saw some of the numbers. A series is the sprites whose names are the same but for the digits
+  they end in, two at least (utmett: the pose a run first drew late in the fight was one the record never saw, a
+  14 KB tile read on the game thread in the middle of an attack).
 """
 import struct
 
@@ -35,6 +42,8 @@ class Closure:
         except (ValueError, struct.error, IndexError, KeyError):
             self.sprite_of, self.sprite_items, self.plan_items, self.plan_parts = {}, [], [], []
             self.code_sprite = []
+            self.code_create_sprite = []
+            self.sprite_series = []
 
     def _parse(self, d):
         chunks = {}
@@ -80,10 +89,23 @@ class Closure:
         for s, items in enumerate(self.sprite_items):
             for t in items:
                 self.sprite_of.setdefault(t, s)
+        # Numbered series: the sprites whose names are the same but for the digits they end in.
+        stems = {}
+        for s, p in enumerate(plist(b'SPRT')):
+            name = self._name(d, _u32(d, inside(p, b'SPRT')))
+            stem = name.rstrip(b'0123456789') if name is not None else b''
+            if name is not None and len(stem) > 4 and stem != name:
+                stems.setdefault(stem, []).append(s)
+        self.sprite_series = [[] for _ in self.sprite_items]
+        for members in stems.values():
+            if len(members) > 1:
+                for s in members:
+                    self.sprite_series[s] = [m for m in members if m != s]
         backgrounds = [tindex.get(_u32(d, inside(p + 16, b'BGND')), -1) for p in plist(b'BGND')]
         # An object's sprite, and whether it is visible (an invisible one's sprite is its mask, never drawn by itself).
         objects = [(_i32(d, inside(p + 4, b'OBJT')), _u32(d, inside(p + 8, b'OBJT'))) for p in plist(b'OBJT')]
         self.code_sprite = self._code_sprites(d, chunks, plist, objects)
+        self.code_create_sprite = self._code_sprites(d, chunks, plist, objects, create_only=True)
         self.plan_items, self.plan_parts = [], []
         for p in plist(b'ROOM'):
             items, parts = set(), []
@@ -113,7 +135,7 @@ class Closure:
         end = d.find(b'\0', at)
         return d[at:end] if end > at else None
 
-    def _code_sprites(self, d, chunks, plist, objects):
+    def _code_sprites(self, d, chunks, plist, objects, create_only=False):
         """Per code entry, the sprite of the object whose event it is (GameMaker names an object's event code
         gml_Object_<object>_<event>_<number>, as dwinfo.code_owner reads it), or -1. Empty without a CODE chunk."""
         if b'CODE' not in chunks:
@@ -128,8 +150,15 @@ class Closure:
             name = self._name(d, _u32(d, p)) or b''
             parts = name.rsplit(b'_', 2)
             owner = parts[0][len(b'gml_Object_'):] if name.startswith(b'gml_Object_') and len(parts) == 3 else None
+            if create_only and parts[-2:] != [b'Create', b'0']:
+                owner = None
             out.append(sprite.get(owner, -1))
         return out
+
+    def series_of(self, tpag):
+        """The other sprites of the numbered series tpag's sprite belongs to, or [] (none, or not a sprite's)."""
+        s = self.sprite_of.get(tpag)
+        return self.sprite_series[s] if s is not None and s < len(self.sprite_series) else []
 
     def frames(self, tpag):
         """Every frame of the sprite tpag is a frame of, or [] if it isn't a sprite's."""

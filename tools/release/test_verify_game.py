@@ -5,10 +5,12 @@ import hashlib
 import io
 import json
 import os
+from pathlib import Path
 import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify_game as vg  # noqa: E402
@@ -301,10 +303,76 @@ class GogTests(unittest.TestCase):
     def test_info_without_registry(self):
         self.info()
         self.assertEqual(self.run_gog([]).status, vg.NO_RECORD)
+        info = os.path.join(self.dir, 'goggame-1456487183.info')
+        hashdb = os.path.join(self.dir, 'goggame-1456487183.hashdb')
+        write(hashdb, b'fixture installer hash database')
+        pair = (vg.sha256_file(info), vg.sha256_file(hashdb))
+        with mock.patch.dict(vg.GOG_INSTALL_RECORDS, {'1456487183': pair}):
+            self.assertEqual(self.run_gog([]).status, vg.OK)
+            write(hashdb, b'changed installer hash database')
+            self.assertEqual(self.run_gog([]).status, vg.NO_RECORD)
+
+    def test_root_id_or_title_is_not_product_evidence(self):
+        for record in ({'rootGameId': '1456487183'},
+                       {'gameId': 'DLC', 'rootGameId': '1456487183', 'name': 'Undertale'},
+                       {'gameId': '1456487183', 'name': 'Wrong Game'}):
+            self.info()
+            info = os.path.join(self.dir, 'goggame-1456487183.info')
+            hashdb = os.path.join(self.dir, 'goggame-1456487183.hashdb')
+            write(info, json.dumps(record))
+            write(hashdb, b'fixture')
+            with mock.patch.dict(vg.GOG_INSTALL_RECORDS, {'1456487183': (vg.sha256_file(info),vg.sha256_file(hashdb))}):
+                self.assertEqual(self.run_gog([]).status, vg.NO_RECORD)
+
+    def test_cross_store_digest_is_refused(self):
+        r = vg.verify(
+            'undertale', game_dir=self.dir, steam_roots=[], gog_records=lambda _: [self.dir],
+            allow_list=ALLOW, platform='win32')
+        self.assertEqual(r.status, vg.UNKNOWN_VERSION)
+        self.assertIn('different store', r.message)
+
+    def test_nonwindows_supplied_record_is_used(self):
+        for platform in ('linux', 'darwin'):
+            self.assertEqual(self.run_gog([self.dir],platform=platform).status,vg.OK)
+
+    def test_registry_without_info(self):
+        self.assertEqual(self.run_gog([self.dir]).status, vg.OK)
+
+    def test_digest_without_store_evidence_is_refused(self):
+        self.assertEqual(self.run_gog([]).status, vg.NO_RECORD)
+
+    def test_info_does_not_allow_modded_data(self):
+        self.info()
+        write(os.path.join(self.dir, 'data.win'), b'modded data')
+        self.assertEqual(self.run_gog([]).status, vg.UNKNOWN_VERSION)
+
+    def test_malformed_info_is_not_store_evidence(self):
+        for data in ('{', '[]', 'null', '{"gameId": "wrong"}'):
+            with self.subTest(data=data):
+                write(os.path.join(self.dir, 'goggame-1456487183.info'), data)
+                self.assertEqual(self.run_gog([]).status, vg.NO_RECORD)
+
+    def test_checked_in_gog_digest(self):
+        import re
+        path = os.path.join(os.path.dirname(__file__), '..', '..', 'platform', '3ds', 'data_versions.inc')
+        with open(path, encoding='utf-8') as stream:
+            digest = re.search(r'DATA_VERSION\("undertale", "root", 62951906ULL, "([0-9a-f]{64})"\)',
+                               stream.read()).group(1)
+        rows = [r for r in vg.ALLOW_LIST if r[0] == 'undertale' and r[4] == 'gog']
+        self.assertEqual(rows, [('undertale', 'root', 62951906, digest, 'gog', '1.08 (GOG)')])
 
     def test_wrong_product(self):
         self.info("1")
-        self.assertEqual(self.run_gog([self.dir]).status, vg.NO_RECORD)
+        info = os.path.join(self.dir, 'goggame-1456487183.info')
+        hashdb = os.path.join(self.dir, 'goggame-1456487183.hashdb')
+        write(hashdb, b'wrong product installer record')
+        with mock.patch.dict(vg.GOG_INSTALL_RECORDS, {'1456487183': (vg.sha256_file(info), vg.sha256_file(hashdb))}):
+            self.assertEqual(self.run_gog([]).status, vg.NO_RECORD)
+        # A valid install record cannot make another game's payload UNDERTALE.
+        write(os.path.join(self.dir, 'data.win'), b'another purchased game, not Undertale')
+        r = self.run_gog([self.dir])
+        self.assertEqual(r.status, vg.UNKNOWN_VERSION)
+        self.assertEqual(r.accepted_parts, [])
 
     def test_linux_gameinfo(self):
         game = os.path.join(self.td.name, "lin", "Undertale", "game")
@@ -313,8 +381,28 @@ class GogTests(unittest.TestCase):
         r = vg.verify("undertale", steam_roots=[], gog_dirs=[game], allow_list=self.allow, platform="linux")
         self.assertEqual(r.status, vg.OK, r.message)
 
+    def test_nonwindows_gog_metadata_is_optional(self):
+        for platform in ('linux', 'darwin'):
+            for metadata in (None, '{', '{"gameId":"1456487183","newInstallerField":true}'):
+                with self.subTest(platform=platform, metadata=metadata):
+                    info = Path(self.dir) / 'goggame-1456487183.info'
+                    info.unlink(missing_ok=True)
+                    if metadata is not None:
+                        info.write_text(metadata)
+                    result = self.run_gog([], platform=platform)
+                    self.assertEqual((result.status, result.store), (vg.OK, 'gog'), result.message)
+                    self.assertNotIn('official', result.message)
+        write(os.path.join(self.dir, 'data.win'), b'unknown version')
+        self.assertEqual(self.run_gog([], platform='linux').status, vg.UNKNOWN_VERSION)
+
+    def test_nonwindows_optional_metadata_does_not_accept_steam_hash(self):
+        for platform in ('linux', 'darwin'):
+            result = vg.verify('undertale', game_dir=self.dir, steam_roots=[], gog_records=lambda _: [],
+                               allow_list=ALLOW, platform=platform)
+            self.assertEqual(result.status, vg.NO_RECORD, result.message)
+
     def test_galaxy_db(self):
-        db = os.path.join(self.td.name, "galaxy-2.0.db")
+        db = os.path.join(self.td.name, "galaxy %23 # café.db")
         con = sqlite3.connect(db)
         con.execute("CREATE TABLE InstalledBaseProducts (productId INTEGER, installationPath TEXT)")
         con.execute("INSERT INTO InstalledBaseProducts VALUES (1456487183, ?)", (self.dir,))

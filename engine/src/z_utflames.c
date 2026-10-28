@@ -28,26 +28,49 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #if defined(__arm__) && defined(__3DS__)
 #define UTF_LATE __attribute__((noinline, section(".text.late.utflames")))
 #else
 #define UTF_LATE __attribute__((noinline))
 #endif
+// Code added since round 17 (and its constants and statics), in sections only explicit late_reserve.ld lines at the end
+// take, so nothing linked before it moves; no jump tables or literals in this file's plain .rodata.
+#if defined(__arm__) && defined(__3DS__)
+#define UTF_LAST __attribute__((noinline, section(".text_utfnative_late")))
+#define UTF_LAST_BSS __attribute__((section(".bss.utfnative_late")))
+#else
+#define UTF_LAST __attribute__((noinline))
+#define UTF_LAST_BSS
+#endif
+// The sine shape's step since round 17 (the helix): its own sections, after the ones above (late_reserve.ld).
+#if defined(__arm__) && defined(__3DS__)
+#define UTF_HELIX __attribute__((noinline, section(".text_utfhelix_late")))
+#define UTF_HELIX_BSS __attribute__((section(".bss.utfhelix_late")))
+#else
+#define UTF_HELIX __attribute__((noinline))
+#define UTF_HELIX_BSS
+#endif
 
 RValue UtFlames_sineStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) UTF_LATE;
+RValue UtFlames_helixStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) UTF_HELIX;
 RValue UtFlames_genericStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) UTF_LATE;
 RValue UtFlames_circleStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) UTF_LATE;
 RValue UtFlames_sidedStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) UTF_LATE;
 RValue UtFlames_emberStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) UTF_LATE;
+void UtKill_registerAll(VMContext* ctx);                   // z_utkill_waver.c
+void UtFlames_registerCircle(VMContext* ctx) UTF_LAST;  // VM_create, through COLFLIP_REGISTER_ALL (vm_builtins.h)
 
 #if defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS)
 // Tracing and stress builds test the generated code itself: every body is just it.
 RValue UtFlames_sineStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }
+RValue UtFlames_helixStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }
 RValue UtFlames_genericStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }
 RValue UtFlames_circleStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }
 RValue UtFlames_sidedStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }
 RValue UtFlames_emberStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }
+void UtFlames_registerCircle(VMContext* ctx) { UtKill_registerAll(ctx); }
 #else
 // The helpers' inline bodies once each, out of the bodies' way.
 static RValue* utfSlot(Instance* inst, int32_t varID) UTF_LATE;
@@ -119,7 +142,7 @@ static void utfSetPos(Runner* runner, Instance* inst, float* field, GMLReal v) {
         SpatialGrid_markInstanceAsDirty(runner->spatialGrid, inst);
     }
 }
-
+#if defined(ENABLE_WAD17) // UNDERTALE never runs this (argcheck, UT late-text reclaim)
 // Step of the fire bullet on a sine wave (UTF_NATIVE's first shape):
 //     v0 += 1; x += sin(v0 / v1) * v2;
 //     if (y > <the room's height> + 100) instance_destroy();
@@ -188,7 +211,7 @@ RValue UtFlames_sineStep(VMContext* ctx, uint32_t k, AotFn generated, const int3
     if (utfRect(ctx, B, inst, rect, a[4], 0xC0)) return aotDeopt(ctx, k, 0xC0);
     return aotx_scriptFallthroughReturnValue(ctx);
 }
-
+#endif
 // Step of the fire bullet that slows down (UTF_NATIVE's second shape):
 //     <the rectangle test>
 //     speed -= v0;
@@ -448,6 +471,318 @@ RValue UtFlames_emberStep(VMContext* ctx, uint32_t k, AotFn generated, const int
     }
     return aotx_scriptFallthroughReturnValue(ctx);
 }
+
+// ===[ Native answers in their own late section (.text_utfnative_late, last) ]===
+
+static inline uint32_t utfBits32(float f) {
+    uint32_t b;
+    memcpy(&b, &f, sizeof b);
+    return b;
+}
+static inline uint64_t utfBitsReal(GMLReal r) {
+    uint64_t b = 0;
+    memcpy(&b, &r, sizeof r);
+    return b;
+}
+
+// Collision_computeBBox, with what it calls inlined here, out of line in this section (utfCircle's and the helix's).
+// utfRect stays its only other caller in this file, so GCC keeps inlining it there as before: another inlined caller made GCC emit an out-of-line
+// copy in this file's plain .text, which the early utflames line takes, moving what follows (docs/3ds-hardware.md).
+static InstanceBBox utfBox(Runner* runner, Instance* inst) UTF_LAST __attribute__((flatten));
+static InstanceBBox utfBox(Runner* runner, Instance* inst) {
+    return Collision_computeBBox(runner, inst);
+}
+
+// ===[ collision_circle's no-hit answer (the snow floor, room_tundra_snowpuzz) ]===
+//
+// Each snow floor tile's Draw asks collision_circle(cx, cy, 2, obj, 0, 1) for each of its 25 cells: 400 calls a frame
+// in the snowball puzzle room, which almost never touch anything. UNDERTALE's builtin (colline_gm14.c) reads each
+// candidate's box as four bbox_* variable reads, each a whole Collision_computeBBox. utfCircle answers the call first
+// when nothing can be hit: an object-index operand, every argument a number, compatibility mode, prec 0. Its
+// candidates are the builtin's (Runner_pushInstancesForTarget's list for an object: instancesByObject), active, self
+// left out when notme; one without a collision sprite is never hit (Colline14_box). Each other one's box is the one
+// the bbox_* reads give (the int32 of Collision_computeBBox's sides, right and bottom less one in compatibility mode),
+// kept in utfCirc with every input Collision_computeBBox reads. Colline14_ellipseHits starts with the
+// test of that box against the circle's float32 box; when it fails for every candidate the builtin returns noone, and
+// so does utfCircle. Any candidate passing it, or any other case, calls the builtin, which answers.
+static struct {
+    const Sprite* spr;
+    uint32_t w, h, mode, x, y, xs, ys;
+    int32_t ml, mr, mt, mb, ox, oy;
+    uint64_t ang;
+    bool compat;
+    int32_t l, t, r, b;
+} utfCirc UTF_LAST_BSS;
+static BuiltinFunc utfCirclePrevious UTF_LAST_BSS;
+static const char utfCircleName[] __attribute__((section(".rodata_utfnative_late"))) = "collision_circle";
+
+// A number argument as RValue_toReal gives it (no copy of RValue_toRealOther here); false for any other type.
+static inline bool utfArgReal(const RValue* v, GMLReal* out) {
+    switch (v->type) {
+        case RVALUE_REAL: *out = v->real; return true;
+        case RVALUE_INT32: case RVALUE_BOOL: *out = (GMLReal) v->int32; return true;
+#ifndef NO_RVALUE_INT64
+        case RVALUE_INT64: *out = (GMLReal) v->int64; return true;
+#endif
+        default: return false;
+    }
+}
+
+static RValue utfCircle(VMContext* ctx, RValue* args, int32_t argCount) UTF_LAST __attribute__((optimize("no-jump-tables")));
+static RValue utfCircle(VMContext* ctx, RValue* args, int32_t argCount) {
+    Runner* runner = ctx->runner;
+    GMLReal v[6];
+    if (!runner->collisionCompatibilityMode || 6 > argCount) return utfCirclePrevious(ctx, args, argCount);
+    for (int32_t i = 0; 6 > i; i++)
+        if (!utfArgReal(&args[i], &v[i])) return utfCirclePrevious(ctx, args, argCount);
+    int32_t target = (int32_t) v[3];
+    if (v[4] > 0.5 || 0 > target || (uint32_t) target >= ctx->dataWin->objt.count) return utfCirclePrevious(ctx, args, argCount);
+    // builtin_collision_circle_gm14's box and Colline14_ellipseHits's bounds of it.
+    float cx = (float) v[0], cy = (float) v[1], r = (float) v[2];
+    float x1 = (float) ((double) cx - (double) r), y1 = (float) ((double) cy - (double) r);
+    float x2 = (float) ((double) cx + (double) r), y2 = (float) ((double) cy + (double) r);
+    float minX = x2 > x1 ? x1 : x2, maxX = x1 > x2 ? x1 : x2, minY = y2 > y1 ? y1 : y2, maxY = y1 > y2 ? y1 : y2;
+    bool notme = v[5] > 0.5;
+    Instance* self = ctx->currentInstance;
+    Instance** list = runner->instancesByObject[target];
+    for (int32_t i = 0, n = (int32_t) arrlen(list); n > i; i++) {
+        Instance* other = list[i];
+        if (!other->active || (notme && other == self)) continue;
+        const Sprite* spr = Collision_getSprite(ctx->dataWin, other);
+        if (spr == nullptr) continue;
+        uint32_t ox = utfBits32(other->x), oy = utfBits32(other->y);
+        uint32_t oxs = utfBits32(other->imageXscale), oys = utfBits32(other->imageYscale);
+        uint64_t oang = utfBitsReal(other->imageAngle);
+        bool compat = runner->collisionCompatibilityMode;
+        if (utfCirc.spr != spr || utfCirc.x != ox || utfCirc.y != oy || utfCirc.xs != oxs || utfCirc.ys != oys
+            || utfCirc.ang != oang || utfCirc.compat != compat || utfCirc.w != spr->width || utfCirc.h != spr->height
+            || utfCirc.mode != spr->bboxMode || utfCirc.ml != spr->marginLeft || utfCirc.mr != spr->marginRight
+            || utfCirc.mt != spr->marginTop || utfCirc.mb != spr->marginBottom || utfCirc.ox != spr->originX
+            || utfCirc.oy != spr->originY) {
+            InstanceBBox bbox = utfBox(runner, other);
+            // VMBuiltins_getVariable's bbox_left, bbox_top, bbox_right and bbox_bottom, as Colline14_boxSide reads them.
+            utfCirc.l = (int32_t) RValue_makeReal(bbox.left).real;
+            utfCirc.t = (int32_t) RValue_makeReal(bbox.top).real;
+            utfCirc.r = (int32_t) RValue_makeReal(runner->collisionCompatibilityMode ? bbox.right - 1 : bbox.right).real;
+            utfCirc.b = (int32_t) RValue_makeReal(runner->collisionCompatibilityMode ? bbox.bottom - 1 : bbox.bottom).real;
+            utfCirc.spr = spr;
+            utfCirc.x = ox;
+            utfCirc.y = oy;
+            utfCirc.xs = oxs;
+            utfCirc.ys = oys;
+            utfCirc.ang = oang;
+            utfCirc.compat = compat;
+            utfCirc.w = spr->width;
+            utfCirc.h = spr->height;
+            utfCirc.mode = spr->bboxMode;
+            utfCirc.ml = spr->marginLeft;
+            utfCirc.mr = spr->marginRight;
+            utfCirc.mt = spr->marginTop;
+            utfCirc.mb = spr->marginBottom;
+            utfCirc.ox = spr->originX;
+            utfCirc.oy = spr->originY;
+        }
+        if (minX >= (float) (utfCirc.r + 1) || (float) utfCirc.l > maxX) continue;
+        if (minY >= (float) (utfCirc.b + 1) || (float) utfCirc.t > maxY) continue;
+        return utfCirclePrevious(ctx, args, argCount);
+    }
+    return RValue_makeReal((GMLReal) INSTANCE_NOONE);
+}
+
+// UtKill_registerAll (z_utkill_waver.c, which stays as it was), then utfCircle over UNDERTALE's collision_circle.
+void UtFlames_registerCircle(VMContext* ctx) {
+    UtKill_registerAll(ctx);
+    ptrdiff_t idx = shgeti(ctx->builtinMap, (char*) utfCircleName);
+    if (0 > idx || ctx->builtinMap[idx].value == nullptr) return;
+    utfCirclePrevious = ctx->builtinMap[idx].value;
+    ctx->builtinMap[idx].value = utfCircle;
+}
+
+// utfRectFast's soul box and its inputs (below).
+static struct {
+    const Sprite* spr;
+    uint32_t w, h, mode, x, y, xs, ys;
+    int32_t ml, mr, mt, mb, ox, oy;
+    uint64_t ang;
+    bool compat;
+    InstanceBBox box;
+} utfSoul UTF_HELIX_BSS;
+// utfRect (above, the other shapes' tail), for the sine shape, with the same arguments and result.
+//
+// When the operand is an object index, collision_rectangle's answer is first worked out here as the builtin does: the
+// four values (rounded in compatibility mode, then ordered), the object's instances (Runner_pushInstancesForTarget's
+// list), each active one but self put to Collision_rectOverlapsInstance's first test, its box against the rectangle
+// (prec is 0). No box touching means the builtin returns noone, which the Conv.v.b takes as false: the call is skipped,
+// as nothing else it does outlasts it (its instance snapshot is popped). A box touching calls it as before, and it
+// answers. The fire bullets are some 250 a frame and almost none touch the soul. The soul's box is kept (utfSoul) from
+// the last call with everything Collision_computeBBox reads: its sprite (which and that sprite's size, margins, mode
+// and origin, as scripts can change them), its x, y, scales and angle (by their bits) and the compatibility mode.
+static bool utfRectFast(VMContext* ctx, int32_t B, Instance* inst, BuiltinFunc rect, int32_t operand, uint32_t ipConv) UTF_HELIX;
+static bool utfRectFast(VMContext* ctx, int32_t B, Instance* inst, BuiltinFunc rect, int32_t operand, uint32_t ipConv) {
+    Runner* runner = ctx->runner;
+    RValue* S = &ctx->stack.slots[B];
+    InstanceBBox box = utfBox(runner, inst);
+    GMLReal v[4];
+    if (box.valid) {
+        v[0] = box.left;
+        v[1] = box.top;
+        v[2] = runner->collisionCompatibilityMode ? box.right - 1 : box.right;
+        v[3] = runner->collisionCompatibilityMode ? box.bottom - 1 : box.bottom;
+    } else {
+        v[0] = v[2] = inst->x;
+        v[1] = v[3] = inst->y;
+    }
+    if (0 <= operand && (uint32_t) operand < ctx->dataWin->objt.count) {
+        GMLReal x1 = v[0], y1 = v[1], x2 = v[2], y2 = v[3];
+        if (runner->collisionCompatibilityMode) {
+            x1 = GMLReal_bankersRound(x1);
+            y1 = GMLReal_bankersRound(y1);
+            x2 = GMLReal_bankersRound(x2);
+            y2 = GMLReal_bankersRound(y2);
+        }
+        if (x1 > x2) { GMLReal t = x1; x1 = x2; x2 = t; }
+        if (y1 > y2) { GMLReal t = y1; y1 = y2; y2 = t; }
+        Instance** list = runner->instancesByObject[operand];
+        bool overlap = false;
+        for (int32_t i = 0, n = (int32_t) arrlen(list); n > i && !overlap; i++) {
+            Instance* other = list[i];
+            if (!other->active || other == inst) continue;
+            const Sprite* spr = Collision_getSprite(ctx->dataWin, other);
+            if (spr == nullptr) continue;
+            uint32_t ox = utfBits32(other->x), oy = utfBits32(other->y);
+            uint32_t oxs = utfBits32(other->imageXscale), oys = utfBits32(other->imageYscale);
+            uint64_t oang = utfBitsReal(other->imageAngle);
+            bool compat = runner->collisionCompatibilityMode;
+            if (utfSoul.spr != spr || utfSoul.x != ox || utfSoul.y != oy || utfSoul.xs != oxs || utfSoul.ys != oys
+                || utfSoul.ang != oang || utfSoul.compat != compat || utfSoul.w != spr->width || utfSoul.h != spr->height
+                || utfSoul.mode != spr->bboxMode || utfSoul.ml != spr->marginLeft || utfSoul.mr != spr->marginRight
+                || utfSoul.mt != spr->marginTop || utfSoul.mb != spr->marginBottom || utfSoul.ox != spr->originX
+                || utfSoul.oy != spr->originY) {
+                utfSoul.box = utfBox(runner, other);
+                utfSoul.spr = spr;
+                utfSoul.x = ox;
+                utfSoul.y = oy;
+                utfSoul.xs = oxs;
+                utfSoul.ys = oys;
+                utfSoul.ang = oang;
+                utfSoul.compat = compat;
+                utfSoul.w = spr->width;
+                utfSoul.h = spr->height;
+                utfSoul.mode = spr->bboxMode;
+                utfSoul.ml = spr->marginLeft;
+                utfSoul.mr = spr->marginRight;
+                utfSoul.mt = spr->marginTop;
+                utfSoul.mb = spr->marginBottom;
+                utfSoul.ox = spr->originX;
+                utfSoul.oy = spr->originY;
+            }
+            const InstanceBBox* b = &utfSoul.box;
+            overlap = b->valid && !(x1 >= b->right || b->left > x2 || y1 >= b->bottom || b->top > y2);
+        }
+        if (!overlap) return false;
+    }
+    AOT_SET_REAL(&S[0], v[0], GML_TYPE_VARIABLE);
+    AOT_SET_REAL(&S[1], v[1], GML_TYPE_VARIABLE);
+    AOT_SET_REAL(&S[2], v[2], GML_TYPE_VARIABLE);
+    AOT_SET_REAL(&S[3], v[3], GML_TYPE_VARIABLE);
+    AOT_SET_INT(&S[4], operand, GML_TYPE_VARIABLE);
+    AOT_SET_INT(&S[5], 0, GML_TYPE_VARIABLE);
+    AOT_SET_INT(&S[6], 1, GML_TYPE_VARIABLE);
+    ctx->stack.top = B + 7;
+    ctx->ip = ipConv;
+    RValue hit = rect(ctx, S, 7);
+    S[0] = hit;
+    S[0].gmlStackType = GML_TYPE_VARIABLE;
+    ctx->stack.top = B + 1;
+    RValue t = S[0];
+    if (!vmConvFast(&t, 0x45) || t.int32 != 0) return true;
+    ctx->stack.top = B;
+    return false;
+}
+
+// aotMathSin's results by the argument's bits, so equal arguments (the helix's bullets made in one frame share v0 and
+// v1) pay for one sine. An empty slot holds +0's bits and sin(+0) = +0, so it needs no flag.
+static struct { uint64_t bits; GMLReal r; } utfSinMemo[64] UTF_HELIX_BSS;
+static inline GMLReal utfSin(GMLReal x) {
+    uint64_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    __typeof__(utfSinMemo[0])* slot = &utfSinMemo[(bits * 0x9E3779B97F4A7C15ull) >> 58];
+    if (slot->bits != bits) {
+        slot->r = aotMathSin(x);
+        slot->bits = bits;
+    }
+    return slot->r;
+}
+
+// Step of the fire bullet on a sine wave (UTF_NATIVE's first shape):
+//     v0 += 1; x += sin(v0 / v1) * v2;
+//     if (y > <the room's height> + 100) instance_destroy();
+//     <the rectangle test>
+// a: v0, v1 and v2's IDs, collision_rectangle's function index, the object operand. Some 250 run every frame at
+// Asgore's peak.
+RValue UtFlames_helixStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) {
+    // Preconditions, before anything changes: an instance (no struct), v0, v1 and v2 there holding plain numbers
+    // (the generated fast paths' case, with nothing to free on v0's store) and the builtin bound.
+    Instance* inst = utfSelf(ctx);
+    if (inst == nullptr) return generated(ctx);
+    RValue* p0 = utfSlot(inst, a[0]);
+    RValue* p1 = utfSlot(inst, a[1]);
+    RValue* p2 = utfSlot(inst, a[2]);
+    BuiltinFunc rect = utfBuiltin(ctx, a[3]);
+    if (p0 == nullptr || p1 == nullptr || p2 == nullptr || p0->ownsReference || !vmIsPlainNumber(p0->type) ||
+        !vmIsPlainNumber(p1->type) || !vmIsPlainNumber(p2->type) || rect == nullptr)
+        return generated(ctx);
+    Runner* runner = ctx->runner;
+    const int32_t B = ctx->stack.top;
+    RValue* S = &ctx->stack.slots[B];
+    __asm__("" : "+r"(S));
+    RValue kv;
+
+    // 0000-0010: v0 += 1 (Push.v, PushI.e 1, Add.i.v, Pop.v.v).
+    vmWeakCopyInto(&S[0], p0);
+    AOT_SET_INT(&kv, 1, GML_TYPE_INT16);
+    vmArithNumbers(&S[0], &kv, VM_ARITH_ADD, GML_TYPE_VARIABLE);
+    AOT_OPAQUE(0);
+    coerceIntStoreToRealInPlace(&S[0], GML_TYPE_VARIABLE);
+    *p0 = S[0];
+
+    // 0018-004C: x = x + sin(v0 / v1) * v2.
+    AOT_SET_REAL(&S[0], (GMLReal) inst->x, GML_TYPE_VARIABLE);
+    AOT_OPAQUE(0);
+    vmWeakCopyInto(&S[1], p0);
+    vmWeakCopyInto(&S[2], p1);
+    vmDivNumbers(&S[1], &S[2], false, GML_TYPE_VARIABLE, ctx->currentCodeName);
+    AOT_OPAQUE(1);
+    {
+        GMLReal r = utfSin(AOT_NUM(&S[1]));
+        AOT_SET_REAL(&S[1], r, GML_TYPE_VARIABLE);
+        AOT_OPAQUE(1);
+    }
+    vmWeakCopyInto(&S[2], p2);
+    vmArithNumbers(&S[1], &S[2], VM_ARITH_MUL, GML_TYPE_VARIABLE);
+    AOT_OPAQUE(1);
+    vmArithNumbers(&S[0], &S[1], VM_ARITH_ADD, GML_TYPE_VARIABLE);
+    AOT_OPAQUE(0);
+    utfSetPos(runner, inst, &inst->x, S[0].real);   // S[0] is a real (x was one): RValue_toReal gives S[0].real
+
+    // 0054-0070: if (y > <the room's height> + 100); the destroy (0074) and what follows go to the interpreter.
+    AOT_SET_REAL(&S[0], (GMLReal) inst->y, GML_TYPE_VARIABLE);
+    AOT_OPAQUE(0);
+    AOT_SET_REAL(&S[1], runner->currentRoom == nullptr ? (GMLReal) -1.0 : (GMLReal) runner->currentRoom->height, GML_TYPE_VARIABLE);
+    AOT_OPAQUE(1);
+    AOT_SET_INT(&kv, 100, GML_TYPE_INT16);
+    vmArithNumbers(&S[1], &kv, VM_ARITH_ADD, GML_TYPE_VARIABLE);
+    AOT_OPAQUE(1);
+    if (vmCmpNumbers(&S[0], &S[1], CMP_GT) != 0) {
+        ctx->stack.top = B;
+        return aotDeopt(ctx, k, 0x74);
+    }
+
+    // 0080-00D8: the rectangle test; a hit goes to the interpreter from the Conv.v.b (00C0).
+    if (utfRectFast(ctx, B, inst, rect, a[4], 0xC0)) return aotDeopt(ctx, k, 0xC0);
+    return aotx_scriptFallthroughReturnValue(ctx);
+}
+
 #endif
 
 #endif // ENABLE_WAD16

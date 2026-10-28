@@ -79,6 +79,40 @@ static uint32_t staleCount;
 static bool ready;
 static LightLock lock;
 
+// The heap's high water (freewins, round 4): newlib's arena (the bytes sbrk has handed malloc, which can never
+// pass the heap's end) after every recorded allocation, since boot and since the last dump. Its peak plus where
+// malloc's arena starts is the smallest heap this run would have fitted in: the same calls place the same blocks in
+// any heap that large, since only the top's end depends on the heap's size.
+extern char* __malloc_sbrk_base;
+extern struct mallinfo __malloc_current_mallinfo;
+static uint32_t arenaHigh, arenaHighWindow;
+// The arena never shrinks (the first room's opportunistic packed pages set it for the whole run), so the bytes in
+// use say more: the usable sizes of the live heap blocks, their peak since boot and since the last mark.
+static uint32_t liveHeap, liveHigh, liveHighMark;
+static void noteLive(void) {
+    if (liveHeap > liveHigh) liveHigh = liveHeap;
+    if (liveHeap > liveHighMark) liveHighMark = liveHeap;
+}
+static void noteArena(void) {
+    uint32_t arena = (uint32_t) __malloc_current_mallinfo.arena;
+    if (arena > arenaHigh) arenaHigh = arena;
+    if (arena > arenaHighWindow) arenaHighWindow = arena;
+}
+
+// Linear memory and VRAM blocks (see "Linear memory and VRAM" below).
+#define OTHER_CAPACITY 16384u
+#define TAG_LINEAR 0x4C494E45u // "LINE"
+#define TAG_VRAM 0x5652414Du   // "VRAM"
+
+typedef struct {
+    uintptr_t ptr; // 0 = empty
+    uint32_t site;
+    uint32_t bytes;
+} OtherBlock;
+
+static OtherBlock* others;
+static uint32_t otherCount, otherDropped;
+
 typedef struct {
     uint32_t pc[SITE_DEPTH + SKIP_FRAMES];
     int count;
@@ -140,6 +174,7 @@ static void dropBlock(uint32_t slot, uint32_t bytes, bool freed) {
     s->liveBytes -= bytes;
     s->liveCount--;
     blockCount--;
+    liveHeap -= bytes;
     if (freed) {
         int sc = censusSize(bytes), ag = censusAge(BLOCK_BIRTH(blocks[slot]));
         freedCount[sc][ag]++;
@@ -196,7 +231,10 @@ static __attribute__((noinline)) void recordAllocTagged(void* ptr, void* caller,
         s->liveBytes += bytes;
         s->liveCount++;
         if (s->liveBytes > s->peakBytes) s->peakBytes = s->liveBytes;
+        liveHeap += bytes;
+        noteLive();
     }
+    noteArena();
     LightLock_Unlock(&lock);
 }
 
@@ -242,7 +280,10 @@ static void recordRealloc(void* old, uint32_t oldBytes, void* p, size_t size, vo
             Site* s = &sites[BLOCK_SITE(blocks[slot])];
             s->liveBytes = s->liveBytes - oldBytes + bytes;
             if (s->liveBytes > s->peakBytes) s->peakBytes = s->liveBytes;
+            liveHeap = liveHeap - oldBytes + bytes;
+            noteLive();
         }
+        noteArena();
         LightLock_Unlock(&lock);
         return;
     }
@@ -378,6 +419,8 @@ void CtrHeapProfile_init(void) {
     }
     memset(siteIndex, 0, SITE_CAPACITY * 2 * sizeof(uint32_t));
     memset(blocks, 0, BLOCK_CAPACITY * sizeof(Block));
+    others = (OtherBlock*) linearAlloc(OTHER_CAPACITY * sizeof(OtherBlock));
+    if (others != nullptr) memset(others, 0, OTHER_CAPACITY * sizeof(OtherBlock));
     ready = true;
     logInfo("[heap] profiler on: %u KB of linear memory for its tables\n",
             (unsigned) ((SITE_CAPACITY * (sizeof(Site) + 8) + BLOCK_CAPACITY * sizeof(Block)) / 1024));
@@ -470,18 +513,156 @@ static void dumpSizes(const char* label) {
 
 static void writeCensusMap(const char* label);
 
+// ===[ Linear memory and VRAM ]===
+
+// Blocks of linear memory and VRAM (ctr_memory_lock.c's allocation wrappers, ctr_memory.c's frees) keep their own
+// table, with their size, as their size can't be read back as a heap block's can. Their call stacks are sites like the
+// heap's, with a tag for the deepest frame; the heap's listings leave them out and dumpOthers lists them.
+
+static uint32_t siteKind(const Site* s) {
+    uint32_t tag = s->pc[SITE_DEPTH - 1];
+    return tag == TAG_LINEAR ? 1u : tag == TAG_VRAM ? 2u : 0u;
+}
+
+static uint32_t otherSlot(uintptr_t ptr) {
+    return (uint32_t) ((ptr >> 4) * 0x9E3779B1u) & (OTHER_CAPACITY - 1);
+}
+
+// With the lock held.
+static uint32_t findOther(uintptr_t ptr) {
+    uint32_t slot = otherSlot(ptr);
+    while (others[slot].ptr != 0 && others[slot].ptr != ptr) slot = (slot + 1) & (OTHER_CAPACITY - 1);
+    return others[slot].ptr != 0 ? slot : UINT32_MAX;
+}
+
+// With the lock held.
+static void dropOther(uint32_t slot) {
+    Site* s = &sites[others[slot].site];
+    s->liveBytes -= others[slot].bytes;
+    s->liveCount--;
+    otherCount--;
+    uint32_t hole = slot;
+    uint32_t next = (hole + 1) & (OTHER_CAPACITY - 1);
+    while (others[next].ptr != 0) {
+        uint32_t home = otherSlot(others[next].ptr);
+        bool movable = (next > hole) ? (home <= hole || home > next) : (home <= hole && home > next);
+        if (movable) {
+            others[hole] = others[next];
+            hole = next;
+        }
+        next = (next + 1) & (OTHER_CAPACITY - 1);
+    }
+    others[hole].ptr = 0;
+}
+
+__attribute__((noinline)) void CtrHeapProfile_noteOther(void* ptr, uint32_t bytes, bool vram, void* caller) {
+    if (!ready || ptr == nullptr || others == nullptr) return;
+    Stack stack;
+    captureStack(&stack);
+    if (stack.count > 0) stack.pc[0] = (uint32_t) (uintptr_t) caller;
+    for (int i = stack.count; SITE_DEPTH + SKIP_FRAMES > i; i++) stack.pc[i] = 0;
+    stack.pc[SITE_DEPTH + SKIP_FRAMES - 1] = vram ? TAG_VRAM : TAG_LINEAR;
+    stack.count = SITE_DEPTH + SKIP_FRAMES;
+    LightLock_Lock(&lock);
+    uint32_t old = findOther((uintptr_t) ptr);
+    if (old != UINT32_MAX) dropOther(old);
+    uint32_t site = findSite(&stack);
+    if (site == UINT32_MAX || otherCount >= OTHER_CAPACITY - OTHER_CAPACITY / 8) {
+        otherDropped++;
+    } else {
+        uint32_t slot = otherSlot((uintptr_t) ptr);
+        while (others[slot].ptr != 0) slot = (slot + 1) & (OTHER_CAPACITY - 1);
+        others[slot] = (OtherBlock) {(uintptr_t) ptr, site, bytes};
+        otherCount++;
+        Site* s = &sites[site];
+        s->liveBytes += bytes;
+        s->liveCount++;
+        if (s->liveBytes > s->peakBytes) s->peakBytes = s->liveBytes;
+    }
+    LightLock_Unlock(&lock);
+}
+
+void CtrHeapProfile_noteOtherFree(void* ptr) {
+    if (!ready || ptr == nullptr || others == nullptr) return;
+    LightLock_Lock(&lock);
+    uint32_t slot = findOther((uintptr_t) ptr);
+    if (slot != UINT32_MAX) dropOther(slot);
+    LightLock_Unlock(&lock);
+}
+
+// The linear memory and VRAM sites by live bytes: "[heap] <label> linear: ..." and "[heap] <label> vram: ...", rows as
+// the heap's (heapsym.py names them with the label "<label> linear").
+static void dumpOthers(const char* label, int top) {
+    static uint32_t order[SITE_CAPACITY];
+    for (uint32_t kind = 1; 2 >= kind; kind++) {
+        LightLock_Lock(&lock);
+        uint32_t n = 0, blocksOfKind = 0;
+        uint64_t total = 0;
+        for (uint32_t i = 0; siteCount > i; i++) {
+            if (siteKind(&sites[i]) != kind || sites[i].liveCount == 0) continue;
+            order[n++] = i;
+            total += sites[i].liveBytes;
+            blocksOfKind += sites[i].liveCount;
+        }
+        LightLock_Unlock(&lock);
+        int shown = top > (int) n ? (int) n : top;
+        for (int i = 0; shown > i; i++) {
+            uint32_t best = (uint32_t) i;
+            for (uint32_t j = (uint32_t) i + 1; n > j; j++) {
+                if (sites[order[j]].liveBytes > sites[order[best]].liveBytes) best = j;
+            }
+            uint32_t t = order[i];
+            order[i] = order[best];
+            order[best] = t;
+        }
+        logInfo("[heap] %s %s: %.1f MB in %u tracked blocks, %u call stacks, %u untracked, 0 stale records replaced\n", label,
+                kind == 1 ? "linear" : "vram", (double) total / (1024.0 * 1024.0), (unsigned) blocksOfKind, (unsigned) n,
+                (unsigned) otherDropped);
+        for (int i = 0; shown > i; i++) {
+            Site* s = &sites[order[i]];
+            char pcs[SITE_DEPTH * 9 + 1];
+            int len = 0;
+            for (int j = 0; SITE_DEPTH - 1 > j; j++) len += snprintf(pcs + len, sizeof(pcs) - (size_t) len, " %08lx", (unsigned long) s->pc[j]);
+            logInfo("[heap] %7u KB %6u blk (peak %7u KB)%s\n", (unsigned) (s->liveBytes / 1024), (unsigned) s->liveCount,
+                    (unsigned) (s->peakBytes / 1024), pcs);
+        }
+    }
+}
+
+void CtrHeapProfile_mark(const char* label) {
+    if (!ready) return;
+    LightLock_Lock(&lock);
+    uint32_t now = liveHeap, high = liveHigh, window = liveHighMark;
+    liveHighMark = liveHeap;
+    LightLock_Unlock(&lock);
+    logInfo("[mem] heap mark %s: in use peak %lu KB since the last mark, %lu KB now, peak %lu KB since boot, "
+            "arena %lu KB\n", label, (unsigned long) (window / 1024), (unsigned long) (now / 1024),
+            (unsigned long) (high / 1024), (unsigned long) ((uint32_t) __malloc_current_mallinfo.arena / 1024));
+}
+
 void CtrHeapProfile_dump(const char* label, int top) {
     if (!ready) return;
     static uint32_t order[SITE_CAPACITY];
     LightLock_Lock(&lock);
     uint32_t n = siteCount;
     uint64_t total = 0;
+    uint32_t heapSites = 0;
     for (uint32_t i = 0; n > i; i++) {
-        order[i] = i;
+        if (siteKind(&sites[i]) != 0) continue;
+        order[heapSites++] = i;
         total += sites[i].liveBytes;
     }
+    n = heapSites;
     uint32_t live = blockCount, dropped = droppedCount, stale = staleCount;
+    noteArena();
+    uint32_t high = arenaHigh, highWindow = arenaHighWindow;
+    arenaHighWindow = (uint32_t) __malloc_current_mallinfo.arena;
     LightLock_Unlock(&lock);
+    uint32_t start = (uint32_t) ((uintptr_t) __malloc_sbrk_base - (uintptr_t) __ctru_heap);
+    logInfo("[mem] %s: heap high water: arena peak %lu KB since boot, %lu KB since the last dump, arena now %lu KB, "
+            "arena starts at +%lu KB of a %lu KB heap\n", label, (unsigned long) (high / 1024), (unsigned long) (highWindow / 1024),
+            (unsigned long) ((uint32_t) __malloc_current_mallinfo.arena / 1024), (unsigned long) (start / 1024),
+            (unsigned long) (__ctru_heap_size / 1024));
     if ((uint32_t) top > n) top = (int) n;
     // First by live bytes, then by live blocks (the small ones that split the heap).
     for (int byBlocks = 0; 2 > byBlocks; byBlocks++) {
@@ -509,6 +690,7 @@ void CtrHeapProfile_dump(const char* label, int top) {
                     (unsigned) (s->peakBytes / 1024), pcs);
         }
     }
+    dumpOthers(label, top);
     dumpSizes(label);
     dumpLayout(label);
     CtrMemory_logHeapLayout(label, 0);
@@ -526,8 +708,6 @@ void CtrHeapProfile_dump(const char* label, int top) {
 #define CENSUS_MAP_EVERY 4u
 static uint32_t censusMaps, censusMapBytes;
 
-extern char* __malloc_sbrk_base;
-extern struct mallinfo __malloc_current_mallinfo;
 void __malloc_lock(struct _reent* reent);
 void __malloc_unlock(struct _reent* reent);
 

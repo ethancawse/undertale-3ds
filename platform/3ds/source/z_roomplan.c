@@ -520,7 +520,7 @@ ROOMPLAN_TEXT void __wrap_CtrRenderer_prefetchRoom(Renderer* renderer) {
 #if !defined(CTRPORT_ROOMPLAN_RECORDER) && ROOMPLAN_OWN_CODE_READ
     readPlannedCode(renderer->runner);
 #endif
-    __real_CtrRenderer_prefetchRoom(renderer);
+    CTR_PREFETCHROOM_AFTER_ROOMPLAN(renderer);
 }
 
 #ifdef CTRPORT_ROOMPLAN_RECORDER

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Checks that a game folder is an official, purchased copy before the builder uses it (docs/release/builder.md).
+Allow-list entries are names only, sizes and digests; no game content is bundled.
 
 usage: verify_game.py undertale|deltarune [--game-dir DIR] [--steam-root DIR ...] [--gog-dir DIR ...] [--json]
 
@@ -12,8 +13,8 @@ Two checks, both offline, with no Valve or GOG SDK and no network:
    - Steam: a library listed in <Steam>/steamapps/libraryfolders.vdf holds appmanifest_<appid>.acf, which says the
      game is fully installed in steamapps/common/<installdir> (this folder), and its LastOwner is an account in
      <Steam>/config/loginusers.vdf, an account that has signed in to Steam on this computer.
-   - GOG (UNDERTALE only): goggame-<product id>.info in the folder names the product, and on Windows the GOG registry
-     key or GOG Galaxy's database also records this folder.
+   - GOG (UNDERTALE only): the measured installer .info/.hashdb pair, or a GOG registry/Galaxy record of this folder.
+     A product ID, rootGameId, or parent gameinfo file alone is not install evidence.
 
 DELTARUNE Chapters 1 and 2 are free (the DELTARUNE demo), so they need only the version check; Chapters 3 to 5 need
 both checks. This is a deterrent, not a lock: the engine is AGPL-3.0, and a modified copy can leave the check out.
@@ -31,15 +32,15 @@ import os
 import re
 import sqlite3
 import sys
+from pathlib import Path
 from typing import Callable, Iterable
 
 # ---------------------------------------------------------------------------------------------------------------------
 # names only: official releases. Each row: game, part (the data.win's folder, "root" for the game folder itself), size in bytes,
 # SHA-256, store, version label. Only identifiers, sizes and digests; no game bytes. Measured from
 # purchased Steam copies on 2026-10-16 (the same digests as platform/3ds/data_versions.inc, revision 1).
-# GOG UNDERTALE 1.08 (product 1456487183, Windows build 50921790503031850, 2018-02-02) is not listed yet: nobody on the
-# project owns the GOG copy, and GOG publishes no per-file digests. Until it is measured, a GOG copy passes the install
-# record check and fails the version check unless its data.win is byte-identical to the Steam one.
+# GOG UNDERTALE 1.08 measured from the owner's read-only Windows install on 2026-10-22. The container is shared with
+# other storefronts, but only Steam/GOG install evidence is accepted (ruling 2026-10-22).
 # DELTARUNE Chapter 6 (planned for 2027) is expected to re-patch older chapters: add the new rows, keep the old ones.
 # One owner-overridable policy switch. Hash recognition itself always remains exact.
 ALLOW_UNKNOWN_DELTARUNE = False
@@ -57,6 +58,8 @@ DELTARUNE_DEMO_AUDIO = {
 ALLOW_LIST = [
     ("undertale", "root", 62921978, "b718f8223a5bb31979ffeed10be6140c857b882fc0d0462b89d6287ae38c81c7",
      "steam", "1.08 (Steam build 4279148)"),
+    ("undertale", "root", 62951906, "946c738c6d6182f683431320a0e32470bc3deb50f3e8887e61998df0c4e3abc8",
+     "gog", "1.08 (GOG)"),
     ("deltarune", "root", 2953218, "82a7041a530407c5f17e439a97bdf53e4a24e30775a7ecbc2879369b9d2441d6",
      "steam", "v0.0.253 (Steam build 24484059)"),
     ("deltarune", "chapter1_windows", 13072876, "82c2bb61b8d78cd287120f6301588fecba34ec5a890bac711b7a8774c760ec70",
@@ -304,7 +307,7 @@ def galaxy_install_paths(db, product):
     if not os.path.isfile(db):
         return []
     try:
-        uri = "file:%s?mode=ro" % db.replace("\\", "/")
+        uri = Path(db).resolve().as_uri() + "?mode=ro"
         con = sqlite3.connect(uri, uri=True, timeout=2)
         try:
             rows = con.execute("SELECT installationPath FROM InstalledBaseProducts WHERE productId = ?",
@@ -511,33 +514,37 @@ def steam_records(game: Game, roots):
 # ---------------------------------------------------------------------------------------------------------------------
 # GOG install record
 
+# Measured installer records beside Windows GOG 1.08. Names and SHA-256 only; no store files are bundled.
+# A product ID or a hand-written JSON object is not an installer record. Registry/Galaxy installs may use newer
+# metadata. Windows portable/offline installs need this measured pair. On Linux/macOS the release permits the
+# known Windows GOG data hash without installer metadata; native game.unx/game.ios still need their own allowlist.
+GOG_INSTALL_RECORDS = {"1456487183": (
+    "adb26c3daa0b8511e8219b7ee950c8cdc527795f7e3b2a6a42355f27fcdc1b29",
+    "07f899a497faa6d3befbead9cc86f8ca24fcad719426f106a1eb2c28217743bc")}
+
+
 def gog_record(game: Game, folder, records: Callable | None = None, platform=sys.platform):
-    """(has_info_file, recorded_by_gog). The info file is goggame-<id>.info (Windows, macOS) or the offline Linux
-    installer's gameinfo; on Windows GOG must also record the folder in its registry key or Galaxy's database."""
+    """(info_present, recorded_by_gog): measured installer pair or exact registry/Galaxy folder record.
+    Parent gameinfo, rootGameId, and unverified product JSON never establish install provenance."""
     if not game.gog_product:
         return False, False
-    info = False
     p = os.path.join(folder, "goggame-%s.info" % game.gog_product)
-    if os.path.isfile(p):
+    info = os.path.isfile(p)
+    if info:
         try:
             with open(p, encoding="utf-8-sig") as f:
                 j = json.load(f)
-            info = str(j.get("gameId")) == game.gog_product or str(j.get("rootGameId")) == game.gog_product
+            valid = (str(j.get("gameId")) == game.gog_product
+                     and str(j.get("name", "")).casefold() == game.title.casefold()
+                     and str(j.get("rootGameId", game.gog_product)) == game.gog_product)
+            pair = GOG_INSTALL_RECORDS.get(game.gog_product)
+            hashdb = os.path.join(folder, "goggame-%s.hashdb" % game.gog_product)
+            if valid and pair and sha256_file(p) == pair[0] and sha256_file(hashdb) == pair[1]:
+                return True, True
         except (OSError, ValueError, AttributeError):
-            info = False
-    if not info and platform != "win32":
-        gi = os.path.join(os.path.dirname(os.path.normpath(folder)), "gameinfo")
-        try:
-            with open(gi, encoding="utf-8", errors="replace") as f:
-                info = f.readline().strip().lower() == game.title.lower()
-        except OSError:
             pass
-    if not info:
-        return False, False
-    if platform != "win32":
-        return True, True
-    recs = (records or (lambda prod: default_gog_records(prod)))(game.gog_product)
-    return True, any(_norm(r) == _norm(folder) for r in recs)
+    recs = (records or (lambda prod: default_gog_records(prod, platform=platform)))(game.gog_product)
+    return info, any(_norm(r) == _norm(folder) for r in recs)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -550,6 +557,8 @@ def _looks_like_game(game, folder):
 def install_folder(game: Game, folder: str):
     """The install folder for a pick inside a Mac bundle (UNDERTALE.app, or its Contents or Resources folder): Steam's
     install record names the folder that holds the bundle. Any other folder comes back as it is."""
+    if os.path.isfile(os.path.join(folder, 'data.win')):
+        return folder
     parts = os.path.normpath(folder).split(os.sep)
     for layout in game.layouts:
         for depth in range(len(layout.resources), 0, -1):
@@ -635,7 +644,7 @@ def _verify_folder(game, folder, store, rec, records, gog_records, lists, platfo
                            % ("yes" if rec.owner_known else "no"))
     else:
         has_info, recorded = gog_record(game, folder, gog_records, platform)
-        if has_info and recorded:
+        if recorded:
             res.store = "gog"
             owner_ok = True
             res.details.append("GOG install record for product %s" % game.gog_product)
@@ -658,6 +667,20 @@ def _verify_folder(game, folder, store, rec, records, gog_records, lists, platfo
         return res
     labels = {versions[p][1][1] for p in present if versions[p][0] == "ok"}
     res.version = ", ".join(sorted(labels)) or None
+    hash_only_gog = (rec is None and not owner_ok and platform in ('linux', 'darwin') and game.gog_product
+                     and all(versions[p][0] == 'ok' and versions[p][1][0] == 'gog' for p in present))
+    if hash_only_gog:
+        res.store = 'gog'
+        owner_ok = True
+        res.details.append('Known Windows GOG-compatible data hash; installer metadata is optional on this OS')
+    mixed = [p for p in present if versions[p][0] == "ok" and p not in game.free_parts
+             and res.store and versions[p][1][0] != res.store]
+    if mixed:
+        res.status = UNKNOWN_VERSION
+        res.refused_parts = present
+        res.message = ("These files came from a different store. Restore %s in %s, then choose its installed folder."
+                       % (game.title, "GOG Galaxy" if res.store == "gog" else "Steam"))
+        return res
     for part in present:
         good = versions[part][0] == "ok" or (game.key == "deltarune" and ALLOW_UNKNOWN_DELTARUNE
                                                and versions[part][0] == "unknown")
@@ -728,6 +751,8 @@ def _verify_folder(game, folder, store, rec, records, gog_records, lists, platfo
     res.status = OK
     res.message = "%s is an official %s copy, version %s." % (
         game.title, "Steam" if res.store == "steam" else "GOG" if res.store == "gog" else "free", res.version)
+    if hash_only_gog:
+        res.message = "%s matches the supported GOG-compatible release, version %s." % (game.title, res.version)
     if game.key == "deltarune" and not paid_present:
         res.message += " Only the free chapters are installed."
     if game.key == "deltarune" and unknown and ALLOW_UNKNOWN_DELTARUNE:

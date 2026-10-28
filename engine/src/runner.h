@@ -24,6 +24,12 @@
 #else
 #define LAYERFIX_LATE NOINLINE
 #endif
+// drawRoom's runs of legacy tiles (runner.c's end), in their own late section.
+#if defined(CTRPORT_LAYERFIX_RELEASE_LAYOUT) && defined(__3DS__) && defined(__GNUC__)
+#define TILERUN_LATE __attribute__((noinline, section(".text.late.tilerun")))
+#else
+#define TILERUN_LATE NOINLINE
+#endif
 
 // ===[ Event Type Constants ]===
 #define EVENT_ROOM_CREATION  -2
@@ -806,7 +812,7 @@ struct Runner {
     // Order grows at the back and shrinks at the front of equal-depth layers; 0 means no layer.
     uint32_t nextLayerDrawOrder;
     uint32_t previousLayerDrawOrder;
-    SavedRoomState* savedRoomStates; // array of size dataWin->room.count, for persistent room support
+    SavedRoomState** savedRoomStates; // room.count state pointers (nullptr until used), then room.count flag bytes (runner.c, FreewinsRoom_*)
     int32_t viewCurrent; // index of the view currently being drawn (for view_current)
     bool viewsEnabled;   // runtime-mutable global view system toggle (view_enabled); seeded from room->flags & 1 on room enter
     uint32_t renderGameW; // FBO width used by the last frame (= max port bound), 0 if not yet rendered
@@ -860,11 +866,11 @@ struct Runner {
     GMLReal deltaTime;
     // Runtime override for the active game speed. 0 means "unset" and the loop falls back to the room/default FPS.
     GMLReal gameSpeedOverride;
-    // Current frame rate (capped at room speed)
-    double fps;                   // last measured frames-per-second value returned to GML
+    // Measured frame rate for port telemetry; GML reads the simulation target.
+    double fps;                   // last measured frames-per-second value
     uint64_t fpsWindowStartNanos;  // nowNanos() at the start of the measurement window
     int fpsWindowStartFrame;   // runner->frameCount at the start of the measurement window
-    // Real-time measured frame rate for the "fps_real" builtin, measured as 1 / frame work time (uncapped).
+    // Port telemetry's real-time frame rate, measured as 1 / frame work time (uncapped).
     double fpsReal;
     uint64_t fpsRealFrameStartNanos; // nowNanos() at start of frame work for fps_real (set in Runner_step, consumed in Runner_drawGUI)
     char* windowTitle;
@@ -1156,7 +1162,7 @@ typedef struct {
     bool outsideRoom;
     float xprevious, yprevious, xstart, ystart;
     float direction0; // the direction its instance keeps while hspeed and vspeed are both 0
-    uint32_t id, creator;
+    uint32_t id, creator; int32_t drawKey; // drawKey: its instance's draw order key (utorder)
 } __attribute__((aligned(32))) UtswPixel;
 // A span entry's elementOrder is UTSW_SPAN0 less its index (every other GMS1 entry's is 0).
 #define UTSW_SPAN0 (-0x5357A11)

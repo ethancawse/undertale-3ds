@@ -12,12 +12,12 @@ usage:
             [--corpus NAME GLOB ...] [--game ...]
   gmlaot.py <out_dir> --target o3ds|n3ds --selection FILE --data DIR [--layout FILE]    (what platform/3ds/build.sh aot does)
 
-  --selection FILE a list from tools/aot/select.py ("<data.win folder> <code entry>" per line, best first, e.g.
+  --selection FILE a list from tools/aot/aot_select.py ("<data.win folder> <code entry>" per line, best first, e.g.
                    tools/aot/selection/deltarune.txt), taken in order until the budget is full, skipping what doesn't
                    fit; replaces --game, --names and --profile. An entry with "extra" after it is taken on top of the
                    budget
   --layout FILE   with --selection: the order to write the chosen functions in ("<data.win folder> <code entry>" per
-                   line, from tools/aot/select.py layout), so that code that runs together sits together in the
+                   line, from tools/aot/aot_select.py layout), so that code that runs together sits together in the
                    binary; functions it doesn't list follow in the selection's order. The last quarter of the files
                    (LAYOUT_TAIL) keep the selection's order, so a module that has to leave its last files out still
                    leaves out the lowest-ranked functions. Only where each function sits changes: the table, and so
@@ -256,6 +256,87 @@ LATE_COPY_SETTERS = {"x": ("AOT_LATE_SET_FLOAT_DIRTY", "x"), "y": ("AOT_LATE_SET
                      "image_index": ("AOT_LATE_SET_FLOAT", "imageIndex"), "image_speed": ("AOT_LATE_SET_FLOAT", "imageSpeed"),
                      "image_alpha": ("AOT_LATE_SET_FLOAT", "imageAlpha")}
 LATE_TEXTS = []    # the late copies' C text, for aot_late.c
+# WAD 16 (UNDERTALE) only (credfix): the text lookup script, by its bytecode's digest, gets a front (aotg_<k>, in aot_gettext.c,
+# which links after every other late input) that skips the per-letter loop when the text has no "\[": the loop (i from
+# 1 to string_length(text) - 3: string_copy(text, i, 2) == "\[" and string_char_at(text, i + 3) == "]" replace that
+# escape) changes nothing then, and only spends a string_length, a string_copy (an allocation) and a compare on each
+# letter. UNDERTALE asks for every line of text through it (33 a frame in the cast roll of the True Pacifist ending,
+# about a third of that room's Draw on the Old 3DS). The front (GETTEXT_HELPER, a small late wrapper per entry with
+# the operands the bytecode names) works out what the code before the loop leaves in the text's local in the common
+# case, global.language not "ja" and the English map holding a string for the key, and returns it when it has no
+# escape; anything else runs aotf_<k> from its start, which the front has changed nothing for (it only reads, and calls
+# ds_map_find_value, which only reads). aotf_<k> stays linked and in place. Values: (the code before the loop, line for
+# line without its address comments, {name} standing for an operand the front is given; the loop's head label; its
+# exit label and returning tail, which return the text's local).
+GETTEXT_FAST = {
+    0xFF01FC2C54143E26: (
+        ["    AOT_ENTRY_CHECK();", "    AOT_PROLOGUE();", "    AOT_LOCALS(aotlv_{k}, aotls_{k}, &aotlc_{k}, 8);",
+         "    RValue *aotc_0 = nullptr, *aotc_1 = nullptr, *aotc_2 = nullptr, *aotc_3 = nullptr;",
+         "    AOT_PUSH_INT(0, -1, 15);", "    AOT_PUSH_INT(1, 0, 15);",
+         "    AOT_SITE_V(aotSitePushArray, 0x8, 8, 2, 1, &V[{arg}]);", "    AOT_STORE(&LV(0), 1, 5);",
+         "    AOT_WEAK_COPY(0, &LV(0));", "    AOT_PUSH_VAR(1, -5, {map}, AOT_SITE(aotSitePushGlb, 0x20, 8, 1, 2));",
+         "    AOT_CALL_BUILTIN(2, 0xD9020002u, 0x28, 1, {find});  /* ds_map_find_value */",
+         "    AOT_STORE(&LV(1), 1, 5);", "    AOT_WEAK_COPY(0, &LV(1));",
+         "    AOT_CALL_BUILTIN(1, 0xD9020001u, 0x40, 1, {undef});  /* is_undefined */", "    AOT_CONV(1, 5, 4);",
+         "    if (aotTruth(&S[0]) == false) goto L_0060;", "    AOT_PUSH_STRING(0, {missing});",
+         "    AOT_STORE(&LV(1), 1, 6);", "L_0060:", "    AOT_BLOCK(0, 0x60);",
+         "    AOT_PUSH_VAR(0, -5, {lang}, AOT_SITE(aotSitePushGlb, 0x60, 8, 0, 1));", "    AOT_PUSH_STRING(1, {ja});",
+         "    AOT_CMP_BRANCH(2, 0x15560300u, 3, false, L_00C4);", "    AOT_WEAK_COPY(0, &LV(0));",
+         "    AOT_PUSH_VAR(1, -5, {mapja}, AOT_SITE(aotSitePushGlb, 0x80, 8, 1, 2));",
+         "    AOT_CALL_BUILTIN(2, 0xD9020002u, 0x88, 1, {find});  /* ds_map_find_value */",
+         "    AOT_STORE(&LV(2), 1, 5);", "    AOT_WEAK_COPY(0, &LV(2));",
+         "    AOT_CALL_BUILTIN(1, 0xD9020001u, 0xA0, 1, {undef});  /* is_undefined */", "    AOT_CONV(1, 5, 4);",
+         "    AOT_NOT(1, 0x12040000u, 4);", "    if (aotTruth(&S[0]) == false) goto L_00C4;",
+         "    AOT_WEAK_COPY(0, &LV(2));", "    AOT_STORE(&LV(1), 1, 5);", "L_00C4:", "    AOT_BLOCK(0, 0xC4);",
+         "    AOT_PUSH_INT(0, 1, 15);", "    AOT_STORE(&LV(3), 1, 2);",
+         "    AOT_CFIND(aotc_0, -5, {c0}); AOT_CFIND(aotc_1, -5, {c1}); AOT_CFIND(aotc_2, -5, {c2}); "
+         "AOT_CFIND(aotc_3, -5, {c3});"],
+        "L_00D0:", "L_05E4:",
+        ["    AOT_BLOCK(0, 0x5E4);", "    /* 05E4 */", "    AOT_WEAK_COPY(0, &LV(1));",
+         "    /* 05EC */", "    AOT_RET(1);", "    AOT_EPILOGUE();", "}"]),
+}
+GETTEXT_OPERANDS = ("arg", "map", "lang", "ja", "find")  # the front's operands, in its array's order
+GETTEXT_TEXTS = []  # the wrappers' C text, for aot_gettext.c
+# The front, once in aot_gettext.c. a: argument's variable index (argument[0], a builtin: the call's first argument),
+# the English map's and global.language's variable indices, the string index of "ja", and ds_map_find_value's function
+# index. Each step is what the generated code's own fast path does: vmScopeVarSlot for a global (aotPushVarFast), the
+# call's arguments for argument[0] (tryPushArrayElement), the builtin from the same call cache with the arguments in
+# the same order (aotCallBuiltin), strcmp for a string == (vmCmpStrings). The loop changes the text only at a "\["; a
+# byte search for one is exact, since a backslash and a bracket are ASCII, never part of a UTF-8 sequence.
+# ds_map_find_value returns its own copy of a string; the generated code would keep it in the local and return a view
+# of it, which the script call (runScriptFrameWith, VM_scriptResultInPlace) turns into an owned copy of the same text
+# with the same fields as this one. Tracing and stress builds test the generated code itself: there the front is it.
+GETTEXT_HELPER = r"""#include "vm_builtins.h"
+
+static NOINLINE RValue aotGettextFront(VMContext* ctx, AotFn generated, const int32_t* a) {
+#if defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS)
+    (void) a;
+    return generated(ctx);
+#else
+    Variable* const V = ctx->dataWin->vari.variables;
+    BuiltinFunc find = (BuiltinFunc) ctx->funcCallCache[a[4]].builtin;
+    if (V[a[0]].varID != VARIABLE_BUILTIN || V[a[0]].builtinVarId != BUILTIN_VAR_ARGUMENT || ctx->scriptArgs == nullptr
+        || 1 > ctx->scriptArgCount || find == nullptr || (uint32_t) a[3] >= ctx->dataWin->strg.count)
+        return generated(ctx);
+    RValue* map = vmScopeVarSlot(ctx, INSTANCE_GLOBAL, V[a[1]].varID);
+    RValue* lang = vmScopeVarSlot(ctx, INSTANCE_GLOBAL, V[a[2]].varID);
+    const char* ja = ctx->dataWin->strg.strings[a[3]];
+    if (map == nullptr || lang == nullptr || lang->type != RVALUE_STRING
+        || strcmp(lang->string != nullptr ? lang->string : "", ja != nullptr ? ja : "") == 0)
+        return generated(ctx);
+    RValue args[2];
+    vmWeakCopyInto(&args[0], map);
+    vmWeakCopyInto(&args[1], &ctx->scriptArgs[0]);
+    RValue text = find(ctx, args, 2);
+    if (text.type == RVALUE_STRING && text.string != nullptr && text.ownsReference) {
+        const char* p = text.string;
+        while (*p != '\0' && !(p[0] == '\\' && p[1] == '[')) p++;
+        if (*p == '\0') return text;
+    }
+    RValue_free(&text);
+    return generated(ctx);
+#endif
+}"""
 LATE_COPY_SITE = re.compile(r"^(\s*)(AOT_SITE_POPVAR\(0x[0-9A-F]+, (\d+), 0, \d+, 0x([0-9A-F]{8})u\));  /\* (\w+) \*/$")
 
 # WAD 16 (UNDERTALE) only: code entries engine/src/z_utflames.c has a native body for go to it (UTF_NATIVE);
@@ -1719,6 +1800,7 @@ def parse_args(args):
             continue
         if a == "--no-late-copies":
             LATE_COPIES.clear()
+            GETTEXT_FAST.clear()
             i += 1
             continue
         if a == "--no-escape":
@@ -1895,6 +1977,38 @@ def late_copy(dw, k, func_text):
                       "    if (__builtin_expect(!aotLateSelfIsInstance(ctx), 0)) return aotf_%d(ctx);" % k]
     return ["RValue aotf_%d(VMContext* ctx) AOT_FN_DECL;" % k, "RValue aotl_%d(VMContext* ctx);" % k] + lines, n
 
+
+def gettext_copy(k, func_text, digest):
+    """aot_gettext.c's wrapper for aotf_<k> (GETTEXT_FAST): aotg_<k> calls the front (GETTEXT_HELPER) with the operands
+    the generated code before the loop names, or None when that code, the loop's labels or the returning tail aren't
+    the text the front was written for, line for line."""
+    front, loop, done, tail = GETTEXT_FAST[digest]
+    lines = func_text.splitlines()
+    head = "RValue aotf_%d(VMContext* ctx) {" % k
+    if lines.count(head) != 1 or lines.count(loop) != 1 or lines.count(done) != 1:
+        return None
+    i = lines.index(done)
+    if lines[i + 1:i + 1 + len(tail)] != tail:
+        return None
+    h, j = lines.index(head), lines.index(loop)
+    got = [line for line in lines[h + 1:j] if not re.fullmatch(r"    /\* [0-9A-F]{4}( [0-9A-F]{4})* \*/", line)]
+    if len(got) != len(front):
+        return None
+    values = {"k": str(k)}
+    for want, line in zip(front, got):
+        parts = re.split(r"\{(\w+)\}", want)
+        pattern = "".join(re.escape(p) if n % 2 == 0 else r"(-?\d+)" for n, p in enumerate(parts))
+        m = re.fullmatch(pattern, line)
+        if m is None:
+            return None
+        for name, value in zip(parts[1::2], m.groups()):
+            if values.setdefault(name, value) != value:
+                return None
+    operands = ", ".join(values[name] for name in GETTEXT_OPERANDS)
+    return "\n".join(["RValue aotf_%d(VMContext* ctx) AOT_FN_DECL;" % k, "RValue aotg_%d(VMContext* ctx);" % k,
+                      "static const int32_t aotga_%d[] = { %s };" % (k, operands),
+                      "RValue aotg_%d(VMContext* ctx) { return aotGettextFront(ctx, aotf_%d, aotga_%d); }" % (k, k, k)])
+
 # WAD 16 (UNDERTALE) only (utflames): code entries that engine/src/z_utflames.c has a native body for. Each is
 # matched by its shape, every instruction word in order with what its operand names: a builtin variable or function
 # by its name (with '-' for '_'), any other variable by the order it first appears in (v0, v1, ...), and any other
@@ -1915,7 +2029,8 @@ UTF_NATIVE = [
     # Step of a fire bullet that moves on a sine wave (v0 += 1; x += sin(v0 / v1) * v2), is destroyed below the room
     # and tests its own box against one object (event_user(0) on a hit). Operands: the variables' IDs (v0, v1, v2),
     # collision_rectangle's function index and the object index it tests (the PushI at 0x90).
-    ("UtFlames_sineStep",
+    # UtFlames_helixStep since round 17 (UtFlames_sineStep, round 16's, stays in place unused: late code doesn't move).
+    ("UtFlames_helixStep",
      "C005FFFF.A0.v0 840F0001 0C520000 4555FFFF.A0.v0 C005FFFF.A0.x C005FFFF.A0.v0 C005FFFF.A0.v1 09550000 "
      "D9020001.sin C005FFFF.A0.v2 08550000 0C550000 4555FFFF.A0.x C005FFFF.A0.y C305FFFF.A0.room-height 840F0064 "
      "0C520000 15550600 B8000004 D9020000.instance-destroy 9E050000 840F0001 07520000 840F0000 07520000 840F**** "
@@ -2315,7 +2430,17 @@ def generate_function(dw, name, k, report):
         copy = late_copy(dw, k, func_text)
         if copy is not None:
             report.append("late copy %s: aotl_%d, %d builtin writes inline" % (name, k, copy[1]))
+    fast = None
+    if (variant is None and copy is None and dw.wad == 16 and digest in GETTEXT_FAST and esc is None
+            and not typed_regions and not inline_text):
+        fast = gettext_copy(k, func_text, digest)
+        report.append("gettext front %s: %s" % (name, "aotg_%d returns text without an escape before the letter loop" % k
+                                                if fast is not None else "digest matches but the text doesn't: none"))
     out = ["RValue aotf_%d(VMContext* ctx) AOT_FN_DECL;" % k]
+    if fast is not None:
+        # On the same line: a line more in aot_table.c would move the __LINE__ of what follows it.
+        GETTEXT_TEXTS.append(fast)
+        out[0] += " RValue aotg_%d(VMContext* ctx);" % k
     if variant is not None:
         # In aot_table.c, not beside aotf_<k>: a caller in its own file changes where GCC puts aotf_<k> there.
         out += variant[0]
@@ -2338,7 +2463,8 @@ def generate_function(dw, name, k, report):
     out.append("};")
     line = ("    { %s, %d, %d, %d, 0x%016XULL, %s_%d, aotv_%d, %d, aotfn_%d, %d },"
             % (c_string(name), entry["offset"], entry["length"], end, digest,
-               "aotu" if variant is not None else "aotl" if copy is not None else "aotf", k, k,
+               "aotu" if variant is not None else "aotl" if copy is not None else "aotg" if fast is not None
+               else "aotf", k, k,
                len(vars_sorted), k, len(funcs_sorted)))
     report.append("ok   %s: %d instructions, %d labels, %d locals, %d left to the interpreter%s"
                   % (name, len(fn.depth), len(fn.labels), len(em.locals), len(fn.stubs),
@@ -2507,7 +2633,7 @@ def main(argv):
         raise ValueError("Requested late numeric entries were not emitted: " + ", ".join(sorted(missing_late)))
     os.makedirs(out_dir, exist_ok=True)
     for f in os.listdir(out_dir):
-        if re.fullmatch(r"aot_gen_\d+\.c|aot_table\.c|aot_generated\.inc|aot_typed(_bind|_\d+)?\.c|aot_late\.c|aot_utold_(loop|regions)\.c", f):
+        if re.fullmatch(r"aot_gen_\d+\.c|aot_table\.c|aot_generated\.inc|aot_typed(_bind|_\d+)?\.c|aot_late\.c|aot_gettext\.c|aot_utold_(loop|regions)\.c", f):
             os.remove(os.path.join(out_dir, f))
     header = ("// Generated by tools/aot/gmlaot.py from %s.\n"
               "// Derived from the game's code: keep it in the build directory, never commit or share it.\n\n"
@@ -2573,6 +2699,15 @@ def main(argv):
             f.write("\n\n".join(LATE_TEXTS))
             f.write(footer)
         report.append("late copies: %d in aot_late.c" % len(LATE_TEXTS))
+    if GETTEXT_TEXTS:
+        # The text lookup front (GETTEXT_FAST), in a file that platform/3ds/late_reserve.ld links after every other late
+        # input, so that nothing already linked moves.
+        with open(os.path.join(out_dir, "aot_gettext.c"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(header)
+            f.write(GETTEXT_HELPER + "\n\n")
+            f.write("\n\n".join(GETTEXT_TEXTS))
+            f.write(footer)
+        report.append("gettext fronts: %d in aot_gettext.c" % len(GETTEXT_TEXTS))
     if late_entries:
         for filename, key, include in (('aot_utold_loop.c', 'caller', 'vm_aot.h'),
                                        ('aot_utold_regions.c', 'regions', 'vm_aot_typed.h')):

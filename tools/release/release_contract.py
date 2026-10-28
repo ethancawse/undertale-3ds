@@ -23,6 +23,27 @@ def packed(parts):
     return major * 1024 + minor * 16 + patch
 
 
+def check_allocations(table):
+    """Every prerelease's CIA allocation, in version order, rises and stays below its own final release, so each
+    release's CIA installs over the one before it (docs/release/updates.md; release_contract.cmake checks the same)."""
+    rows = []
+    for label, value in table.items():
+        match = LABEL.fullmatch(label)
+        if not match or not match.group(4) or int(match.group(5)) > 9999:
+            raise ValueError('CIA allocation %s is not a prerelease version (alpha.N/beta.N/rc.N, N below 10000)'
+                             % label)
+        final = packed(tuple(int(match.group(i)) for i in (1, 2, 3)))
+        cia = packed(components(value))
+        if cia >= final:
+            raise ValueError('Prerelease CIA allocation must precede its final release (%s: %s)' % (label, value))
+        order = (final, ('alpha', 'beta', 'rc').index(match.group(4)), int(match.group(5)))
+        rows.append((order, cia, '%s=%s' % (label, value)))
+    rows.sort()
+    for (_, cia_a, a), (_, cia_b, b) in zip(rows, rows[1:]):
+        if cia_a >= cia_b:
+            raise ValueError('CIA allocations must rise with the version: %s is not below %s' % (a, b))
+
+
 def read(root=ROOT):
     root = Path(root)
     with (root / 'docs/release/build-contract.json').open(encoding='utf-8') as source:
@@ -48,6 +69,7 @@ def read(root=ROOT):
         raise ValueError('version %s is too long for the console\'s %d-character build ID' % (version, limit))
     numeric = '.'.join(match.group(i) for i in (1, 2, 3))
     final = components(numeric)
+    check_allocations(contract.get('cia_prerelease_versions', {}))
     if match.group(4):
         allocation = contract.get('cia_prerelease_versions', {}).get(version)
         if allocation is None:

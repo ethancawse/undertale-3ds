@@ -6,25 +6,45 @@ You build it from your own copy of UNDERTALE.
 
 ## Status
 
-UNDERTALE 1.0 beta: expected within the next week. No download yet.
+UNDERTALE 1.0 beta: not out yet, and no download yet. It ships when every scene runs at a steady 30 fps on the older models too, inside the normal 64 MB .3dsx, and has had a final check.
+
+DELTARUNE: in progress. It comes after UNDERTALE.
 
 ## Progress to 1.0
 
 The goal: every scene running at a locked 30 fps on every model.
 
+The bars count the scenes we measure on real consoles that pass (28 October 2026):
+
 ```
-New 3DS / New 3DS XL / New 2DS XL   ████████████████████  100%
-3DS / 3DS XL / 2DS                  ███████████████████░   94%
-Overall                             ███████████████████░   97%
+New 3DS / New 3DS XL / New 2DS XL   ███████████████████░   97%
+3DS / 3DS XL / 2DS                  █████████████░░░░░░░   63%
+Overall                             ████████████████░░░░   80%
 ```
 
-Almost everything is done. What's left, all on the older models:
+The bars went down since the last update, mainly because the test got stricter. A scene used to pass when its slowest 1% of frames were fast enough. Now every single frame in play must be ready in time, with no dropped frames.
 
-- Mettaton's opera
-- A few rooms in Hotland
-- Asriel's transformation
+New 3DS: 65 of 67 measured scenes pass. Left: a hitch in the Omega Flowey finale, one credits scene to re-measure, and a final check.
+
+Older models: 45 of 71 measured scenes pass. Left:
+
 - The Omega Flowey finale
+- Asriel's fight and transformation
+- Mettaton's opera and Mettaton EX
+- Parts of the fights with Asgore, Undyne and Mad Dummy, and the True Lab
+- The ending credits
+- A few rooms in Snowdin, Waterfall and Hotland
+- Six scenes that look fine but still need the stricter measurement
 - A final check of every scene
+
+## What changed since 25 October
+
+- Objects at the same depth now draw in the same order as on PC. This fixes Undyne's battle buttons looking dim and the order of Mettaton's smoke.
+- New 3DS: the long pauses entering a battle in Snowdin and at the end of Undyne's bridge are gone.
+- Older models: the Omega Flowey finale no longer keeps reloading its art from the SD card.
+- Opening the Rosalina menu with the other screen off no longer freezes the game.
+- The first-boot "SELECT: Options" hint no longer covers the game.
+- Crisp text now covers Sans's font and the ending credits.
 
 ## Supported consoles
 

@@ -67,3 +67,71 @@ class BuildPythonTests(unittest.TestCase):
                           (exc.stdout, exc.stderr))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('12345', result.stdout)
+
+
+@unittest.skipUnless(BASH and Path(BASH).is_file(), 'Bash required')
+class BuildEnvironmentTests(unittest.TestCase):
+    """A login shell without APPDATA must not quietly build a game without its derived art."""
+
+    def shell(self, script, env):
+        return subprocess.run([BASH, '--noprofile', '--norc', '-c', 'source "$1"; ' + script, 'env-test',
+                               (ROOT / 'platform/3ds/python.sh').as_posix()],
+                              env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+
+    @unittest.skipUnless(os.name == 'nt' and shutil.which('reg.exe') and os.environ.get('APPDATA'),
+                         'Windows with a logon session')
+    def test_profile_variables_come_back_in_a_shell_without_them(self):
+        env = {k: v for k, v in os.environ.items() if k.upper() not in ('APPDATA', 'LOCALAPPDATA', 'USERPROFILE')}
+        result = self.shell('release_windows_profile_env; printf "%s\n" "$APPDATA" "$LOCALAPPDATA" "$USERPROFILE"', env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        got = result.stdout.splitlines()
+        want = [os.environ.get(k, '') for k in ('APPDATA', 'LOCALAPPDATA', 'USERPROFILE')]
+        self.assertEqual([os.path.normcase(v) for v in got], [os.path.normcase(v) for v in want])
+
+    @unittest.skipUnless(os.name == 'nt' and shutil.which('reg.exe'), 'Windows')
+    def test_profile_variables_already_set_are_kept(self):
+        env = dict(os.environ, APPDATA=r'C:\kept-appdata')
+        env.pop('LOCALAPPDATA', None)
+        result = self.shell('release_windows_profile_env; printf "%s\n" "$APPDATA"', env)
+        self.assertEqual(result.stdout.strip(), r'C:\kept-appdata', result.stderr)
+
+    def test_missing_derivation_stops_the_build(self):
+        env = dict(os.environ)
+        env.pop('CTRPORT_DERIVATION_OPTIONAL', None)
+        result = self.shell('release_missing_derivation "Crisp art" "cannot import numpy"; echo "rc=$?"', env)
+        self.assertIn('rc=3', result.stdout)
+        self.assertIn('ERROR: Crisp art: cannot import numpy.', result.stderr)
+        self.assertIn('CTRPORT_DERIVATION_OPTIONAL=1', result.stderr)
+
+    def test_tools_only_build_may_go_on_without_it(self):
+        env = dict(os.environ, CTRPORT_DERIVATION_OPTIONAL='1')
+        result = self.shell('release_missing_derivation "Crisp art" "cannot import numpy"; echo "rc=$?"', env)
+        self.assertIn('rc=0', result.stdout)
+        self.assertNotIn('ERROR', result.stderr)
+        self.assertIn('building without it', result.stderr)
+
+    def test_build_restores_the_profile_and_stops_on_missing_art(self):
+        text = (ROOT / 'platform/3ds/build.sh').read_text(encoding='utf-8')
+        self.assertIn('release_windows_profile_env\nrelease_find_python\n', text)
+        self.assertIn('release_missing_derivation "Crisp art" "$crispart_why" || exit 3', text)
+        self.assertNotIn('optional derivation tools unavailable', text)
+
+    @unittest.skipUnless((ROOT / 'tools/analysis/crispart_pack.py').is_file(), 'derivation scripts not in this tree')
+    def test_tool_check_names_the_import_and_the_place_it_looked(self):
+        probe = subprocess.run([sys.executable, '-I', '-c', 'import numpy'], stdin=subprocess.DEVNULL,
+                               capture_output=True, timeout=60)
+        if probe.returncode == 0:
+            self.skipTest('numpy is installed outside the user site-packages')
+        with tempfile.TemporaryDirectory(dir=ROOT / 'scratch') as empty:
+            env = dict(os.environ, APPDATA=empty)
+            # APPDATA selects Python's user site on Windows; Unix uses its own base.
+            # Query the same isolated interpreter/environment as the tool under test.
+            user_site = subprocess.run([sys.executable, '-I', '-c',
+                                       'import site; print(site.getusersitepackages())'],
+                                      env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                                      text=True, check=True, timeout=30).stdout.strip()
+            result = subprocess.run([sys.executable, '-I', str(ROOT / 'tools/analysis/crispart_pack.py'), '--check-tools'],
+                                    env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('crispart_pack: cannot import numpy', result.stderr)
+        self.assertIn('user site-packages looked in: ' + user_site, result.stderr)

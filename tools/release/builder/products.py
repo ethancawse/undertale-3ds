@@ -58,13 +58,26 @@ PRODUCTS = {
         "undertale", "UNDERTALE", "undertale-3ds", "3ds/undertale-3ds",
         {"o3ds": (78.0, 2.8), "n3ds": (147.2, 7.5)},
         {"o3ds": 106, "n3ds": 196},
-        {"1.08 (Steam build 4279148)": 212, "1.08 (Steam macOS)": 212}, 14.0),
+        {"1.08 (Steam build 4279148)": 212, "1.08 (Steam macOS)": 212, "1.08 (GOG)": 212}, 14.0),
     "deltarune": Product(
         "deltarune", "DELTARUNE", "deltarune-3ds", "3ds/deltarune-3ds",
         {"o3ds": (492.4, 27.0), "n3ds": (800.9, 62.0)},
         {"o3ds": 367, "n3ds": 792},
         {}, 230.0),
 }
+
+# Release setting, off for now (decided 2026-10-26): UNDERTALE's Old 3DS build with Omega Flowey's over-resolution art
+# stored at half resolution (build.sh halfart, tools/analysis/halfart_pack.py, platform/3ds/source/ctr_halfart.c), the
+# fallback if the full-resolution set doesn't fit by release. On: the UNDERTALE o3ds build gets "halfart"
+# (pipeline.build_argv), and texture preparation on the PC also writes that build's own cache folder, cache_lt_<n>
+# (texcache.py), so its first start doesn't prepare textures on the console. Every other build is unchanged.
+HALFART = False
+
+
+def halfart(game, target="o3ds", setting=None):
+    """Whether this game and model build with half-resolution art (HALFART, or setting when given)."""
+    return bool(HALFART if setting is None else setting) and game == "undertale" and target == "o3ds"
+
 
 # Never copied to the SD card: the PC executable and its libraries.
 SKIP_SUFFIXES = (".exe", ".dll")
@@ -126,11 +139,11 @@ def music_check(product: Product, folder: str, version: str | None, *, store='st
                 pass  # The count failure already stops the build.
         elif not oggs:
             problems.append("the music files (.ogg) are missing")
+        restore = ('Use Steam\'s "Verify integrity of game files"' if store == 'steam'
+                   else 'Use GOG Galaxy\'s Verify / Repair, or reinstall your GOG copy')
         if problems:
-            return False, ("%s: %s. Use Steam's \"Verify integrity of game files\" (or reinstall the game) to restore "
-                           "them, then try again." % (folder, "; ".join(problems)))
-        repair = ('Use Steam\'s "Verify integrity of game files" to restore the music, then try again. '
-                  'Move custom music out of the game folder first.')
+            return False, "%s: %s. %s to restore them, then try again." % (folder, "; ".join(problems), restore)
+        repair = restore + ' to restore the music, then try again. Move custom music out of the game folder first.'
         try:
             entries = load_music_manifest(version, store=store, platform=platform)
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -153,7 +166,7 @@ def music_check(product: Product, folder: str, version: str | None, *, store='st
                     return False, 'Music file %s has the wrong SHA-256. %s' % (name, repair)
             except OSError:
                 return False, 'Music file %s is missing or unreadable. %s' % (name, repair)
-        return True, 'credits.txt and %d music files verified (size and SHA-256).' % len(entries)
+        return True, 'credits.txt is present; %d music files verified (size and SHA-256).' % len(entries)
     if not os.path.isdir(os.path.join(folder, "mus")):
         return False, ("%s has no mus folder (the shared music). Use Steam's \"Verify integrity of game files\", then "
                        "try again." % folder)

@@ -52,6 +52,11 @@ void CtrLab_exiting(int seconds);
 void CtrLab_exitProgress(void);
 // Main loop: once a crash on another thread is being handled, the main thread stops here (and so leaves APT alone).
 void CtrLab_poll(void);
+// Points hb:ldr at the lab host (ctr_lab.c says why). own: for a thread ending the run through _exit without atexit;
+// takes the leave and says "--after <exit note>". Not own: "--after died", once the launch is known to be a lab run
+// (z_leavekeep.c calls it on the main loop's first CtrLab_poll). Does nothing outside lab mode or when a leave is
+// already under way.
+void CtrLab_aimHost(bool own);
 
 // A failure the code itself noticed (abort(), say): reported and left as a crash is. Never returns.
 void CtrLab_fail(const char* kind, const char* detail) __attribute__((noreturn));

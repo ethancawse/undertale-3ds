@@ -261,6 +261,8 @@ void CtrRenderer_leaveForExit(Renderer* renderer);
 // above the warm functions moves, and the wrappers stay static: new global symbols reorder the linker's GOT.
 #define E5X_LATE __attribute__((noinline, section(".text.late.pmengine")))
 #define E5X_DECLARE                                                                                                                                  \
+    static void partDrawSprite(Renderer*, int32_t, float, float, float, float, float, float, float, float, float, float, float, uint32_t, float); \
+    static void partEmit(CtrRenderer*, CtrPage*, float, float, float, float, const float*, const float*, const CtrColor*); \
     static void e5xDrawSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale,     \
                               float angleDeg, uint32_t color, float alpha);                                                                          \
     static void e5xDrawSpritePart(Renderer* renderer, int32_t tpagIndex, float srcOffX, float srcOffY, float srcW, float srcH, float x, float y,     \

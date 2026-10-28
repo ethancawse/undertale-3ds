@@ -30,9 +30,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))     # repo root (or the export's root)
 # What build.sh and CMake read, relative to the source root.
 SOURCE_DIRS = ("engine/src", "engine/vendor", "engine/compat", "platform/3ds", "tools/aot", "tools/buildcache", "tools/deps/openh264",
-               "tools/texprep", "tools/roomplan", "tools/release/licenses")
+               "tools/texprep", "tools/roomplan", "tools/release/licenses", "tools/analysis")
 SOURCE_FILES = ("engine/LICENSE", "VERSION", "LICENSE", "THIRD_PARTY_NOTICES",
-                "docs/release/build-contract.json", "tools/release/prepare_legal.py",
+                "docs/release/build-contract.json", "docs/release/builder-version-receipts.md", "tools/release/prepare_legal.py",
                 # CMake's renderer launcher imports both helpers, including on builds that delegate unchanged.
                 "tools/analysis/vine_old_observer_compile.py", "tools/analysis/vine_old_parent.py",
                 "tools/analysis/vine_extract.py")
@@ -46,12 +46,15 @@ def default_work_dir(env=None, platform=sys.platform):
     if platform == "win32":
         base = env.get("LOCALAPPDATA", "")
         cand = os.path.join(base, "u3ds", "w") if base else ""
-        if cand and " " not in cand and cand.isascii() and len(cand) <= 60:
+        if cand and not any(c in cand for c in ' %\t\r\n') and cand.isascii() and len(cand) <= 60:
             return cand
         return "C:/u3ds"
-    if platform == "darwin":
-        return os.path.join(os.path.expanduser("~/Library/Caches"), "u3ds")
-    return os.path.join(env.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "u3ds")
+    candidate = (os.path.join(os.path.expanduser("~/Library/Caches"), "u3ds") if platform == 'darwin'
+                 else os.path.join(env.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "u3ds"))
+    if candidate.isascii() and not any(c in candidate for c in ' %\t\r\n'):
+        return candidate
+    user = hashlib.sha256(os.path.expanduser('~').encode('utf-8')).hexdigest()[:12]
+    return '/tmp/u3ds-' + user
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -123,14 +126,28 @@ def source_wanted(relative, game=None):
                                         parts[-1] == "typed-" + ("deltarune" if game == "undertale" else "undertale") + ".txt")
         # loadscreen_art.py: the loading screen art (build.sh runs it for both games). escape.py: gmlaot.py's
         # escape elision (G9), imported for WAD 17 only but part of gmlaot.py's import closure. stpack.py and
-        # stglyphs.py: UNDERTALE's Crisp text glyph pack (build.sh makes it for UNDERTALE by default); stmenu.py: the
-        # Smoothing menu's data beside it (souls, sharp sprites, previews). symverdict.py: symmetric
-        # halving's table, which fontverdict.py's build mode writes for UNDERTALE only.
+        # stglyphs.py: the Crisp text glyph packs (build.sh makes them for UNDERTALE and DELTARUNE New by default);
+        # stmenu.py: UNDERTALE's Smoothing menu data beside them (souls, sharp sprites, previews). symverdict.py: symmetric halving's table,
+        # which fontverdict.py's build mode writes for UNDERTALE and DELTARUNE's New 3DS builds (DELTARUNE's builder
+        # makes both models). itemverdict.py: Smart smoothing's item verdicts, which it writes for both games. credits.py:
+        # the Credits page text (build.sh runs it for both games).
         return len(parts) == 3 and (parts[-1] in (
             "builtin_audit.py", "btnprompt.py", "corpus.py", "data_versions.py", "escape.py", "fontverdict.py",
-            "gmlaot.py", "prepare.py", "select.py", "typed.py", "loadscreen_art.py", "late_numeric.py")
-            or (parts[-1] in ("pixgrid.py", "btnprompt_build.py", "stglyphs.py", "stpack.py", "stmenu.py", "symverdict.py") and game != "deltarune")
+            "gmlaot.py", "itemverdict.py", "prepare.py", "aot_select.py", "typed.py", "loadscreen_art.py", "late_numeric.py",
+            "symverdict.py", "stglyphs.py", "stpack.py", "credits.py")
+            or (parts[-1] in ("pixgrid.py", "btnprompt_build.py", "stmenu.py") and game != "deltarune")
+            or (parts[-1] in ("gog_smart.py", "gog-smart-1.08.json") and game != "deltarune")
+            # offkill.py: the early destroy's entries (build.sh runs it; UNDERTALE only).
+            or (parts[-1] == "offkill.py" and game != "deltarune")
             or (parts[-1] == "chapter_manifest.py" and game != "undertale"))
+    if parts[:2] == ["tools", "analysis"]:
+        # The renderer launcher's helpers (SOURCE_FILES too), and UNDERTALE's half-resolution art packer with its list
+        # of sprite name hashes (build.sh halfart, products.HALFART).
+        # flowervramg_palette_retry.py: vine_old_parent.py imports it, and CMake makes ctr_renderer.c depend on it.
+        if parts[2:] in (["vine_extract.py"], ["vine_old_observer_compile.py"], ["vine_old_parent.py"],
+                         ["flowervramg_palette_retry.py"]):
+            return True
+        return game != "deltarune" and parts[2:] in (["halfart_pack.py"], ["halfart", "undertale.txt"])
     if parts[:3] == ["tools", "deps", "openh264"]:
         # DELTARUNE's intro video decoder; build.sh never builds it for UNDERTALE.
         return game != "undertale"
@@ -139,9 +156,38 @@ def source_wanted(relative, game=None):
         # records/sounds/: the sound plan records (build_sfxplan.py, UNDERTALE).
         if parts[2] == "records" and (len(parts) == 4 or (len(parts) == 5 and parts[3] == "sounds")):
             return game is None or parts[-1].startswith(game + "-")
-        return len(parts) == 3 and parts[-1] in ("build_plan.py", "build_sfxplan.py", "closure.py", "dwinfo.py", "records.py", "source_plan.py")
+        # phases/: the phase plan's records (build_phases.py, utflowey).
+        if parts[2] == "phases" and len(parts) == 4:
+            return game is None or parts[-1].startswith(game + "-")
+        # New DELTARUNE builds derive tracks.dtp from these reviewed records.
+        if parts[2] == "tracks" and len(parts) == 4:
+            return parts[-1] == "deltarune.json" and game != "undertale"
+        if len(parts) == 3 and parts[-1] == "build_tracks.py":
+            return game != "undertale"
+        # build_flowcode.py: build.sh's flowcode step (flowfull's chapter-5 code plan, DELTARUNE New, default off).
+        if len(parts) == 3 and parts[-1] == "build_flowcode.py":
+            return game != "undertale"
+        return len(parts) == 3 and parts[-1] in ("build_phases.py", "build_plan.py", "build_sfxplan.py", "closure.py", "dwinfo.py", "records.py",
+                                                 "source_plan.py")
     if parts[:2] == ["platform", "3ds"]:
         if parts == ["platform", "3ds", "source", "z_builderx_old.c"] and game == "undertale":
+            return False
+        if parts[2:] == ["source", "z_gogut.c"]:
+            return game != "deltarune"
+        # knightnew's afterimage history (build.sh knightnew-history, DELTARUNE New only; Policy E).
+        if parts[2:] == ["source", "z_knightnew_history.c"]:
+            return game != "undertale"
+        # credfix's dodge list front (CMake compiles it for UNDERTALE Old only; Policy E).
+        if parts[2:] == ["source", "z_dodgefront.c"]:
+            return game != "deltarune"
+        # credfix's exit trail (build.sh exittrail): an o2DS panic diagnosis build, never a release.
+        if parts == ["platform", "3ds", "source", "z_exittrail.c"]:
+            return False
+        # Half-resolution art (build.sh halfart, products.HALFART): UNDERTALE's Old 3DS build only. Its draw-scale
+        # census (build.sh halfcensus) is a developer test.
+        if parts == ["platform", "3ds", "source", "ctr_halfart.c"] and game == "deltarune":
+            return False
+        if parts == ["platform", "3ds", "source", "ctr_halfcensus.c"]:
             return False
         if len(parts) > 3 and parts[2] == "bench":
             return parts[-1] in (["drawskip_" + game + ".txt"] if game else
@@ -156,15 +202,37 @@ def source_wanted(relative, game=None):
 
 
 def mirror_source(src_root, dest_root, game=None):
-    """Copies the build's sources into dest_root, replacing changed files and removing stale ones, so a second build
-    (the other model) reuses the compiled objects. Returns (copied, removed)."""
+    """Mirror by contents, never archive timestamps. Changed inputs invalidate generated build state;
+    an unchanged kit (including a second model) keeps its objects. Returns (copied, removed)."""
     copied = removed = 0
     os.makedirs(dest_root, exist_ok=True)
+    invalidated = False
+
+    def invalidate():
+        nonlocal invalidated
+        if not invalidated:
+            build = os.path.join(dest_root, 'build')
+            if os.path.lexists(build):
+                shutil.rmtree(build)
+            invalidated = True
+
+    def copy_changed(s, d):
+        nonlocal copied
+        try:
+            if os.path.getsize(s) == os.path.getsize(d) and sha256_file(s) == sha256_file(d):
+                return
+        except FileNotFoundError:
+            pass
+        # Clear before the first mutation: interruption must not leave a mirrored new source
+        # beside old objects. copy2 preserves tar's epoch timestamp, which cannot trigger make.
+        invalidate()
+        os.makedirs(os.path.dirname(d), exist_ok=True)
+        shutil.copy2(s, d)
+        copied += 1
+
     for rel in SOURCE_DIRS:
         src = os.path.join(src_root, rel)
         dst = os.path.join(dest_root, rel)
-        if not os.path.isdir(src):
-            continue
         want = set()
         for dirpath, dirnames, filenames in os.walk(src):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -175,16 +243,7 @@ def mirror_source(src_root, dest_root, game=None):
                     continue
                 want.add(os.path.normcase(r))
                 s, d = os.path.join(src, r), os.path.join(dst, r)
-                ss = os.stat(s)
-                try:
-                    ds = os.stat(d)
-                    if ds.st_size == ss.st_size and int(ds.st_mtime) == int(ss.st_mtime):
-                        continue
-                except OSError:
-                    pass
-                os.makedirs(os.path.dirname(d), exist_ok=True)
-                shutil.copy2(s, d)
-                copied += 1
+                copy_changed(s, d)
         if os.path.isdir(dst):
             for dirpath, dirnames, filenames in os.walk(dst):
                 dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -192,19 +251,19 @@ def mirror_source(src_root, dest_root, game=None):
                 for n in filenames:
                     r = os.path.normpath(os.path.join(rd, n))
                     if os.path.normcase(r) not in want and _wanted(n):
+                        invalidate()
                         os.remove(os.path.join(dst, r))
                         removed += 1
     for rel in SOURCE_FILES:
         s = os.path.join(src_root, rel)
         if os.path.isfile(s):
             d = os.path.join(dest_root, rel)
-            os.makedirs(os.path.dirname(d), exist_ok=True)
-            shutil.copy2(s, d)
+            copy_changed(s, d)
     return copied, removed
 
 
 def source_payload(root, game):
-    """The kit's build inputs, including its builder; excludes launchers/runtime and the descriptor."""
+    """The kit's build inputs, including its builder; excludes launchers, host binaries and the descriptor."""
     root = Path(root)
     paths = set(SOURCE_FILES)
     for directory in SOURCE_DIRS + ('tools/release/builder',):
@@ -213,7 +272,8 @@ def source_payload(root, game):
             if p.is_symlink():
                 raise ValueError('Source contains a symlink: ' + p.relative_to(root).as_posix())
             rel = p.relative_to(root).as_posix()
-            if p.is_file() and source_wanted(rel, game) and not rel.startswith('tools/release/builder/runtime/'):
+            if p.is_file() and source_wanted(rel, game) and not rel.startswith(
+                    ('tools/release/builder/runtime/', 'tools/release/builder/bin/')):
                 paths.add(rel)
     # These modules participate in the build but live outside the mirrored source folders.
     paths.update(('tools/release/release_contract.py', 'tools/release/verify_game.py',
@@ -274,10 +334,13 @@ exec bash platform/3ds/build.sh "$@"
 '''
 
 
-def build_argv(tc: toolchain.Toolchain, work, game, target, data_dir, openh264=False, platform=sys.platform):
+def build_argv(tc: toolchain.Toolchain, work, game, target, data_dir, openh264=False, platform=sys.platform, halfart=None):
+    """halfart: None follows products.HALFART (UNDERTALE o3ds only either way)."""
     args = [game, target, "aot", "data=" + (data_dir.replace("\\", "/") if platform == "win32" else data_dir)]
     if not openh264:
         args.append("openh264=off")
+    if products.halfart(game, target, halfart):
+        args.append("halfart")
     if platform == "win32":
         return [tc.bash, "--login", "-c", BUILD_SCRIPT, "builder-build", os.path.join(work, "bin"),
                 os.path.join(work, "tools", "bin"), os.path.join(work, "src"), tc.root or "C:/devkitPro"] + args
@@ -320,7 +383,7 @@ class Progress:
             self.aot_start = t
         elif "code for" in s and "is up to date" in s and s.startswith("AOT:"):
             self.aot_up_to_date = True
-        elif "WITHOUT AOT" in s:
+        elif "WITHOUT AOT" in s or (s.startswith("AOT:") and "failed" in s.lower()):
             self.no_aot = True
         elif s.startswith("-- Configuring done"):
             if self.aot_start is not None and self.aot_seconds is None:
@@ -498,14 +561,17 @@ class Build:
 
     def __init__(self, product, tc, work, target, data_dir, outputs=("3dsx",), openh264=False, on_line=None,
                  on_progress=None, popen=subprocess.Popen, source_root=SOURCE_ROOT, clock=time.monotonic,
-                 art_generator=home_art.generate, parts=None):
+                 art_generator=home_art.generate, store="steam", parts=None):
         self.product, self.tc, self.work, self.target = product, tc, work, target
+        if not str(work).isascii() or any(c in str(work) for c in '%\t\r\n'):
+            raise BuildFailed('Choose a work folder with plain letters, numbers and spaces. Leave out % and control characters.')
         self.data_dir, self.outputs, self.openh264 = data_dir, tuple(outputs), openh264
         self.on_line = on_line or (lambda s: None)
         self.on_progress = on_progress or (lambda p: None)
         self.popen = popen
         self.source_root = source_root
         self.art_generator = art_generator
+        self.store = store
         self.parts = parts
         self.progress = Progress(product, target, clock)
         self.proc = None
@@ -600,7 +666,7 @@ class Build:
                 art = self.art_generator(self.product.key, data_dir,
                     os.path.join(self.work, "src", "platform", "3ds", "assets"),
                     os.path.join(self.tc.root or "/opt/devkitpro", "tools", "bin",
-                                 "tex3ds.exe" if self.tc.platform == "win32" else "tex3ds"))
+                                 "tex3ds.exe" if self.tc.platform == "win32" else "tex3ds"), store=self.store)
             except home_art.ArtError as exc:
                 raise BuildFailed(str(exc), self.log_path) from exc
             except OSError as exc:
@@ -627,7 +693,8 @@ class Build:
         if self.cancelled and not self.progress.no_aot:
             raise BuildFailed("The build was cancelled.\nClick Try again when ready.", self.log_path)
         if self.progress.no_aot:
-            raise BuildFailed("Could not generate fast (AOT) code.\n" + FAILED, self.log_path)
+            raise BuildFailed("The game code could not be prepared.\n"
+                              "Click Copy log to report the error, then try again with a repaired builder.", self.log_path)
         if rc != 0:
             raise BuildFailed("The build stopped (build.sh exit code %d).\n"
                               "Click Try again, or click Copy log to report the error." % rc, self.log_path)
@@ -642,6 +709,7 @@ class Build:
                   "home_menu_art": art,
                   "toolchain_packages": dict(self.tc.package_versions),
                   "compiler": compiler, "release_source": self.release_source,
+                  "halfart": products.halfart(self.product.key, self.target),
                   "seconds": round(time.monotonic() - t0, 1), "compiler_warnings": self.progress.warnings,
                   "aot_seconds": self.progress.aot_seconds, "log": self.log_path,
                   "graphics_seconds": self.progress.graphics_seconds,

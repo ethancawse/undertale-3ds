@@ -58,7 +58,7 @@ extern u32 __ctru_linear_heap_size;
 extern bool CtrScreens_otherOff;
 
 void __real_gfxScreenSwapBuffers(gfxScreen_t scr, bool hasStereo);
-bool __real_CtrLaunchArgs_parse(CtrLaunchArgs* args, int argc, char** argv);
+bool CTR_LAUNCHARGS_AFTER_ARGCRASH(CtrLaunchArgs* args, int argc, char** argv);
 void __real_CtrMemory_markGameThread(void);
 void __real_CtrWatchdog_watch(Runner* runner);
 void __real_CtrWatchdog_stop(void);
@@ -392,7 +392,7 @@ ARGCRASH_LATE static void paintBuffer(u8* fb, u16 fbW, u16 fbH, GSPGPU_Framebuff
     const CrashDesc* d = &crashDescs[kind];
     const char* title = d->title;
 #ifdef CTRPORT_TARGET_O3DS
-    if (kind == CRASH_OOM && envIsHomebrew() && 72u * 1024u * 1024u > __ctru_heap_size + __ctru_linear_heap_size) {
+    if (kind == CRASH_OOM && envIsHomebrew() && CTR_OOM_CIA_HINT_BELOW > __ctru_heap_size + __ctru_linear_heap_size) {
         title = strTitleOomCia;
     }
 #endif
@@ -868,7 +868,7 @@ ARGCRASH_FUNC static void argcrashRunTestTrigger(void) {
 // ===[ Linker Wrappers ]===
 
 ARGCRASH_LATE bool __wrap_CtrLaunchArgs_parse(CtrLaunchArgs* args, int argc, char** argv) {
-    bool res = __real_CtrLaunchArgs_parse(args, argc, argv);
+    bool res = CTR_LAUNCHARGS_AFTER_ARGCRASH(args, argc, argv);
     argcrashLaunch = args;
     if (argc > 1) argcrashDiagFiles = true;
 #if !defined(NDEBUG) || defined(CTRPORT_CRASH_TEST)
@@ -949,7 +949,7 @@ ARGCRASH_LATE void __wrap_CtrLab_exiting(int seconds) {
 ARGCRASH_LATE void __wrap_CtrLab_poll(void) {
     bool isMain = (getThreadLocalStorage() == argcrashMainTls);
     if (isMain) argcrashMainParked = true;
-    __real_CtrLab_poll();
+    CTR_LABPOLL_AFTER_ARGCRASH();
     if (isMain) argcrashMainParked = false;
 }
 

@@ -38,15 +38,25 @@ import stglyphs as sg  # noqa: E402
 
 MAGIC = b'DTST'
 VERSION = 2
-# fnt_comicsans (Sans, key 4 crisp_sans): the PC-height remake (smoothux, 10-24), and fnt_dotumche: packed only where
-# stglyphs has their tables (a repository checkout: tools/analysis/stglyphs_extra.py), never by the release builder.
-FONT_KEYS = {n: k for n, k in (('fnt_plain', 1), ('fnt_dotumche', 2), ('fnt_curs', 3), ('fnt_comicsans', 4), ('fnt_papyrus', 5))
+# fnt_comicsans (Sans, key 4 crisp_sans): the PC-height remake (smoothux 10-24, sansfont 10-26), in the release tables.
+# fnt_dotumche (DELTARUNE's enemy bubbles, key 2 crisp_dr_dialogue): in the release tables since DELTARUNE New's
+# Crisp text (sansfont round 3, 10-26), with fnt_comicsans: each chapter's pack holds those two.
+FONT_KEYS = {n: k for n, k in (('fnt_plain', 1), ('fnt_dotumche', 2), ('fnt_curs', 3), ('fnt_comicsans', 4), ('fnt_papyrus', 5),
+                               ('fnt_main', 1), ('fnt_maintext', 1))
              if n in sg.FONT_PARAMS}
-# Fonts packed for UNDERTALE only: DELTARUNE's chapters have an fnt_comicsans too, which no one has judged.
-UT_ONLY = ('fnt_comicsans',)
+# Fonts packed for UNDERTALE only. DELTARUNE's chapters have an fnt_main that is a different font (1x) from UNDERTALE's
+# 2x one (fnt_main, key 1: the game-over refusal line), packed as DR_LIKE says. Their fnt_comicsans is UNDERTALE's
+# (the same ink and metrics; sansfont round 3), so it is packed for both.
+# fnt_maintext (key 1): UNDERTALE's ending credits and small 1x text, our PC-height remake (sansfont 10-26). The runtime
+# takes at most six fonts a pack (z_smalltext.c ST_FONTS); UNDERTALE's pack holds six with it.
+UT_ONLY = ('fnt_maintext',)
+# DELTARUNE's fnt_main (1x: the save menu, choices, small-face text) has UNDERTALE's fnt_maintext ink and metrics
+# (chapters 2-5 byte for byte, chapter 1 the same ink in taller glyph boxes; drfonts 10-27), so its pack entry
+# keeps its own name and key 1 and takes fnt_maintext's parameters and corrections (the approved PC-height remake).
+DR_LIKE = {'fnt_main': 'fnt_maintext'}
 VARIANT_FIX = {'W': 1, '*': 2}
 VARIANT_KR = 3
-OUT_EXTS = ('.dtst', '.dtsm')  # the packs, and UNDERTALE's Smoothing menu data (stmenu.py)
+OUT_EXTS = ('.dtst', '.dtsm', '.dtsb')  # the packs, and UNDERTALE's Smoothing menu data and bubble table (stmenu.py)
 KR_SPRITE = 'spr_krmeter'  # UNDERTALE's KR label (23x10, white letters on black)
 
 
@@ -71,14 +81,14 @@ def kr_label(dw):
     return None
 
 
-def font_glyphs(dw, name):
+def font_glyphs(dw, name, like=None):
     font = dw.fonts()[name]
     glyphs = {ch: g for ch, g in font['glyphs'].items() if 32 <= ch < 127}
     cell_h = max(g['h'] for g in glyphs.values())
     adv = max(g['shift'] for g in glyphs.values())
     rows = (cell_h + 1) // 2
-    base = sg.derive(dw, name, adv / 2, rows, None)
-    fixed = sg.derive(dw, name, adv / 2, rows, None, patches=True)
+    base = sg.derive(dw, name, adv / 2, rows, None, like=like)
+    fixed = sg.derive(dw, name, adv / 2, rows, None, like=like, patches=True)
     pc = {}
     for ch in glyphs:
         a, off = sg.cell_bitmap(dw, font, ch, cell_h)
@@ -107,7 +117,7 @@ def pack(path, quiet=False, game=None, keep=None):
     w = dw.win
     out = bytearray(MAGIC + struct.pack('<IIIQI', VERSION, w.size, w.game_id, w.timestamp, len(names)))
     for name in names:
-        rows, glyphs, pc_rows, adv = font_glyphs(dw, name)
+        rows, glyphs, pc_rows, adv = font_glyphs(dw, name, DR_LIKE.get(name) if deltarune else None)
         if keep is not None:
             keep[name] = (rows, glyphs, pc_rows, adv)
         width = max((sg.width(g) for _, _, g, _, _ in glyphs), default=0)
@@ -163,7 +173,7 @@ def generator_stamp():
 
 def build(game, data, romfs):
     """build.sh: one pack per data.win of the game into <romfs>/fonts/<name>.dtst (undertale, chapterN_windows), and
-    for UNDERTALE the Smoothing menu's data beside it (<name>.dtsm, stmenu.py). Skipped when the inputs and these
+    for UNDERTALE the Smoothing menu's data and the bubble table beside it (<name>.dtsm, <name>.dtsb, stmenu.py). Skipped when the inputs and these
     generators are unchanged since the last build."""
     import corpus
     import prepare
@@ -217,6 +227,11 @@ def build(game, data, romfs):
                 f.write(menu)
             written.append(name + '.dtsm')
             print(f'smalltext: {name}.dtsm ({len(menu)} B): souls, sharp sprites and previews for the Smoothing menu')
+            bubbles = stmenu.bubble_file(p)
+            with open(os.path.join(out_dir, name + '.dtsb'), 'wb') as f:
+                f.write(bubbles)
+            written.append(name + '.dtsb')
+            print(f'smalltext: {name}.dtsb ({len(bubbles)} B): bubble edges for Crisp bubble text')
     with open(stamp_path, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(stamp + written) + '\n')
     print(f'smalltext: {len(written)} packs in {time.time() - t0:.1f} s')

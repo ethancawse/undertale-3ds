@@ -4,6 +4,8 @@
 #include <string.h>
 
 #include "ctr_benchmark.h"
+#include "ctr_benchmark_rows_sink.h"
+#line 7
 #include "ctr_benchfid_window.h"
 #include "ctr_log.h"
 
@@ -56,7 +58,7 @@ CtrBenchFrame LATE benchfidBeginFrame(u32 down, double frameMs) {
 void LATE benchfidEmitWindow(FILE* f, const char* format, int frames, int historicalSettle) {
     char line[512];
     snprintf(line, sizeof(line), format, frames, noSettle ? 0 : historicalSettle);
-    if (f != NULL) fputs(line, f);
+    if (f != NULL) CtrBench_resultPuts(line, f);
     if (CtrLog_linkOpen()) {
         CtrLog_linkWrite(linkPrefix);
         CtrLog_linkWrite(line);

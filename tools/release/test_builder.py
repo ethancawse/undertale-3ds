@@ -37,6 +37,7 @@ FIX = os.path.join(HERE, "builder", "fixtures")
 OWNER = "76561190000000001"
 UT = b"fake UNDERTALE data.win for the builder tests" * 7
 ALLOW = [("undertale", "root", len(UT), hashlib.sha256(UT).hexdigest(), "steam", "test 1.0")]
+GOG_ALLOW = [ALLOW[0][:-2] + ('gog', 'test GOG 1.0')]
 
 
 def fixture(name, **subs):
@@ -172,9 +173,8 @@ class DiscoveryTest(MusicFixtures):
                                      platform="win32")
             copies = discover.find_copies("undertale", probes)
             self.assertEqual([(c.store, os.path.normcase(c.folder)) for c in copies], [("GOG", os.path.normcase(gog))])
-            v = discover.verify_copy("undertale", gog, probes, allow_list=ALLOW)
-            self.assertFalse(v.accepted)
-            self.assertIn('GOG support will follow', v.message)
+            v = discover.verify_copy("undertale", gog, probes, allow_list=GOG_ALLOW)
+            self.assertTrue(v.accepted, v.message)
             self.assertEqual(v.result.store, "gog")
 
     def test_gog_galaxy_database(self):
@@ -189,7 +189,28 @@ class DiscoveryTest(MusicFixtures):
             con.close()
             probes = discover.Probes(steam_roots=[], registry=lambda *a: None, galaxy_db=db, platform="win32")
             self.assertEqual(len(discover.find_copies("undertale", probes)), 1)
-            self.assertFalse(discover.verify_copy("undertale", gog, probes, allow_list=ALLOW).accepted)
+            self.assertTrue(discover.verify_copy("undertale", gog, probes, allow_list=GOG_ALLOW).accepted)
+
+    def test_manual_gog_folder_needs_product_info_or_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gog = game_folder(os.path.join(tmp, "manual"))
+            probes = discover.Probes(steam_roots=[], gog_dirs=[], registry=lambda *a: None,
+                                     galaxy_db=os.path.join(tmp, "absent.db"), platform="win32")
+            allow = [ALLOW[0][:-2] + ('gog', 'GOG fixture')]
+            self.assertFalse(discover.verify_copy("undertale", gog, probes, allow_list=allow).accepted)
+            write(os.path.join(gog, "goggame-1456487183.info"), '{"gameId": "wrong product"}')
+            self.assertFalse(discover.verify_copy("undertale", gog, probes, allow_list=allow).accepted)
+            write(os.path.join(gog, "goggame-1456487183.info"), '{"gameId": "1456487183"}')
+            self.assertFalse(discover.verify_copy("undertale", gog, probes, allow_list=allow).accepted)
+            write(os.path.join(gog, "goggame-1456487183.info"), '{"gameId": "1456487183", "name": "Undertale"}')
+            write(os.path.join(gog, "goggame-1456487183.hashdb"), b'fixture installer record')
+            pair = tuple(vg.sha256_file(os.path.join(gog,'goggame-1456487183.'+suffix)) for suffix in ('info','hashdb'))
+            with mock.patch.dict(vg.GOG_INSTALL_RECORDS, {'1456487183': pair}):
+                verdict = discover.verify_copy("undertale", gog, probes, allow_list=allow)
+            self.assertTrue(verdict.accepted, verdict.message)
+            self.assertEqual(verdict.result.store, "gog")
+            self.assertEqual(verdict.platform, "Windows")
+            self.assertEqual(products.load_music_manifest.call_args.kwargs, {'store': 'gog', 'platform': 'windows'})
 
 
 class VerifyTest(MusicFixtures):
@@ -570,7 +591,7 @@ class BuildTest(unittest.TestCase):
             seen["argv"], seen["env"] = argv, kw["env"]
             return FakeProc(lines, rc, on_start=lambda: rc == 0 and self.outputs(aot, kinds))
         b = pipeline.Build(products.PRODUCTS["undertale"], self.tc, self.work, "n3ds", "D:\\Games\\Undertale",
-                           outputs=outputs, popen=popen, source_root=self.src, art_generator=lambda *a: {})
+                           outputs=outputs, popen=popen, source_root=self.src, art_generator=lambda *a, **k: {})
         return b, seen
 
     def test_successful_build(self):
@@ -644,7 +665,7 @@ class BuildTest(unittest.TestCase):
         b, _ = self.make(["WARNING: building WITHOUT AOT: no UNDERTALE game data found\n", "[100%] y\n"])
         with self.assertRaises(pipeline.BuildFailed) as e:
             b.run()
-        self.assertIn("fast (AOT) code", str(e.exception))
+        self.assertIn("The game code could not be prepared.", str(e.exception))
         self.assertTrue(b.cancelled)
 
     def test_finished_without_aot_config_is_refused(self):
@@ -768,9 +789,12 @@ class BuildTest(unittest.TestCase):
             self.assertTrue(pipeline.source_wanted("tools/aot/loadscreen_art.py", game))
             self.assertEqual(pipeline.source_wanted("tools/aot/pixgrid.py", game), game != "deltarune")
             self.assertEqual(pipeline.source_wanted("tools/aot/btnprompt_build.py", game), game != "deltarune")
-            self.assertEqual(pipeline.source_wanted("tools/aot/stglyphs.py", game), game != "deltarune")
-            self.assertEqual(pipeline.source_wanted("tools/aot/stpack.py", game), game != "deltarune")
+            self.assertTrue(pipeline.source_wanted("tools/aot/stglyphs.py", game))
+            self.assertTrue(pipeline.source_wanted("tools/aot/stpack.py", game))
             self.assertEqual(pipeline.source_wanted("tools/aot/stmenu.py", game), game != "deltarune")
+            # fontverdict.py imports both for DELTARUNE too (symverdict.py on its New 3DS build).
+            self.assertTrue(pipeline.source_wanted("tools/aot/symverdict.py", game))
+            self.assertTrue(pipeline.source_wanted("tools/aot/itemverdict.py", game))
         manifest = Path(pipeline.SOURCE_ROOT, "tools/release/manifest-ut.txt").read_text(encoding="utf-8")
         for name in ("tools/aot/pixgrid.py", "tools/aot/loadscreen_art.py", "tools/aot/btnprompt_build.py",
                      "tools/aot/stglyphs.py", "tools/aot/stpack.py", "tools/aot/stmenu.py"):
@@ -788,6 +812,28 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(argv[-5:], ["undertale", "o3ds", "aot", "data=D:/G", "openh264=off"])
         argv = pipeline.build_argv(self.tc, "C:/w", "deltarune", "n3ds", "D:\\G", openh264=True, platform="win32")
         self.assertNotIn("openh264=off", argv)
+
+    def test_build_argv_halfart(self):
+        # The release setting is off: no build gets half-resolution art.
+        self.assertFalse(products.HALFART)
+        for game in ("undertale", "deltarune"):
+            for target in ("o3ds", "n3ds"):
+                self.assertNotIn("halfart", pipeline.build_argv(self.tc, "C:/w", game, target, "D:\\G", platform="win32"))
+        # On, only UNDERTALE's Old 3DS build gets it.
+        argv = pipeline.build_argv(self.tc, "C:/w", "undertale", "o3ds", "D:\\G", platform="win32", halfart=True)
+        self.assertEqual(argv[-6:], ["undertale", "o3ds", "aot", "data=D:/G", "openh264=off", "halfart"])
+        for game, target in (("undertale", "n3ds"), ("deltarune", "o3ds"), ("deltarune", "n3ds")):
+            self.assertNotIn("halfart", pipeline.build_argv(self.tc, "C:/w", game, target, "D:\\G", platform="win32",
+                                                            halfart=True))
+        with mock.patch.object(products, "HALFART", True):
+            self.assertEqual(pipeline.build_argv(self.tc, "C:/w", "undertale", "o3ds", "D:\\G", platform="win32")[-1],
+                             "halfart")
+        # Its packer and hash list go to UNDERTALE's builds only.
+        for rel in ("tools/analysis/halfart_pack.py", "tools/analysis/halfart/undertale.txt", "platform/3ds/source/ctr_halfart.c"):
+            self.assertTrue(pipeline.source_wanted(rel, "undertale"))
+            self.assertFalse(pipeline.source_wanted(rel, "deltarune"))
+        self.assertFalse(pipeline.source_wanted("tools/analysis/halfart/undertale-balanced.txt", "undertale"))
+        self.assertFalse(pipeline.source_wanted("tools/analysis/halfart_balance.py", "undertale"))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -866,31 +912,19 @@ class DeliverTest(unittest.TestCase):
         self.assertIn("Homebrew Launcher", text)
         self.assertIn("Don't share it", text)
 
-    def test_3dslink_is_send_only(self):
-        self.assertEqual(deliver.threedslink_argv("3dslink", "a.3dsx"), ["3dslink", "a.3dsx"])
-        self.assertEqual(deliver.threedslink_argv("3dslink", "a.3dsx", "10.0.0.5"),
-                         ["3dslink", "-a", "10.0.0.5", "a.3dsx"])
+    def test_netloader_send_is_disabled_even_for_legacy_callers(self):
         ran = []
-        deliver.send_3dslink("3dslink", "a.3dsx", run=lambda argv: ran.append(argv) or 0, log=lambda s: None)
-        self.assertNotIn("-s", ran[0])
-        with self.assertRaises(deliver.DeliverError):
-            deliver.send_3dslink("3dslink", "a.3dsx", run=lambda argv: 1, log=lambda s: None)
+        with self.assertRaises(deliver.DeliverError) as caught:
+            deliver.send_3dslink('3dslink', 'a.3dsx', run=lambda argv: ran.append(argv) or 0)
+        self.assertEqual(str(caught.exception), "Sending with the Homebrew Launcher's netloader is no longer supported. Use Install over Wi-Fi with ftpd.")
+        self.assertEqual(ran, [])
 
-    def test_ftp_against_local_mock(self):
-        root = os.path.join(self.tmp, "console")
-        os.makedirs(root)
-        server = MockFTP(root)
-        try:
-            items = [deliver.CopyItem(s, "3ds/undertale-3ds/" + r, n)
-                     for s, r, n in products.sd_files(self.ut, self.game)]
-            deliver.send_ftp("127.0.0.1", items, port=server.port, log=lambda s: None)
-            with open(os.path.join(root, "3ds", "undertale-3ds", "data.win"), "rb") as f:
-                self.assertEqual(f.read(), UT)
-            stored = server.stores
-            deliver.send_ftp("127.0.0.1", items, port=server.port, log=lambda s: None)
-            self.assertEqual(server.stores, stored)             # same sizes: nothing re-sent
-        finally:
-            server.close()
+    def test_legacy_ftp_entry_uses_verified_transport(self):
+        import ftp_delivery
+        items = [deliver.CopyItem('invented', '3ds/game/program.3dsx', 8)]
+        with mock.patch.object(ftp_delivery, 'send') as send:
+            deliver.send_ftp('127.0.0.1', items, port=5000, log=lambda s: None)
+        send.assert_called_once_with('127.0.0.1:5000', items)
 
 
 class MockFTP:
@@ -1299,6 +1333,31 @@ class SaveImportTest(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------------------------------
 
 class CliTest(MusicFixtures):
+    def test_build_initialization_failure_is_a_plain_cli_refusal(self):
+        verified = mock.Mock(accepted=True, message='fixture verified', result=mock.Mock(store='gog'))
+        tc = mock.Mock(can_build=True, checks=[])
+        out = []
+        with mock.patch.object(app.discover, 'verify_copy', return_value=verified), \
+                mock.patch.object(app.toolchain, 'detect', return_value=tc), \
+                mock.patch.object(app.pipeline, 'Build', side_effect=pipeline.BuildFailed('fixture work folder')):
+            rc = app.cli(app.parse(['--cli', '--folder', '.', '--work', './work folder']), out=out.append)
+        self.assertEqual(rc, 1)
+        self.assertIn('fixture work folder', out)
+        self.assertNotIn('Log: None', out)
+
+    def test_work_folder_spaces_reach_each_platform_as_one_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for platform in ('win32', 'linux', 'darwin'):
+                work = os.path.join(tmp, platform+' work folder')
+                build = pipeline.Build(products.PRODUCTS['undertale'], None, work, 'n3ds', './game folder')
+                self.assertEqual(build.work, work)
+                self.assertTrue(os.path.isdir(os.path.join(work, 'logs')))
+                tc = mock.Mock(bash='/tool path/bash', root='/devkitPro path')
+                argv = pipeline.build_argv(tc, work, 'undertale', 'n3ds', './game folder', platform=platform)
+                self.assertIn(os.path.join(work, 'src'), argv)
+                self.assertIn(os.path.join(work, 'bin'), argv)
+                self.assertIn('data=./game folder', argv)
+
     def test_parse(self):
         # Default target is "both" (New 3DS and Old 3DS).
         d = app.parse([])
@@ -1846,7 +1905,7 @@ class BuilderUiTest(unittest.TestCase):
         tc = self.toolchain_fixture()
         detect = self.open_toolchain_page(wiz, tc)
         page = wiz.page
-        self.assertEqual([b.step.key for b in page.boxes], ["makerom", "bannertool"])
+        self.assertEqual([b.step.key for b in page.boxes], ["devkitpro", "packages", "makerom", "bannertool"])
         body = fake_zip("makerom-v0.18.4/makerom.exe")
         pin = toolchain.CIA_TOOLS["makerom"]
         fetched = self.fake_network({pin["url"]: body})
@@ -1862,7 +1921,7 @@ class BuilderUiTest(unittest.TestCase):
         self.assertIn("https://github.com/3DSGuy/Project_CTR/blob/makerom-v0.18.4/makerom/LICENSE", asked[0][1])
         self.assertTrue(os.path.isfile(os.path.join(wiz.opts.tools_dir, "makerom.exe")))
         self.assertEqual(page.result.cget("text"), "Done: %s." % box.step.title)
-        self.assertFalse(box.box.winfo_exists())         # the re-check rebuilt the list of steps
+        self.assertTrue(box.box.winfo_exists())          # redetection keeps each setup row in place
         self.assertGreaterEqual(detect.call_count, 3)    # checks again after the install
         self.assertFalse(page.running_step)
 
@@ -1899,7 +1958,7 @@ class BuilderUiTest(unittest.TestCase):
         self.fake_network({})                          # any download would fail the test
         box = self.box(page, "makerom")
         self.assertFalse(page.run_step(box))           # declined: nothing runs
-        self.assertEqual(box.status.winfo_manager(), "")
+        self.assertEqual(box.status.cget("text"), "Ready")
         self.assertEqual(page.failures, {})
         page.update()                                  # Update devkitPro, declined: no box is left behind
         self.assertIsNone(page.update_box)
@@ -1947,33 +2006,26 @@ class BuilderUiTest(unittest.TestCase):
         self.open_toolchain_page(wiz, self.toolchain_fixture())
         page = wiz.page
         text, links = toolchain.licence_notice(sys.platform)
-        self.assertEqual(page.notice.cget("text"), text)
+        self.assertEqual(page.notice.cget("text"),
+                         "Install or Update means you agree to the listed licences.")
         found = []
-
         def walk(w):
-            for k in w.winfo_children():
-                if getattr(k, "_url", None):
-                    found.append(k)
-                walk(k)
+            for child in w.winfo_children():
+                if isinstance(child, self.gui.ttk.Button) and child.cget('text') == 'Licences':
+                    found.append(child)
+                walk(child)
         walk(page.frame)
-        self.assertEqual([k._url for k in found], [u for _, u in links])
-        self.root.deiconify()
-        self.root.update()
-        with mock.patch.object(self.gui.webbrowser, "open") as browser:
-            link = found[0]
-            self.assertTrue(int(link.cget("takefocus")))
-            keyboard_binding = link.bind("<Return>")
-            self.assertTrue(keyboard_binding)
-            # Dispatch the actual Return binding without depending on the desktop window manager's
-            # asynchronous keyboard focus (notably WSLg on a shared Windows desktop).
-            link.bind("<<TestLinkReturn>>", keyboard_binding)
-            link.event_generate("<<TestLinkReturn>>")
-            self.root.update()
-            browser.assert_called_once_with(links[0][1])
-            browser.reset_mock()
-            link.event_generate("<Button-1>")
-            self.root.update()
-            browser.assert_called_once_with(links[0][1])
+        self.assertEqual(len(found), 1)
+        with mock.patch.object(self.gui.messagebox, 'showinfo') as show:
+            found[0].invoke()
+        title, detail = show.call_args.args
+        self.assertEqual(title, 'Licences')
+        self.assertIn(text, detail)
+        for name, url in links:
+            self.assertIn(name, detail)
+            self.assertIn(url, detail)
+        # Consent remains attached to every individual installation action.
+        self.assertIn('By clicking OK you agree', self.box(page, 'makerom').step.confirm_text())
 
     def test_graphics_phase_is_named_and_updates_in_both_looks(self):
         wiz = self.wizard()
@@ -2055,6 +2107,9 @@ class BuilderUiTest(unittest.TestCase):
                                     list(toolchain.REQUIRED_PACKAGES), list(toolchain.RECOMMENDED_PACKAGES),
                                     None, None, None, "win32")
         self.open_toolchain_page(wiz, clean)
+        # Notices and logs now start collapsed. Force overflow with fixture
+        # content instead of depending on the prerequisite page's prose height.
+        self.gui.label(wiz.page.frame, "\n".join(["Fixture overflow"] * 45))
         self.root.deiconify()
         w, h = self.root.minsize()
         self.root.geometry("%dx%d" % (w, h))

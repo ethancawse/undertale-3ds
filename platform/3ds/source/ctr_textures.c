@@ -350,7 +350,7 @@ static bool allocateTile(CtrTextureCache* cache, CtrPage* page, CtrTile* tile, b
         // the Old 3DS Flowery fight evicted up to 65 tiles (10 MB) drawn the
         // frame before for one tile, in each of several frames.
         while (!initTile(page, tile)) {
-            if (!CtrTextures_evictOldestIdle(cache, ALLOC_IDLE_FRAMES) && !evictOneFitting(cache, bytes) && !CtrTextures_evictOldest(cache)) {
+            if (!CTR_PKLIN_EVICT_OLDEST_IDLE(cache, ALLOC_IDLE_FRAMES) && !evictOneFitting(cache, bytes) && !CtrTextures_evictOldest(cache)) {
                 logWarn("Textures: out of linear memory for a tile of page %u (%.1f MB resident, %.1f MB free)\n", pageIdOf(cache, page),
                         megabytes(cache->residentBytes), megabytes(linearSpaceFree()));
                 page->retryFrame = cache->frame + OUT_OF_MEMORY_RETRY_FRAMES;
@@ -456,7 +456,7 @@ static bool makePromotionRoom(CtrTextureCache* cache, const CtrPage* page, uint3
     if (size > cache->packedBudgetBytes) return false;
     uint64_t held = (uint64_t) cache->packedBytes + cache->wholeBytes;
     uint64_t heapNeeded = (uint64_t) size + CtrTileReader_heapReserve();
-    uint32_t freeBytes = heapFree();
+    uint32_t freeBytes = CTR_PKLIN_HEAP_FREE();
     uint64_t needed = heapNeeded > freeBytes ? heapNeeded - freeBytes : 0;
     if (held + size > cache->packedBudgetBytes && held + size - cache->packedBudgetBytes > needed)
         needed = held + size - cache->packedBudgetBytes;
@@ -466,7 +466,7 @@ static bool makePromotionRoom(CtrTextureCache* cache, const CtrPage* page, uint3
         if (idleForPromotion(cache, p, page)) eligible += p->packedSize;
     }
     if (needed > eligible) return false;
-    while (heapNeeded > heapFree() || (uint64_t) cache->packedBytes + cache->wholeBytes + size > cache->packedBudgetBytes) {
+    while (heapNeeded > CTR_PKLIN_HEAP_FREE() || (uint64_t) cache->packedBytes + cache->wholeBytes + size > cache->packedBudgetBytes) {
         CtrPage* victim = nullptr;
         for (uint32_t i = 0; i < cache->pageCount; i++) {
             CtrPage* p = &cache->pages[i];
@@ -600,7 +600,7 @@ static LoadSteps loadSteps;
 
 static void closeCacheFiles(CtrTextureCache* cache) {
     for (int32_t i = 0; CTR_OPEN_FILES > i; i++) {
-        if (cache->files[i] != nullptr) fclose(cache->files[i]);
+        if (cache->files[i] != nullptr) CTR_TRACE_CLOSE(cache->files[i], 'S', cache->filePages[i]);
         cache->files[i] = nullptr;
     }
 }
@@ -627,9 +627,9 @@ static FILE* cacheFile(CtrTextureCache* cache, uint32_t pageId) {
     }
     uint64_t start = nowNanos();
     if (cache->files[slot] == nullptr && 0 <= oldest && !CtrOpenFiles_mayKeep()) slot = oldest;
-    if (cache->files[slot] != nullptr) fclose(cache->files[slot]);
+    if (cache->files[slot] != nullptr) CTR_TRACE_CLOSE(cache->files[slot], CTR_SITE_GAME, cache->filePages[slot]);
     // Cleared first: closeCacheFiles may run during the open.
-    cache->files[slot] = nullptr;
+    cache->files[slot] = nullptr; CTR_OPEN_SITE(CTR_SITE_GAME);
     bool busy = false;
     cache->files[slot] = CtrPack_openFile(pageId, &busy);
     if (cache->files[slot] == nullptr && (busy || cache->pages[pageId].cacheFile == CTR_CACHE_FILE_VALID)) {
@@ -2051,7 +2051,7 @@ static TEXCACHE_LATE bool texcacheDisplaces(const CtrTextureCache* cache, uint32
 static TEXCACHE_LATE uint64_t texcacheNeeded(const CtrTextureCache* cache, uint32_t size) {
     uint64_t held = (uint64_t) cache->packedBytes + cache->wholeBytes;
     uint64_t heapNeeded = (uint64_t) size + CtrTileReader_heapReserve();
-    uint32_t freeBytes = heapFree();
+    uint32_t freeBytes = CTR_PKLIN_HEAP_FREE();
     uint64_t needed = heapNeeded > freeBytes ? heapNeeded - freeBytes : 0;
     if (held + size > cache->packedBudgetBytes && held + size - cache->packedBudgetBytes > needed)
         needed = held + size - cache->packedBudgetBytes;
@@ -2645,6 +2645,9 @@ TEXCACHE_LATE void CtrTextures_logPackedSet(const CtrTextureCache* cache, const 
 // them itself at the same cost: finishing them here moves that cost into the hidden frame instead of adding to it
 // (Old 2DS ruins1: the deadline stopped pass 0 before page 24's tile, which then took 95 ms of the first shown frame).
 #define ROOMLOAD_NOW_EXTRA_NANOS (200ull * 1000000ull)
+// F1 (utstall): past that, pass 0's pages from RAM (rlfFromRam) still load, up to this much more. Old models unpack a tile
+// in about 1.5-3.5 ms, so this holds some 50-100 tiles; water5's case was 16 tiles in 46 ms (Old 2DS).
+#define ROOMLOAD_RAM_EXTRA_NANOS (150ull * 1000000ull)
 
 uint32_t CtrTextures_roomLoadSpriteRoom(CtrTextureCache* cache);
 uint32_t CtrTextures_roomLoadSprite(CtrTextureCache* cache, int32_t spriteIndex, uint32_t room);
@@ -2733,8 +2736,8 @@ ROOMLOAD_TEX_LATE uint32_t CtrTextures_roomLoadSprite(CtrTextureCache* cache, in
 // waited for the read itself (o2ds post_music_boss_slide f246, 69-73 ms). Passes 1-2 fill in only
 // up to the budget less ROOMLOAD_SPRITE_HEADROOM_BYTES, like the sprite marks: on the Old 2DS fills
 // up to the budget left
-// 18.8-19.5 of 20.3 MB resident after the fireworks room (base 9.8 MB), later rooms evicted twice the tiles,
-// and post_music_boss_slide's first shown frame waited 86 ms for a page-2 tile (165-180 ms against base 82 ms).
+// 18.8-19.5 of 20.3 MB resident after the fireworks room (base 9.8 MB), later rooms evicted twice the tiles, and post_music_boss_slide's first shown frame waited 86 ms for a page-2 tile (165-180 ms against base 82 ms).
+#if defined(ENABLE_WAD17) // UNDERTALE never runs this (argcheck, UT late-text reclaim)
 ROOMLOAD_TEX_LATE static void roomLoadPasses(CtrTextureCache* cache, uint64_t deadline, uint32_t* nowTiles, uint32_t* otherTiles) {
     bool full = false;
     for (int pass = 0; 3 > pass && !full; pass++) {
@@ -2821,7 +2824,7 @@ ROOMLOAD_TEX_LATE static void roomLoadPasses(CtrTextureCache* cache, uint64_t de
         }
     }
 }
-
+#endif
 // The room load's passes, then the cache files they opened are closed again: cacheFile keeps up to CTR_OPEN_FILES
 // open as a shortcut, and a room load that reads remembered tiles from many pages left 2-3 more open than the base
 // keeps. On the Old 3DS that ran the SD card's open allowance out when the next frame's read-ahead opened its page
@@ -2831,12 +2834,14 @@ ROOMLOAD_TEX_LATE static void roomLoadFonts(CtrTextureCache* cache, uint64_t dea
 ROOMLOAD_TEX_LATE void CtrTextures_roomLoadFinish(CtrTextureCache* cache, uint64_t deadline, uint32_t* nowTiles, uint32_t* otherTiles) {
     FILE* kept[CTR_OPEN_FILES];
     for (int32_t i = 0; CTR_OPEN_FILES > i; i++) kept[i] = cache->files[i];
+    CTR_TRACE_ROOMLOAD(true);
     rlfPasses(cache, deadline, nowTiles, otherTiles);
     roomLoadFonts(cache, deadline);
     rlAheadTakeBack(cache);
+    CTR_TRACE_ROOMLOAD(false);
     for (int32_t i = 0; CTR_OPEN_FILES > i; i++) {
         if (cache->files[i] == nullptr || cache->files[i] == kept[i]) continue;
-        fclose(cache->files[i]);
+        CTR_TRACE_CLOSE(cache->files[i], 'E', cache->filePages[i]);
         cache->files[i] = nullptr;
     }
 }
@@ -3182,6 +3187,8 @@ static struct {
 
 static const char rlSwapLog[] __attribute__((aligned(4), section(".rodata.utflowey_in_text"))) =
     "Room load: %u tiles of older rooms (%u KB) swapped out for the room's own\n";
+static const char rlfCutLog[] __attribute__((aligned(4), section(".rodata.utflowey_in_text"))) =
+    "Room load: %u first-frame tiles from RAM past the time limit, to %u ms past it\n";
 
 UTFLOWEY_TEXT static void rlSwapBegin(const CtrTextureCache* cache) {
     rlSwap.allowed = cache->frame > 1 && rlSwap.frame != cache->frame + 1u;
@@ -3231,11 +3238,29 @@ UTFLOWEY_TEXT static void rlSwapEnd(const CtrTextureCache* cache) {
 
 // roomLoadPasses stays where it was, unused but kept by the pointer below, so nothing after it moves (a late
 // move): this copy of it, with the swap, runs instead.
-static void (*const rlfOldPasses)(CtrTextureCache*, uint64_t, uint32_t*, uint32_t*)
-    __attribute__((used, aligned(4), section(".rodata.utflowey_in_text"))) = roomLoadPasses;
-UTFLOWEY_TEXT static void rlfPassesBody(CtrTextureCache* cache, uint64_t deadline, uint32_t* nowTiles, uint32_t* otherTiles) {
+WAD17_ONLY(static void (*const rlfOldPasses)(CtrTextureCache*, uint64_t, uint32_t*, uint32_t*)
+    __attribute__((used, aligned(4), section(".rodata.utflowey_in_text"))) = roomLoadPasses;)
+// F1 (utstall): a pass-0 page whose first-frame tiles load without the SD card: a decode from its packed copy, a packed
+// copy, or a finished read-ahead that holds every one of them. Anything else reads the card (its cache file, or waits
+// for a read in flight) and keeps pass 0's time limit. The room load's water5 entry on the Old 2DS: a contended 11 KB
+// page-2 file read took 411 ms, the limit then dropped 16 first-frame tiles already in RAM, and the first shown frame
+// loaded them (52 ms; about 23 without them).
+UTFLOWEY_TEXT static bool rlfFromRam(const CtrPage* page, bool readDone) {
+    if (page->read == nullptr || page->packed != nullptr || page->read->src != nullptr) return page->read != nullptr || page->packed != nullptr;
+    if (!readDone) return false;
+    for (int32_t t = 0; page->tilesX * page->tilesY > t; t++) {
+        const CtrTile* tile = &page->tiles[t];
+        if (tile->wanted && tile->now && !tile->valid && page->read->tileAt[t] == CTR_READ_NOT_READ) return false;
+    }
+    return true;
+}
+
+UTFLOWEY_TEXT static uint32_t rlfPassesBody(CtrTextureCache* cache, uint64_t deadline, uint32_t* nowTiles, uint32_t* otherTiles) {
     bool full = false;
-    for (int pass = 0; 3 > pass && !full; pass++) {
+    bool cut = false;      // F1: pass 0 reached its time limit
+    uint32_t pastCut = 0;  // F1: first-frame tiles from RAM loaded past it
+    uint64_t cap = deadline + ROOMLOAD_NOW_EXTRA_NANOS + ROOMLOAD_RAM_EXTRA_NANOS;
+    for (int pass = 0; 3 > pass && !full && !cut; pass++) {
         for (uint32_t pageId = 0; cache->pageCount > pageId && !full; pageId++) {
             CtrPage* page = &cache->pages[pageId];
             if (!page->layoutKnown || page->failed || page->retryFrame > cache->frame) continue;
@@ -3244,6 +3269,9 @@ UTFLOWEY_TEXT static void rlfPassesBody(CtrTextureCache* cache, uint64_t deadlin
             if (pass == 0 && page->packed == nullptr && page->read == nullptr && page->cacheFile != CTR_CACHE_FILE_VALID) continue;
             if (pass == 1 && page->packed == nullptr && !readDone) continue;
             if (pass == 2 && (page->packed != nullptr || readDone || page->cacheFile != CTR_CACHE_FILE_VALID || page->read != nullptr)) continue;
+            // F1: past pass 0's limit only its pages from RAM go on, until the cap; the others are skipped before their
+            // tiles are counted (and room made for them).
+            if (cut && (nowNanos() >= cap || !rlfFromRam(page, readDone))) continue;
             uint32_t wantedBytes = 0;
             uint32_t fileBytes = 0;
             uint32_t requested = 0;
@@ -3282,8 +3310,15 @@ UTFLOWEY_TEXT static void rlfPassesBody(CtrTextureCache* cache, uint64_t deadlin
             if (requested == 0) continue;
             uint64_t now = nowNanos();
             if (now >= (pass == 0 ? deadline + ROOMLOAD_NOW_EXTRA_NANOS : deadline)) {
-                for (int32_t t = 0; tiles > t; t++) page->tiles[t].requested = false;
-                return;
+                // F1: past pass 0's limit its pages from RAM still load (the first shown frame would load them at the
+                // same cost), up to ROOMLOAD_RAM_EXTRA_NANOS more; the others are left, and passes 1-2 don't run.
+                cut = true;
+                if (pass > 0 || now >= cap || !rlfFromRam(page, readDone)) {
+                    for (int32_t t = 0; tiles > t; t++) page->tiles[t].requested = false;
+                    if (pass > 0) return pastCut;
+                    continue;
+                }
+                pastCut += requested;
             }
             if (pass == 2 && now + ROOMLOAD_FILE_FIXED_NANOS + (uint64_t) fileBytes * ROOMLOAD_FILE_NANOS_PER_KB / 1024u > deadline) {
                 // A smaller page may still fit.
@@ -3321,10 +3356,55 @@ UTFLOWEY_TEXT static void rlfPassesBody(CtrTextureCache* cache, uint64_t deadlin
             }
         }
     }
+    return pastCut;
 }
 
 UTFLOWEY_TEXT static void rlfPasses(CtrTextureCache* cache, uint64_t deadline, uint32_t* nowTiles, uint32_t* otherTiles) {
     rlSwapBegin(cache);
-    rlfPassesBody(cache, deadline, nowTiles, otherTiles);
+    uint32_t f1 = rlfPassesBody(cache, deadline, nowTiles, otherTiles);
+    if (f1 != 0) logInfo(rlfCutLog, (unsigned) f1, (unsigned) (uint32_t) (nowNanos() - deadline - ROOMLOAD_NOW_EXTRA_NANOS) / 1000000u);
     rlSwapEnd(cache);
+}
+
+// ===[ The tile reader's game-thread reads use the game thread's open files (utstall, item 8 step 1) ]===
+
+// Late code. CtrTileReader_wait's wrap (ctr_tile_reader.c) has the game thread perform queued reads with the files
+// cacheFile keeps open; this --wrap of CtrTileReader_start notes whose files they are: CtrTextures_init starts the
+// reader with its own cache's key, and nothing else starts one.
+#define UTSTALL8_TEXT __attribute__((noinline, section(".text.utstall8_late")))
+static CtrTextureCache* readerGameCache __attribute__((section(".bss.utstall8_late")));
+
+CtrTileReader* __real_CtrTileReader_start(const CtrPackKey* key);
+CtrTileReader* __wrap_CtrTileReader_start(const CtrPackKey* key) UTSTALL8_TEXT;
+CtrTileReader* __wrap_CtrTileReader_start(const CtrPackKey* key) {
+    readerGameCache = (CtrTextureCache*) (void*) ((const char*) key - __builtin_offsetof(CtrTextureCache, key));
+    return __real_CtrTileReader_start(key);
+}
+
+bool CtrTextures_readerUsesGameFiles(void) UTSTALL8_TEXT;
+bool CtrTextures_readerUsesGameFiles(void) {
+    return readerGameCache != nullptr;
+}
+
+FILE* CtrTextures_readerGameFile(uint32_t pageId) UTSTALL8_TEXT;
+FILE* CtrTextures_readerGameFile(uint32_t pageId) {
+    return cacheFile(readerGameCache, pageId);
+}
+
+// A late entry to the original eviction body, retaining that body's local
+// symbol, bytes and callers. No duplicate mirror/deferred-free implementation.
+#if defined(ENABLE_WAD17) && defined(CTRPORT_TARGET_O3DS) && defined(CTRPORT_DR_OLD_CIA80_TILES)
+__attribute__((naked, used, section(".text.late.flowervramg_palette")))
+void FvgPalette_evictTile(CtrTextureCache*, CtrPage*, CtrTile*) {
+    __asm__("b evictTile");
+}
+#endif
+
+// flowend (late): tile loads so far, for ctr_audio_system.c's open ahead. Its quiet second restarts on any of them:
+// the opener's file reads and the game thread's tile reads share the card (Azahar run wfE: an open ahead during
+// segment 0's tile loads was one late frame).
+uint32_t CtrTextures_flowendLoads(void) __attribute__((noinline, section(".text.flowend_late")));
+uint32_t CtrTextures_flowendLoads(void) {
+    const CtrTextureCache* cache = readerGameCache;
+    return cache == nullptr ? 0 : cache->fromRam.count + cache->fromFile.count + cache->fromRead.count + cache->fromImage.count;
 }

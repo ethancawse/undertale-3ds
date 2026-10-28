@@ -40,3 +40,39 @@ release_python_executable() {
         printf '%s\n' "$executable"
     fi
 }
+
+# A devkitPro login shell started from Git Bash (another MSYS runtime) gets no APPDATA, LOCALAPPDATA or USERPROFILE,
+# though one started from PowerShell, cmd or Python keeps them. Windows Python then looks for its user site-packages
+# in the wrong place, and a tool whose numpy/Pillow live there can't import them. Restore the missing ones from the
+# logon session's own copy (HKCU\Volatile Environment). Values already set are kept; elsewhere this does nothing.
+release_windows_profile_env() {
+    local line name value
+    command -v reg.exe > /dev/null 2>&1 || return 0
+    if [ -n "${APPDATA:-}" ] && [ -n "${LOCALAPPDATA:-}" ] && [ -n "${USERPROFILE:-}" ]; then
+        return 0
+    fi
+    while IFS= read -r line; do
+        line=${line//$'\r'/}
+        if [[ $line =~ ^[[:space:]]+(APPDATA|LOCALAPPDATA|USERPROFILE)[[:space:]]+REG_SZ[[:space:]]+(.+)$ ]]; then
+            name=${BASH_REMATCH[1]}
+            value=${BASH_REMATCH[2]}
+            if [ -z "${!name:-}" ]; then
+                export "$name=$value"
+            fi
+        fi
+    done < <(reg.exe query 'HKCU\Volatile Environment' 2> /dev/null || true)
+}
+
+# A derivation the shipping game needs could not run ("<what>" "<why>", e.g. the import that failed). The build
+# stops with exit 3 (the caller exits with it), so a build that looks fine never ships or tests the game without it.
+# CTRPORT_DERIVATION_OPTIONAL=1 is for tools-only builds: they go on without it, with a note.
+release_missing_derivation() {
+    if [ "${CTRPORT_DERIVATION_OPTIONAL:-0}" = 1 ]; then
+        printf '%s\n' "$1: $2; CTRPORT_DERIVATION_OPTIONAL=1, building without it" >&2
+        return 0
+    fi
+    printf '%s\n' "ERROR: $1: $2." \
+        'The shipping game needs it, so the build stops. Fix the Python environment (numpy/Pillow, APPDATA), or set' \
+        'CTRPORT_DERIVATION_OPTIONAL=1 for a tools-only build without it.' >&2
+    return 3
+}

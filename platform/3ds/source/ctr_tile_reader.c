@@ -16,16 +16,16 @@
 // The tiles' bytes are only read while this much heap stays free besides
 // them: the game's own allocations matter more than a quicker room entry.
 #define READER_HEAP_RESERVE (8u * 1024u * 1024u)
-// A whole-file read (a promotion) was admitted with its size and the full
-// reserve free (ctr_textures.c, makePromotionRoom, which reclaims only just
-// enough). It still starts if 1 MB of that has gone meanwhile: a room's first
-// frames (a music stream starting, a sound loading) took that much on the Old
-// models, and the read gave up after idle copies had been reclaimed for it
-// (roomload item 6).
-#define READER_WHOLE_START_RESERVE (READER_HEAP_RESERVE - 1024u * 1024u)
+// A whole-file read (a promotion) was admitted with its size and this reserve free (ctr_textures.c, makePromotionRoom,
+// which reclaims only just enough). UNDERTALE on the Old models sets it lower (CMakeLists.txt, packed-tier fix).
+#ifndef READER_PROMOTION_RESERVE
+#define READER_PROMOTION_RESERVE READER_HEAP_RESERVE
+#endif
+// It starts if 1 MB of that has gone meanwhile (a room's first frames took that much on the Old models; roomload 6).
+#define READER_WHOLE_START_RESERVE (READER_PROMOTION_RESERVE - 1024u * 1024u)
 
 uint32_t CtrTileReader_heapReserve(void) {
-    return READER_HEAP_RESERVE;
+    return READER_PROMOTION_RESERVE;
 }
 // How often a wait for a read in progress looks again.
 #define WAIT_SLICE_NS 500000
@@ -169,7 +169,7 @@ static void perform(CtrTileReader* reader, CtrTileRead* read, FILE* f) {
     if (!read->headerOk) return;
     if (read->whole) {
         uint32_t size = read->view.totalSize;
-        if (size + READER_WHOLE_START_RESERVE > heapFree() || (read->packed = CtrPacked_new(&read->view)) == nullptr) return;
+        if (size + READER_WHOLE_START_RESERVE > CTR_PKLIN_HEAP_FREE() || (read->packed = CtrPacked_new(&read->view)) == nullptr) return;
         if (CtrPacked_read(read->packed, f, WHOLE_READ_PIECE)) {
             read->bytes = size;
         } else {
@@ -223,6 +223,7 @@ static FILE* readerFile(CtrTileReader* reader, uint32_t pageId) {
         if (reader->openPages[i] == pageId) return reader->open[i];
     }
     bool busy = false;
+    CTR_OPEN_SITE('R');
     FILE* f = CtrPack_openFile(pageId, &busy);
     if (f == nullptr && busy) {
         // Too many files open: this thread's kept-open ones go first.
@@ -231,7 +232,7 @@ static FILE* readerFile(CtrTileReader* reader, uint32_t pageId) {
     }
     if (f == nullptr) return nullptr;
     if (reader->openCount == READER_OPEN_FILES || (0 < reader->openCount && !CtrOpenFiles_mayKeep())) {
-        fclose(reader->open[0]);
+        CTR_TRACE_CLOSE(reader->open[0], 'R', reader->openPages[0]);
         reader->openCount--;
         memmove(&reader->open[0], &reader->open[1], reader->openCount * sizeof(reader->open[0]));
         memmove(&reader->openPages[0], &reader->openPages[1], reader->openCount * sizeof(reader->openPages[0]));
@@ -245,7 +246,7 @@ static FILE* readerFile(CtrTileReader* reader, uint32_t pageId) {
 // Once nothing is queued: closes the thread's files and those the game
 // thread read from.
 static void closeFiles(CtrTileReader* reader) {
-    for (uint32_t i = 0; reader->openCount > i; i++) fclose(reader->open[i]);
+    for (uint32_t i = 0; reader->openCount > i; i++) CTR_TRACE_CLOSE(reader->open[i], 'C', reader->openPages[i]);
     reader->openCount = 0;
     FILE* toClose[READER_OPEN_FILES];
     LightLock_Lock(&reader->lock);
@@ -253,7 +254,7 @@ static void closeFiles(CtrTileReader* reader) {
     memcpy(toClose, reader->toClose, count * sizeof(toClose[0]));
     reader->toCloseCount = 0;
     LightLock_Unlock(&reader->lock);
-    for (uint32_t i = 0; count > i; i++) fclose(toClose[i]);
+    for (uint32_t i = 0; count > i; i++) CTR_TRACE_CLOSE(toClose[i], 'C', UINT32_MAX);
 }
 
 // Whether the read has texture memory to decode into. Only the caller sets
@@ -541,6 +542,7 @@ static bool performNext(CtrTileReader* reader) {
     LightLock_Unlock(&reader->lock);
     if (next == nullptr) return false;
     uint64_t start = nowNanos();
+    CTR_OPEN_SITE('P');
     FILE* f = CtrPack_openFile(next->pageId, nullptr);
     perform(reader, next, f);
     if (f != nullptr) {
@@ -549,7 +551,7 @@ static bool performNext(CtrTileReader* reader) {
         if (handed) reader->toClose[reader->toCloseCount++] = f;
         LightLock_Unlock(&reader->lock);
         if (handed) LightEvent_Signal(&reader->wake);
-        else fclose(f);
+        else CTR_TRACE_CLOSE(f, 'P', next->pageId);
     }
     handOn(reader, next, start);
     return true;
@@ -587,4 +589,48 @@ void CtrTileReader_release(CtrTileReader* reader, CtrTileRead* read) {
     // Stopped after the tile in progress.
     while (decoding && !CtrTileReader_finished(reader, read)) svcSleepThread(WAIT_SLICE_NS);
     freeRead(read);
+}
+
+// ===[ Reads done on the game thread use its open files (utstall, item 8 step 1) ]===
+
+// Late code, the --wrap of CtrTileReader_wait (CMakeLists.txt): CtrTileReader_wait above, except that the read it
+// performs meanwhile takes the page's file from the game thread's own open cache files (ctr_textures.c's cacheFile)
+// instead of opening one and handing it to this thread to close once its queue drains. That is an open and a close
+// fewer each time, and no file held past the read beyond the game thread's own, which count against the same limit.
+#define UTSTALL8_TEXT __attribute__((noinline, section(".text.utstall8_late")))
+
+FILE* CtrTextures_readerGameFile(uint32_t pageId);
+bool CtrTextures_readerUsesGameFiles(void);
+double __real_CtrTileReader_wait(CtrTileReader* reader, CtrTileRead* read);
+
+UTSTALL8_TEXT static bool performNextOnGameFile(CtrTileReader* reader) {
+    LightLock_Lock(&reader->lock);
+    CtrTileRead* next = reader->reads.head;
+    while (next != nullptr && next->whole) next = next->next;
+    if (next != nullptr) {
+        removeFrom(&reader->reads, next);
+        next->state = READ_READING;
+    }
+    LightLock_Unlock(&reader->lock);
+    if (next == nullptr) return false;
+    uint64_t start = nowNanos();
+    // The file stays the game thread's: it is open for the reads it makes itself, which are made one at a time.
+    perform(reader, next, CtrTextures_readerGameFile(next->pageId));
+    handOn(reader, next, start);
+    return true;
+}
+
+UTSTALL8_TEXT double __wrap_CtrTileReader_wait(CtrTileReader* reader, CtrTileRead* read) {
+    // Only if no texture cache started the reader (CtrTextures_init always does): the original, which stays linked.
+    if (!CtrTextures_readerUsesGameFiles()) return __real_CtrTileReader_wait(reader, read);
+    uint64_t start = nowNanos();
+    for (;;) {
+        LightLock_Lock(&reader->lock);
+        uint8_t state = read->state;
+        if (state == READ_DECODE_QUEUED && removeFrom(&reader->decodes, read)) state = read->state = READ_FINISHED;
+        LightLock_Unlock(&reader->lock);
+        if (state == READ_FINISHED) break;
+        if (state == READ_DECODING || !performNextOnGameFile(reader)) svcSleepThread(WAIT_SLICE_NS);
+    }
+    return (double) (nowNanos() - start) / 1e6;
 }

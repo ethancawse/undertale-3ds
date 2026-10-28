@@ -39,6 +39,8 @@
 #include "gettime.h"
 #include "miniz.h"
 #include "alarm_gm14.h" // colflip (alarm14): UNDERTALE's alarm setter
+static double gameFpsTarget(Runner* runner);
+static double gameFpsRealTarget(Runner* runner);
 #line 41
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -1301,9 +1303,9 @@ RValue VMBuiltins_getVariable(VMContext* ctx, Instance* inst, int16_t builtinVar
             return RValue_makeReal((GMLReal) INSTANCE_NOONE);
         }
         case BUILTIN_VAR_FPS:
-            return RValue_makeReal(runner->fps);
+            return RValue_makeReal(gameFpsTarget(runner));
         case BUILTIN_VAR_FPS_REAL:
-            return RValue_makeReal(runner->fpsReal);
+            return RValue_makeReal(gameFpsRealTarget(runner));
         case BUILTIN_VAR_DEBUG_MODE:
             return RValue_makeBool(false);
         case BUILTIN_VAR_DELTA_TIME:
@@ -4955,14 +4957,14 @@ static RValue makeMapListContainer(VMContext* ctx, int32_t id, int32_t type) {
     return RValue_makeStructAndIncRef(container);
 }
 
-static RValue dsMapAddCommon(VMContext* ctx, RValue* args, int32_t argCount, bool wrapAsContainer, int32_t containerType) {
+char* FreewinsMap_key(RValue key, DataWin* dataWin); RValue FreewinsMap_value(RValue value); void FreewinsMap_freeKey(char* key); static RValue dsMapAddCommon(VMContext* ctx, RValue* args, int32_t argCount, bool wrapAsContainer, int32_t containerType) {
     REQUIRE_ARGC_AT_LEAST("ds_map_add", 3, RValue_makeUndefined());
     Runner* runner = ctx->runner;
     int32_t id = RValue_toInt32(args[0]);
     DsMapEntry** mapPtr = dsMapGet(runner, id);
     if (mapPtr == nullptr) return RValue_makeUndefined();
 
-    char* key = RValue_toString(args[1], ctx->runner->dataWin);
+    char* key = FreewinsMap_key(args[1], ctx->runner->dataWin); // borrows a static string (at this file's end)
 
     RValue valueToStore;
     if (wrapAsContainer) {
@@ -4971,7 +4973,7 @@ static RValue dsMapAddCommon(VMContext* ctx, RValue* args, int32_t argCount, boo
         valueToStore = makeMapListContainer(ctx, containedId, containerType);
     } else {
         // Store the value directly
-        valueToStore = RValue_makeIndependent(args[2]);
+        valueToStore = FreewinsMap_value(args[2]); // RValue_makeIndependent, or a static string borrowed
     }
 
     // Check if key exists
@@ -4980,7 +4982,7 @@ static RValue dsMapAddCommon(VMContext* ctx, RValue* args, int32_t argCount, boo
         // Key already exists - replace the value
         RValue_free(&(*mapPtr)[existingIdx].value);
         (*mapPtr)[existingIdx].value = valueToStore;
-        free(key); // The key is already stored in the map
+        FreewinsMap_freeKey(key); // The key is already stored in the map
     } else {
         shput(*mapPtr, key, valueToStore);
     }
@@ -5049,7 +5051,7 @@ static RValue builtin_ds_map_clear(VMContext* ctx, RValue* args, int32_t argCoun
     ptrdiff_t len = shlen(*mapPtr);
     for (ptrdiff_t i = 0; i < len; i++) {
         RValue_free(&(*mapPtr)[i].value);
-        free((*mapPtr)[i].key);
+        FreewinsMap_freeKey((*mapPtr)[i].key);
     }
     shfree(*mapPtr);
     *mapPtr = nullptr;
@@ -5205,7 +5207,7 @@ static RValue builtin_ds_map_delete(VMContext* ctx, RValue* args, int32_t argCou
         RValue_free(&(*mapPtr)[idx].value);
         char* storedKey = (*mapPtr)[idx].key;
         shdel(*mapPtr, storedKey);
-        free(storedKey);
+        FreewinsMap_freeKey(storedKey);
     }
     free(key);
     return RValue_makeUndefined();
@@ -5219,7 +5221,7 @@ static RValue builtin_ds_map_destroy(VMContext* ctx, RValue* args, int32_t argCo
     if (mapPtr == nullptr) return RValue_makeUndefined();
     // Free all keys and values
     for (ptrdiff_t i = 0; shlen(*mapPtr) > i; i++) {
-        free((*mapPtr)[i].key);
+        FreewinsMap_freeKey((*mapPtr)[i].key);
         RValue_free(&(*mapPtr)[i].value);
     }
     shfree(*mapPtr);
@@ -5239,7 +5241,7 @@ static RValue builtin_ds_map_copy(VMContext* ctx, RValue* args, int32_t argCount
     ptrdiff_t len = shlen(*destPtr);
     for (ptrdiff_t i = 0; i < len; i++) {
         RValue_free(&(*destPtr)[i].value);
-        free((*destPtr)[i].key);
+        FreewinsMap_freeKey((*destPtr)[i].key);
     }
     shfree(*destPtr);
     *destPtr = nullptr;
@@ -6052,7 +6054,7 @@ static RValue dsMapReadNative(VMContext* ctx, DsMapEntry** mapPtr, const char* h
     ptrdiff_t len = shlen(*mapPtr);
     repeat(len, i) {
         RValue_free(&(*mapPtr)[i].value);
-        free((*mapPtr)[i].key);
+        FreewinsMap_freeKey((*mapPtr)[i].key);
     }
     }
     shfree(*mapPtr);
@@ -6085,7 +6087,7 @@ static RValue dsMapReadJson(VMContext* ctx, DsMapEntry** mapPtr, const char* jso
     ptrdiff_t len = shlen(*mapPtr);
     repeat(len, i) {
         RValue_free(&(*mapPtr)[i].value);
-        free((*mapPtr)[i].key);
+        FreewinsMap_freeKey((*mapPtr)[i].key);
     }
     shfree(*mapPtr);
     *mapPtr = nullptr;
@@ -23084,7 +23086,7 @@ static void cleanupAsyncMap(Runner* runner, int32_t mapId) {
     DsMapEntry** mapPtr = &runner->dsMapPool[mapId];
     if (*mapPtr != nullptr) {
         repeat(shlen(*mapPtr), i) {
-            free((*mapPtr)[i].key);
+            FreewinsMap_freeKey((*mapPtr)[i].key);
             RValue_free(&(*mapPtr)[i].value);
         }
         shfree(*mapPtr);
@@ -25207,4 +25209,69 @@ LATE_BUILTIN_CODE RValue VMBuiltins_lateGlobalExists(VMContext* ctx, RValue* arg
 #if defined(__3DS__) && defined(ENABLE_WAD16) && defined(CTRPORT_AOT) && defined(ENABLE_UTOLD_LAVA_DISPATCH) && !defined(UTOLD_LAVA_REFERENCE)
 /* The registered builtin address; only the audited lava call can use it. */
 BuiltinFunc const Utold_lavaPartBuiltin __attribute__((section(".data.late.utlava"))) = builtin_draw_sprite_part;
+#endif
+
+#if defined(__3DS__) && defined(ENABLE_WAD16) && defined(CTRPORT_AOT)
+BuiltinFunc const Utold_scalarPartBuiltin
+    __attribute__((section(".rodata.utoldscalar_in_text"))) = builtin_draw_sprite_part;
+#endif
+
+// Game logic uses the simulation target, including room_speed overrides. Keep
+// runner->fps/fpsReal measured for port telemetry. Distinct non-folded entries
+// preserve the two switch arms' slots in the 3DS getter (warm layout contract).
+#if defined(__3DS__)
+#define GAME_FPS_TARGET_CODE __attribute__((noipa, section(".text.late.cheaplevers")))
+#elif defined(__GNUC__) && !defined(__clang__)
+#define GAME_FPS_TARGET_CODE __attribute__((noipa))
+#else
+#define GAME_FPS_TARGET_CODE
+#endif
+
+GAME_FPS_TARGET_CODE static double gameFpsTarget(Runner* runner) {
+    return (double) Runner_getEffectiveGameSpeed(runner);
+}
+
+GAME_FPS_TARGET_CODE static double gameFpsRealTarget(Runner* runner) {
+    return (double) Runner_getEffectiveGameSpeed(runner);
+}
+#undef GAME_FPS_TARGET_CODE
+
+// ds_map_add borrows a static string (freewins, win 2): a key, or a string value, that RValue_isStaticString
+// finds (the data.win's string table, or the one-character strings) is stored as the pointer, not a copy. Both live
+// until the VM is freed, and every map is freed before that. UNDERTALE builds its two language text maps (16,455
+// entries each) from Push.s constants: 1.8 MB of copied values and 0.7 MB of copied keys in 65,820
+// heap blocks. A borrowed value doesn't own its string (RValue_free leaves it), and a borrowed key is never freed:
+// every map key is freed through FreewinsMap_freeKey. The strings btnprompt rewrites in place (its five slots) are
+// still copied, so a map keeps the text a slot had when it was added, as before.
+#if defined(PLATFORM_3DS) && defined(__GNUC__)
+#define FREEWINS_MAP_LATE __attribute__((noinline, section(".text.late.freewins3")))
+#else
+#define FREEWINS_MAP_LATE NOINLINE
+#endif
+#if defined(ENABLE_WAD16) && defined(__3DS__)
+bool Btnprompt_isSlot(const char* s);  // z_btnprompt.c
+#endif
+static FREEWINS_MAP_LATE bool freewinsMapBorrows(RValue v) {
+    if (v.type != RVALUE_STRING || v.string == nullptr || !RValue_isStaticString(v.string)) return false;
+#if defined(ENABLE_WAD16) && defined(__3DS__)
+    if (Btnprompt_isSlot(v.string)) return false;
+#endif
+    return true;
+}
+FREEWINS_MAP_LATE char* FreewinsMap_key(RValue key, DataWin* dataWin) {
+    return freewinsMapBorrows(key) ? (char*) key.string : RValue_toString(key, dataWin);
+}
+FREEWINS_MAP_LATE RValue FreewinsMap_value(RValue value) {
+    return freewinsMapBorrows(value) ? RValue_makeString(value.string) : RValue_makeIndependent(value);
+}
+FREEWINS_MAP_LATE void FreewinsMap_freeKey(char* key) {
+    if (!RValue_isStaticString(key)) free(key);
+}
+#undef FREEWINS_MAP_LATE
+// dsMapAddCommon keeps base's size and place (a retained slot, proven by tools/analysis/check_freewins_layout.py):
+// UNDERTALE's inlined RValue_makeIndependent is now FreewinsMap_value's, so its 1,236 B are 920 + 316 B of padding,
+// subsection 1 of its section (after its code and literal pool, outside its symbol size). DELTARUNE builds already
+// call an outlined RValue_makeIndependent, so theirs keeps its 964 B with no padding.
+#if defined(PLATFORM_3DS) && defined(__GNUC__) && defined(ENABLE_WAD16)
+__asm__(".pushsection .text.dsMapAddCommon,\"ax\",%progbits\n.subsection 1\n.space 316\n.popsection\n");
 #endif

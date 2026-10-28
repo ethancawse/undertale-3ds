@@ -20,17 +20,27 @@ static const char bxReviewRomfsScenes[] BX_REVIEW_RO = "romfs:/bench_scenes.txt"
 static int bxReviewScenes BX_REVIEW_DATA = -1;
 
 bool CtrBuilderx_hasBenchScenes(void);
+// The romfs's list first: every build packs bench_scenes.txt there (CMakeLists), so the SD card's override is looked
+// up only when that one is empty. A stat of a missing name in the game's SD folder took 400-440 ms on the Old test
+// consoles (docs/3ds-hardware.md), and the options menu's first page paid it on the game thread (the Debug row).
 BX_REVIEW bool CtrBuilderx_hasBenchScenes(void) {
     if (bxReviewScenes < 0) {
         struct stat st;
-        bxReviewScenes = stat(bxReviewScenePath, &st) == 0 && st.st_size > 0;
-        if (!bxReviewScenes && CtrRomfs_init(bxReviewRomfs) >= 0)
-            bxReviewScenes = stat(bxReviewRomfsScenes, &st) == 0 && st.st_size > 0;
+        // Named first, as main's version did, so GCC emits the three strings in main's order.
+        const char* sdPath = bxReviewScenePath;
+        __asm__("" : "+r"(sdPath));
+        bxReviewScenes = CtrRomfs_init(bxReviewRomfs) >= 0 && stat(bxReviewRomfsScenes, &st) == 0 && st.st_size > 0;
+        if (!bxReviewScenes) bxReviewScenes = stat(sdPath, &st) == 0 && st.st_size > 0;
     }
+    // The branch over a fill that kept main's 228 B went in argcheck's UT late-text reclaim (a layout event).
+
+
+
     return bxReviewScenes != 0;
 }
 
-// Mirrors the private OptRow ABI; compiler-launcher tests bind its fields and the Debug row's ordinal.
+// Mirrors the private OptRow ABI; compiler-launcher tests bind its fields and the Debug row's ordinal (ctr_optmenu.c's
+// OPT_MAIN_DEBUG: 6 since legalui's option C took the Other row out; tools/release/test_builder_review.py checks it).
 typedef struct {
     const char* label;
     const char* value;
@@ -38,7 +48,7 @@ typedef struct {
     bool dis;
 } BxMenuRow;
 _Static_assert(offsetof(BxMenuRow, dis) == 3 * sizeof(void*), "options row ABI");
-enum { BX_MENU_DEBUG = 7 };
+enum { BX_MENU_DEBUG = 6 };
 void Bx_menuRowOriginal(const CtrMenu* menu, uint32_t index, BxMenuRow* row);
 CtrMenuAction Bx_menuActivateOriginal(CtrMenu* menu, uint32_t index, int32_t direction);
 void Bx_menuRow(const CtrMenu* menu, uint32_t index, BxMenuRow* row);

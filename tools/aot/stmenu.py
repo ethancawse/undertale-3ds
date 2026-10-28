@@ -14,7 +14,14 @@ and never committed (stpack.build writes it beside the glyph pack):
   - the previews: each part Smooth and Crisp, RGB565 at native size, as the battle draws it: Smooth is the 2x2 average
     of the texels over black (Smart smoothing at an even place; checked against Azahar captures of the soul, mean error
     0.04 of 255), Crisp the texels at even rows and columns, the Crisp soul, or the pack's text glyphs placed as
-    z_smalltext.c places them (nominal x, carry, row shift). Text is black on a white bubble, as in battle.
+    z_smalltext.c places them (nominal x, carry, row shift). Text is black on a white bubble, as in battle;
+  - the Crisp cards (round 18, playtest 10-25: Mettaton EX's "HAPPY BREAKTIME" card "looked broken"): each frame of a
+    lettered card sprite at half size, drawn with the Text part Crisp instead of Smart's averaged card (r16). The
+    letters are derived from the player's data.win as glyphs (crisp_card; no hand-drawn pixel): the card's words are
+    its row bands with ink and their letters the column runs with ink; each word gets one even 2:1 row split for all its
+    letters and each letter an even 2:1 column split, both at the phase stglyphs picks (uniform_cuts, as fnt_papyrus),
+    a pixel inked by block coverage with stroke rescue, counters kept open (keep_holes). The letters are set 1 px apart,
+    the word centred on its PC centre halved and its top at its PC top halved; the rest of the card is its backdrop.
 
 usage: py -3 -I tools/aot/stmenu.py <data.win> --out <file.dtsm>     (stpack.build calls menu_file for UNDERTALE)
 
@@ -23,7 +30,20 @@ key), u16 soul count, u16 sharp sprite count, u16 preview count, u16 0; then per
 (at most 4), u8 0 x 3, u32 colour of each of 4 frames (0x00BBGGRR, the draw colour's order), u8 8 row masks (bit x =
 column x); then per sharp sprite: char name[24], u8 group (1 Bones, 2 Numbers), u8 0 x 3; then per preview: u8 part (0
 Text, 1 Bones, 2 Numbers, 3 Soul), u8 Crisp (0 or 1), u16 width, u16 height, u16 0, then width * height u16 RGB565
-pixels row by row, padded to 4 bytes.
+pixels row by row, padded to 4 bytes. The header's last u16 (0 in the first files, which z_smalltext.c reads as no
+cards) is the card count; then per card frame (the card is half the sprite's size, opaque: its pixels without a letter
+are drawn black): char sprite name[24], u8 frame, u8 4 (entries), u8 height, u8 0, then 4 entries of z_smalltext.c's
+atlas, 16 columns each from the left (the last one narrower): u8 0, u8 0, u8 width, u8 0 x 3, then per row a u16 ink
+mask (bit x = column x); padded to 4 bytes.
+
+bubble_file writes the bubble table beside it (<data.win folder>.dtsb; z_smalltext.c's bubbleclip keeps a writer's
+Crisp line off its bubble's inner edge): b"DTSB", u32 version 2, u32 data.win size, u32 GEN8 game ID, u64 GEN8
+timestamp, u32 sprite count; then per bubble sprite (each sprite named with "blcon", frame 0, whose edges are at most
+255): u16 sprite index, u16 height, then height u8: the row's inner right edge, the first column right of the row's
+first run of white pixels (alpha and red at least 128) that isn't white, at most the commonest such column (the body's
+edge, so the tail never counts as room); 0 for a row without white. Then u32 font count and per font 112 bytes: its
+name (16 bytes, NUL padded), then int8 px for chars 32..127: obj_base_writer's kerning, the px its Draw adds to a
+letter's advance in that font (read from the writer's own code, writer_kerning; English text).
 
 Pure Python (the builder ships the embeddable Python, without numpy). Reads the game data; run with -I.
 """
@@ -49,6 +69,9 @@ SOUL_SPRITES = ('spr_heart', 'spr_heart_battle_pl', 'spr_ourheart', 'spr_confuse
 BONE_PREFIX = 'spr_s_bone'
 BONE_SPRITES = ('spr_bonetop', 'spr_bonebottom')
 NUMBER_SPRITES = ('spr_dmgnum_o', 'spr_dmgnum', 'spr_dmgmiss_o', 'spr_num9')
+# Lettered cards with a Crisp remake (white letters on an opaque black card): Mettaton EX's break card.
+CARD_SPRITES = ('spr_happybreaktime',)
+CARD_PARTS = 4  # z_smalltext.c draws a card as four 16-pixel atlas entries, so 64 pixels wide at most
 TEXT_LINES = (('fnt_plain', '* Hello! How are you?'), ('fnt_papyrus', 'HELLO THERE, HUMAN!'))
 BUBBLE_PAD = 4  # native px of white around the text, as a bubble
 
@@ -163,6 +186,61 @@ def sharp_sprites(names):
     out = [(n, 1) for n in sorted(names) if n.startswith(BONE_PREFIX)]
     out += [(n, 1) for n in BONE_SPRITES if n in names]
     out += [(n, 2) for n in NUMBER_SPRITES if n in names]
+    return out
+
+
+def bands(v):
+    """[(start, end)] of the runs of true in v."""
+    out, i = [], 0
+    while i < len(v):
+        if v[i]:
+            j = i
+            while j < len(v) and v[j]:
+                j += 1
+            out.append((i, j))
+            i = j
+        i += 1
+    return out
+
+
+def crisp_card(ink):
+    """The half-size card of a frame's letter ink (rows of bools; see the top), or None when it has none."""
+    h, w = len(ink), len(ink[0])
+    params = sg.font_params('fnt_papyrus')
+    card = [[False] * (w // 2) for _ in range(h // 2)]
+    words = bands([any(r) for r in ink])
+    for y0, y1 in words:
+        letters = bands([any(ink[y][x] for y in range(y0, y1)) for x in range(w)])
+        cells = [[row[a:b] for row in ink[y0:y1]] for a, b in letters]
+        rg = sg.row_map(dict(enumerate(cells)), (y1 - y0 + 1) // 2, y1 - y0, uniform=2)
+        glyphs = []
+        for a in cells:
+            gaps = [(g0, g1, 1.0) for row in sg.apply_rows(a, rg) for g0, g1 in sg.interior_gaps(row)]
+            glyphs.append(sg.finish(a, None, rg, sg.uniform_cuts(sg.width(a), 2, gaps), params))
+        total = sum(sg.width(g) for g in glyphs) + len(glyphs) - 1
+        x = int(round((letters[0][0] + letters[-1][1]) / 4.0 - total / 2.0))
+        for g in glyphs:
+            for ry, row in enumerate(g):
+                for rx, v in enumerate(row):
+                    if v and 0 <= y0 // 2 + ry < len(card) and 0 <= x + rx < len(card[0]):
+                        card[y0 // 2 + ry][x + rx] = True
+            x += sg.width(g) + 1
+    return card
+
+
+def cards(dw, names):
+    """[(name, frame, rows of bools)] of the card sprites' frames: opaque cards whose ink is white letters on black."""
+    out = []
+    for name in CARD_SPRITES:
+        if name not in names:
+            continue
+        w, h, frames = sprite_frames(dw, names[name])
+        if not 16 * (CARD_PARTS - 1) < w // 2 <= 16 * CARD_PARTS or not 0 < h // 2 < 256 or not frames:
+            continue
+        if any(px[3] != 255 or px[:3] not in ((0, 0, 0), (255, 255, 255)) for a in frames for row in a for px in row):
+            continue
+        for i, a in enumerate(frames):
+            out.append((name, i, crisp_card([[px[0] == 255 for px in row] for row in a])))
     return out
 
 
@@ -389,9 +467,10 @@ def menu_file(path, packed, quiet=False):
     soul_list, design = souls(dw, names)
     sharp = sharp_sprites(names)
     prev = previews(dw, names, design, packed)
+    card_list = cards(dw, names)
     w = dw.win
     out = bytearray(MAGIC + struct.pack('<IIIQHHHH', VERSION, w.size, w.game_id, w.timestamp, len(soul_list), len(sharp),
-                                        len(prev), 0))
+                                        len(prev), len(card_list)))
     for name, colours, mask in soul_list:
         out += name.encode('ascii')[:23].ljust(24, b'\0') + struct.pack('<B3x', len(colours))
         out += struct.pack('<4I', *(colours + [0] * (4 - len(colours))))
@@ -407,11 +486,116 @@ def menu_file(path, packed, quiet=False):
                 out += struct.pack('<H', rgb565(px))
         if (wd * h) & 1:
             out += b'\0\0'
+    for name, frame, rows in card_list:
+        h, wd = len(rows), len(rows[0])
+        out += name.encode('ascii')[:23].ljust(24, b'\0') + struct.pack('<BBBB', frame, CARD_PARTS, h, 0)
+        for x0 in range(0, 16 * CARD_PARTS, 16):
+            pw = max(0, min(16, wd - x0))
+            out += struct.pack('<BBBBBB', 0, 0, pw, 0, 0, 0)
+            out += b''.join(struct.pack('<H', sum(1 << x for x in range(pw) if row[x0 + x])) for row in rows)
+        out += bytes(-len(out) % 4)
     if not quiet:
-        print(f'smoothmenu: {len(soul_list)} soul sprites, {len(sharp)} sharp sprites, {len(prev)} previews')
+        print(f'smoothmenu: {len(soul_list)} soul sprites, {len(sharp)} sharp sprites, {len(prev)} previews, '
+              f'{len(card_list)} card frames')
+        for name, frame, rows in card_list:
+            print(f'smoothmenu: Crisp card {name} {frame} ' + ' '.join(''.join('#' if v else '.' for v in r) for r in rows))
         if design is not None:
             print('smoothmenu: Crisp soul ' + ' '.join(''.join('#' if v else '.' for v in r) for r in design))
     return bytes(out)
+
+
+BUBBLE_MAGIC = b'DTSB'
+
+
+def bubble_edges(rows, w):
+    """The bubble table's rows of a sprite's frame (RGBA rows, width w); see the top."""
+    raw = []
+    for row in rows:
+        x = next((x for x in range(w) if row[x][3] >= 128 and row[x][0] >= 128), None)
+        if x is not None:
+            while x < w and row[x][3] >= 128 and row[x][0] >= 128:
+                x += 1
+        raw.append(x)
+    seen = [e for e in raw if e is not None]
+    if not seen:
+        return None
+    body = max(set(seen), key=lambda e: (seen.count(e), -e))
+    return [0 if e is None else min(e, body) for e in raw]
+
+
+WRITER_DRAW = 'gml_Object_obj_base_writer_Draw_0'
+
+
+def writer_kerning(path):
+    """obj_base_writer's kerning, {font index: {char: px}}: in its Draw, after a letter is drawn, blocks of the shape
+    `if (myfont == F) { if (myletter == "c") letterx += n; ... }` (several letters before one change share it) move the
+    next letter's place, myx. Blocks under a global.typer or global.language test (one typer's own placement, other
+    languages) are left out. {} when the data has no such writer."""
+    import gmlaot as ga
+    win = ga.DataWin(path)
+    e = win.code_by_name.get(WRITER_DRAW)
+    if e is None:
+        return {}
+    win.patch_operands()
+    blob = bytes(win.data[e['abs']:e['abs'] + e['length']])
+    seq, addr = [], e['offset']
+    while addr < len(blob):
+        i = ga.Instr(blob, addr)
+        seq.append(i)
+        addr = i.next
+
+    def var(i):
+        if i.extra is None or not (i.op in (ga.OP_PUSHLOC, ga.OP_PUSHGLB, ga.OP_POP) or (i.op == ga.OP_PUSH and i.t1 == ga.T_VAR)):
+            return None
+        return win.vars[i.var_index()]['name'] if i.var_index() < len(win.vars) else None
+
+    def at(k):
+        return seq[k] if k < len(seq) else None
+
+    font, letters, out = None, [], {}
+    for k, i in enumerate(seq):
+        name = var(i)
+        if i.op == ga.OP_PUSHGLB and name in ('typer', 'language'):
+            font, letters = None, []
+        elif name == 'myfont' and at(k + 1) and at(k + 1).op == ga.OP_PUSHI and at(k + 2) and at(k + 2).op == ga.OP_CMP:
+            font, letters = at(k + 1).inst, []
+        elif (i.op == ga.OP_PUSH and i.t1 == ga.T_STRING and k and var(seq[k - 1]) == 'myletter' and at(k + 1)
+              and at(k + 1).op == ga.OP_CMP):
+            text = win.strg(i.extra)
+            if text is not None and len(text) == 1:
+                letters.append(chr(text[0]))
+        elif (name == 'letterx' and i.op == ga.OP_PUSH and at(k + 3) and at(k + 1).op == ga.OP_PUSHI
+              and at(k + 2).op in (ga.OP_ADD, ga.OP_SUB) and at(k + 3).op == ga.OP_POP and var(at(k + 3)) == 'letterx'):
+            if font is not None:
+                n = at(k + 1).inst if at(k + 2).op == ga.OP_ADD else -at(k + 1).inst
+                for c in letters:
+                    out.setdefault(font, {})[c] = n
+            letters = []
+    return out
+
+
+def bubble_file(path):
+    """The .dtsb of the data.win at path (see the top)."""
+    dw = sg.GameData(path)
+    recs = []
+    for index, p in enumerate(dw.plist('SPRT')):
+        if not p or 'blcon' not in dw.string(dw.u32(p)):
+            continue
+        w, h, frames = sprite_frames(dw, p)
+        edges = bubble_edges(frames[0], w) if frames else None
+        if edges is not None and max(edges) <= 255:
+            recs.append(struct.pack('<HH', index, h) + bytes(edges))
+    fonts = []
+    names = [dw.string(dw.u32(q)) if q else None for q in dw.plist('FONT')]
+    for index, table in sorted(writer_kerning(path).items()):
+        name = names[index] if 0 <= index < len(names) else None
+        if name is None or len(name.encode('ascii', 'replace')) > 15:
+            continue
+        px = [max(-128, min(127, table.get(chr(c), 0))) for c in range(32, 128)]
+        fonts.append(name.encode('ascii', 'replace').ljust(16, b'\0') + struct.pack('<96b', *px))
+    w = dw.win
+    return (BUBBLE_MAGIC + struct.pack('<IIIQI', 2, w.size, w.game_id, w.timestamp, len(recs)) + b''.join(recs)
+            + struct.pack('<I', len(fonts)) + b''.join(fonts))
 
 
 def main():

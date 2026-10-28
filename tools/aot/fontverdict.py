@@ -25,19 +25,27 @@ the console's own look still calls them single, as before.
 Pure Python (the builder ships the embeddable Python, without numpy). Reads the game data; run with -I. Writes nothing
 derived from the game into the repository: --out is a build output.
 
-Output file (little-endian): magic b"DTFV", u32 version 1, u32 data.win size, u32 GEN8 game ID, u64 GEN8 timestamp
+Output file (little-endian): magic b"DTFV", u32 version (1 main; 2 GOG decoded), u32 data.win size, u32 GEN8 game ID, u64 GEN8 timestamp
 (CtrPackKey), u32 font count, then 4 bytes per font: smart rounded, clean rounded, smart exact, clean exact. 0 means
-"not known here": the runtime then looks at the glyphs itself, as before.
+"not known here": the runtime then looks at the glyphs itself, as before. GOG may append a validated GSI1
+item-compatibility trailer; an absent or invalid trailer retains its normal decoded-colour analysis.
 """
 import argparse
 import bz2
+import hashlib
+from pathlib import Path
 import struct
 import sys
 import time
 import zlib
 
 MAGIC = b"DTFV"
-VERSION = 1
+VERSION = 1  # Main's packed equality, byte-identical for Steam and DELTARUNE tables.
+GOG_VERSION = 2  # Decoded equality only for this measured GOG container.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import data_versions
+GOG_KEYS = {row for row in data_versions.load_table()[1]
+            if row[:3] == ('undertale', 'root', 62951906)}
 TILE_MAX = 256
 PARTIAL_ALPHA_TOLERANCE = struct.unpack("<f", struct.pack("<f", 0.02))[0]
 SOFT_AREA_MIN_PIXELS = 64
@@ -67,6 +75,7 @@ class Win:
         if d[:4] != b"FORM":
             raise SystemExit("not a data.win: " + path)
         self.size = len(d)
+        self.gog_smart = self.size == 62951906 and ('undertale', 'root', self.size, hashlib.sha256(d).hexdigest()) in GOG_KEYS
         self.chunks = {}
         pos, end = 8, 8 + struct.unpack_from("<I", d, 4)[0]
         while pos + 8 <= end:
@@ -314,8 +323,9 @@ def tile_size(size):
 
 
 class Page:
-    def __init__(self, w, h, rgba, rows):
+    def __init__(self, w, h, rgba, rows, gog_smart=False):
         self.w, self.h, self.rgba, self.rows = w, h, rgba, rows
+        self.gog_smart = gog_smart
         self.tw, self.th = tile_size(w), tile_size(h)
         self.tiles_x = (w + self.tw - 1) // self.tw
         self.formats = {}  # (exact, tx, ty) -> format
@@ -409,15 +419,34 @@ class Page:
     def texel(self, exact, x, y):
         # smartTexel.
         f, v = self.stored(exact, x, y)
-        if f == RGBA8:
-            return v if v & 0xFF else 0
-        if f == RGBA5551:
-            return v if v & 1 else 0
-        if f == RGB565:
-            return 0x10000 | v
-        if f == RGB8:
-            return 0x1000000 | v
-        return 0
+        if not self.gog_smart:
+            if f == RGBA8:
+                return v if v & 0xFF else 0
+            if f == RGBA5551:
+                return v if v & 1 else 0
+            if f == RGB565:
+                return 0x10000 | v
+            if f == RGB8:
+                return 0x1000000 | v
+            return 0
+        rgba = decoded_rgba(f, v)
+        return rgba if rgba & 0xFF else 0
+
+
+def decoded_rgba(fmt, value):
+    """GPU-expanded RGBA, preserving transparent RGB for the one-colour scan."""
+    if fmt == RGBA8:
+        return value
+    if fmt == RGBA5551:
+        r, g, b = value >> 11, (value >> 6) & 31, (value >> 1) & 31
+        a = 255 if value & 1 else 0
+        return (((r << 3) | (r >> 2)) << 24 | ((g << 3) | (g >> 2)) << 16 |
+                ((b << 3) | (b >> 2)) << 8 | a)
+    if fmt == RGB565:
+        r, g, b = value >> 11, (value >> 5) & 63, value & 31
+        return (((r << 3) | (r >> 2)) << 24 | ((g << 2) | (g >> 4)) << 16 |
+                ((b << 3) | (b >> 2)) << 8 | 255)
+    return (value << 8) | 255 if fmt == RGB8 else 0
 
 
 def tally(page, exact, x0, y0, w, h):
@@ -479,7 +508,9 @@ def region_one_colour(page, exact, x0, y0, w, h, colour):
             f, v = page.stored(exact, x, y)
             if f == EMPTY:
                 continue
-            if f == RGBA8:
+            if page.gog_smart:
+                rgb = decoded_rgba(f, v) >> 8
+            elif f == RGBA8:
                 rgb = v >> 8
             elif f == RGBA5551:
                 rgb = 0x1000000 | (v >> 1)
@@ -583,7 +614,7 @@ def analyse(path, quiet=False, log=print):
         th = tile_size(head[1])
         rows = min(head[1], (bottom + th - 1) // th * th)
         dec = decode_page(blob, rows)
-        page = Page(dec[0], dec[1], dec[2], rows)
+        page = Page(dec[0], dec[1], dec[2], rows, win.gog_smart)
         for i, name, tpag, glyphs in entries:
             rounded, exact = font_smart(page, False, tpag, glyphs), font_smart(page, True, tpag, glyphs)
             v = (rounded[0], font_clean(page, False, tpag, glyphs), exact[0], font_clean(page, True, tpag, glyphs))
@@ -604,22 +635,28 @@ def analyse(path, quiet=False, log=print):
 
 
 def write(path, win, verdicts):
-    out = bytearray(MAGIC + struct.pack("<IIIQI", VERSION, win.size, win.game_id, win.timestamp, len(verdicts)))
+    version = GOG_VERSION if win.gog_smart else VERSION
+    out = bytearray(MAGIC + struct.pack("<IIIQI", version, win.size, win.game_id, win.timestamp, len(verdicts)))
     for v in verdicts:
         out += bytes(v)
+    if win.gog_smart:
+        import gog_smart
+        out += gog_smart.compatibility_tail(win)
     with open(path, "wb") as f:
         f.write(out)
 
 
 def build_tables(game, data, romfs, target=None):
     """build.sh: one table per data.win of the game into <romfs>/fonts/<data.win folder>.dtfv, the name the runtime
-    looks up (undertale, deltarune for the chapter select, chapterN_windows). Skipped when the inputs are unchanged.
-    UNDERTALE, and DELTARUNE for New 3DS (target n3ds), also get symmetric halving's plain items
-    (tools/aot/symverdict.py) beside each as <name>.dtsy."""
+    looks up (undertale, deltarune for the chapter select, chapterN_windows), and beside it the item verdicts
+    (tools/aot/itemverdict.py) as <name>.dtiv. Skipped when the inputs are unchanged. UNDERTALE, and DELTARUNE for
+    New 3DS (target n3ds), also get symmetric halving's plain items (tools/aot/symverdict.py) beside each as
+    <name>.dtsy."""
     import hashlib
     import os
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I leaves the script's folder off the path
     import corpus
+    import itemverdict
     import prepare
     found = prepare.find_data(game, data)
     if not found:
@@ -630,16 +667,22 @@ def build_tables(game, data, romfs, target=None):
         wins.insert(0, ("deltarune", os.path.join(found, "data.win")))
     out_dir = os.path.join(romfs, "fonts")
     os.makedirs(out_dir, exist_ok=True)
-    with open(__file__, "rb") as f:
-        stamp = ["generator " + hashlib.sha1(f.read()).hexdigest()]
+    stamp = []
+    for gen in (__file__, itemverdict.__file__):
+        with open(gen, "rb") as f:
+            stamp.append("generator " + hashlib.sha1(f.read()).hexdigest())
     # Symmetric halving's table: UNDERTALE, and DELTARUNE's New 3DS builds (its Old builds compile z_symverdict.c empty,
     # so their tables and stamp stay as they were).
     sym = game == "undertale" or target == "n3ds"
-    exts = (".dtfv", ".dtsy") if sym else (".dtfv",)
+    exts = (".dtfv", ".dtiv", ".dtsy") if sym else (".dtfv", ".dtiv")
     if sym:
         import symverdict
         with open(symverdict.__file__, "rb") as f:
             stamp.append("generator " + hashlib.sha1(f.read()).hexdigest())
+    # Include optional GOG profile inputs so a changed/removed profile cannot leave a stale trailer cached.
+    for extra in ('gog_smart.py', 'gog-smart-1.08.json'):
+        profile_path = Path(__file__).with_name(extra)
+        stamp.append(extra + ' ' + (hashlib.sha1(profile_path.read_bytes()).hexdigest() if profile_path.is_file() else 'absent'))
     for name, path in wins:
         st = os.stat(path)
         stamp.append(f"{name} {st.st_size} {st.st_mtime_ns}")
@@ -652,21 +695,23 @@ def build_tables(game, data, romfs, target=None):
     except OSError:
         same = False
     if same:
-        print(f"fonts: {len(wins)} tables up to date in {out_dir}")
+        print(f"fonts: {len(wins)} font and item tables up to date in {out_dir}")
         return 0
     for old in os.listdir(out_dir):
-        if old.endswith((".dtfv", ".dtsy")) and old not in names:
+        if old.endswith((".dtfv", ".dtiv", ".dtsy")) and old not in names:
             os.remove(os.path.join(out_dir, old))
     t0 = time.time()
     for name, path in wins:
         win, verdicts = analyse(path, quiet=True)
         write(os.path.join(out_dir, name + ".dtfv"), win, verdicts)
+        win, items, _ = itemverdict.analyse(path, quiet=True, game=game)
+        itemverdict.write(os.path.join(out_dir, name + ".dtiv"), win, items)
         if sym:
             win, bits = symverdict.analyse(path, game=game)
             symverdict.write(os.path.join(out_dir, name + ".dtsy"), win, bits)
     with open(stamp_path, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(stamp) + "\n")
-    print(f"fonts: {len(wins)} tables written to {out_dir} in {time.time() - t0:.1f} s")
+    print(f"fonts: {len(wins)} font and item tables written to {out_dir} in {time.time() - t0:.1f} s")
     return 0
 
 

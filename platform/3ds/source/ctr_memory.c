@@ -89,6 +89,21 @@ __attribute__((constructor)) static void keepHeapTop(void) {
 #endif
 #define TARGET_HEAP_SIZE (O3DS_HEAP_TARGET_MB * MB)
 #endif
+// libctru's default split below the LARGE_MEMORY threshold: the normal heap gets at least DEFAULT_HEAP_MIN_MB and
+// linear memory at most DEFAULT_LINEAR_MAX_MB. UNDERTALE on an Old 3DS (utflowey, rulings 2026-10-25 "1a"
+// and 2026-10-26 "option 1") moves 6 MB from the heap to linear memory: heap 20.1 / linear 38.0 MB of the .3dsx's
+// 64 MB mode instead of 26.1 / 32.0, so the Omega Flowey fight's whole set (132 tiles, 24.5 MB) stays resident beside
+// the sound effects and the 3 MB linear floor (at 36 the floor evicted set tiles and 7 came back from the SD card in
+// play). The game's own heap need in play is at most 17.8 MB (results/utflowey.md, census and the boss suite at 20.1).
+// check_memory_split.cmake reads both numbers. The constants keep __system_allocateHeaps's code size (#line below).
+#if !defined(ENABLE_WAD17) && defined(CTRPORT_TARGET_O3DS)
+#define DEFAULT_HEAP_MIN_MB 20u
+#define DEFAULT_LINEAR_MAX_MB 38u
+#else
+#define DEFAULT_HEAP_MIN_MB 24u
+#define DEFAULT_LINEAR_MAX_MB 32u
+#endif
+#line 92
 
 extern char* fake_heap_start;
 extern char* fake_heap_end;
@@ -266,7 +281,7 @@ size_t __wrap_linearGetSize(void* mem) {
     return size;
 }
 
-void __wrap_linearFree(void* mem) {
+void __wrap_linearFree(void* mem) { HEAPPROF_FREE_OTHER(mem);
     freeWhenGpuDone(mem, false);
 }
 
@@ -377,7 +392,7 @@ void* CtrMemory_vramMemAlignAtOnce(size_t size, size_t alignment, vramAllocPos p
     return p;
 }
 
-void __wrap_vramFree(void* mem) {
+void __wrap_vramFree(void* mem) { HEAPPROF_FREE_OTHER(mem);
     lockLinear();
     untrackVram(mem);
     CtrMemory_linearLockRelease(&linearLock);
@@ -417,77 +432,9 @@ static u32 aotRegionSize;   // reserved at CTR_AOT_MODULE_BASE
 // Mirrors libctru's default (libctru/source/system/allocateHeaps.c) apart
 // from the sizes.
 void __system_allocateHeaps(void) {
-    Handle reslimit = 0;
-    if (R_FAILED(svcGetResourceLimit(&reslimit, CUR_PROCESS_HANDLE))) svcBreak(USERBREAK_PANIC);
-    ResourceLimitType type = RESLIMIT_COMMIT;
-    s64 maxCommit = 0;
-    s64 currentCommit = 0;
-    svcGetResourceLimitLimitValues(&maxCommit, reslimit, &type, 1);
-    svcGetResourceLimitCurrentValues(&currentCommit, reslimit, &type, 1);
-    svcCloseHandle(reslimit);
-    u32 remaining = (u32) (maxCommit - currentCommit) & ~0xFFFu;
-#ifdef CTRPORT_MEMORY_CAP_KB
-    // A test build that gets what a console grants (CTRPORT_MEMORY_CAP_KB) from an emulator that grants more, so the
-    // heap and linear memory are the console's size and split.
-    u32 beyondCap = 0;
-    if (remaining > ((u32) CTRPORT_MEMORY_CAP_KB * 1024u & ~0xFFFu)) {
-        beyondCap = remaining - ((u32) CTRPORT_MEMORY_CAP_KB * 1024u & ~0xFFFu);
-        remaining -= beyondCap;
-    }
-#endif
-#ifdef CTRPORT_AOT_MODULES
-    u32 region = remaining > CTR_AOT_MODULE_REGION_SIZE + 48 * MB ? CTR_AOT_MODULE_REGION_SIZE : 0;
-    remaining -= region;
-#endif
-
-    u32 linear = (remaining / 2) & ~0xFFFu;
-    if (LARGE_MEMORY > remaining && remaining - linear > 24 * MB) {
-        // libctru's default: the normal heap gets at least 24 MB, linear memory at most 32 MB.
-        linear = remaining - 24 * MB;
-        if (linear > 32 * MB) linear = 32 * MB;
-    }
-#ifdef FIXED_HEAP_SIZE
-    if (remaining > FIXED_HEAP_SIZE + 32 * MB) linear = remaining - FIXED_HEAP_SIZE;
-#endif
-#ifdef TARGET_HEAP_SIZE
-    if (remaining > TARGET_HEAP_SIZE && remaining - TARGET_HEAP_SIZE > linear) linear = (remaining - TARGET_HEAP_SIZE) & ~0xFFFu;
-#endif
-    __ctru_heap_size = remaining - linear;
-#if defined(CTRPORT_MEMORY_CAP_KB) && defined(CTRPORT_HEAP_PROFILE)
-    // The heap profiler's tables, in linear memory, come on top of the console's.
-    if (beyondCap >= CTR_HEAP_PROFILE_TABLE_BYTES) linear += CTR_HEAP_PROFILE_TABLE_BYTES;
-#endif
-    __ctru_linear_heap_size = linear;
-
-    u32 heapAt = OS_HEAP_AREA_BEGIN;
-#ifdef CTRPORT_AOT_MODULES
-    u32 regionAt = 0;
-    if (region > 0 && R_SUCCEEDED(svcControlMemory(&regionAt, CTR_AOT_MODULE_BASE, 0, region, MEMOP_ALLOC, MEMPERM_READ | MEMPERM_WRITE))) {
-        if (regionAt == CTR_AOT_MODULE_BASE) {
-            aotRegionSize = region;
-            heapAt = CTR_AOT_MODULE_BASE + region;
-        } else {
-            // Somewhere the modules don't run: give it back, and the heap gets it.
-            svcControlMemory(&regionAt, regionAt, 0, region, MEMOP_FREE, 0);
-            __ctru_heap_size += region;
-        }
-    } else {
-        __ctru_heap_size += region;
-    }
-#endif
-    if (R_FAILED(svcControlMemory(&__ctru_heap, heapAt, 0, __ctru_heap_size, MEMOP_ALLOC, MEMPERM_READ | MEMPERM_WRITE))) {
-        svcBreak(USERBREAK_PANIC);
-    }
-    if (R_FAILED(svcControlMemory(&__ctru_linear_heap, 0, 0, __ctru_linear_heap_size, MEMOP_ALLOC_LINEAR, MEMPERM_READ | MEMPERM_WRITE))) {
-        svcBreak(USERBREAK_PANIC);
-    }
-    mappableInit(OS_MAP_AREA_BEGIN, OS_MAP_AREA_END);
-    // Before anything allocates linear memory.
-    LightLock_Init(&linearLock);
-
-    fake_heap_start = (char*) __ctru_heap;
-    fake_heap_end = fake_heap_start + __ctru_heap_size;
+#include "ctr_allocate_heaps.inc"
 }
+#line 491
 
 #ifdef CTRPORT_AOT_MODULES
 bool CtrAotModule_regionReserved(void) {
@@ -1230,3 +1177,17 @@ void* CtrMemory_vramAllocTop(size_t size) {
     CtrMemory_linearLockRelease(&linearLock);
     return p;
 }
+
+// CIA80 packaging has its own ELF: do not redirect the ordinary four targets.
+// libctru initSystem calls this once, before main. --wrap changes that branch;
+// --undefined retains the original allocator's pinned slot and body.
+#ifdef CTRPORT_DR_OLD_CIA80_TILES
+#if !defined(ENABLE_WAD17) || !defined(CTRPORT_TARGET_O3DS)
+#error "CIA80 tile split is only for DELTARUNE Old"
+#endif
+#define CTRPORT_ALLOCATE_CIA80
+void __attribute__((noipa, section(".text.late.flowervramg_cia80"))) __wrap___system_allocateHeaps(void) {
+#include "ctr_allocate_heaps.inc"
+}
+#undef CTRPORT_ALLOCATE_CIA80
+#endif

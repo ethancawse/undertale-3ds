@@ -63,9 +63,9 @@ static const char btnpromptLogSkip[] BTN_CONST = "Buttons: code entry %u is not 
 static const char btnpromptLogNone[] BTN_CONST = "Buttons: no prompt table, PC prompts\n";
 static const char btnpromptYes[] BTN_CONST = "on";
 static const char btnpromptNo[] BTN_CONST = "off";
-// Never read: keeps the prompts' late region (this code, its constants and the generated table, which has a fixed
-// size) at the size it had with the hand-written table, so the late code after it keeps its addresses.
-static const uint8_t btnpromptRetained[184] BTN_CONST __attribute__((used)) = { 1 };
+// btnpromptRetained (184 B that kept the late code after the prompts in place) went in argcheck's UT late-text
+// reclaim (a lead-ruled layout event: the late code after it moved down, tools/analysis/check_shrink_layout.py).
+
 
 // Private STRG indices and FNV guards, generated from the player's own data.
 static const uint32_t btnpromptStringGuards[BTNPROMPT_SLOTS][2]
@@ -199,6 +199,15 @@ static BTN_LATE void btnpromptLoad(VMContext* ctx) {
     }
     logInfo(btnpromptLogOn, (unsigned) branches, (unsigned) t->codeCount, (unsigned) strings, (unsigned) t->stringCount,
             glyphs ? btnpromptYes : btnpromptNo);
+}
+
+// vm_builtins.c's ds_map_add (FreewinsMap_key and FreewinsMap_value): a slot's string is rewritten in place, so a map
+// copies it rather than borrowing it. After freewins' other late code (late_reserve.ld).
+__attribute__((noinline, section(".text.freewins_r3_late"))) bool Btnprompt_isSlot(const char* s) {
+    for (uint32_t slot = 0; BTNPROMPT_SLOTS > slot; slot++) {
+        if (btnpromptSlot[slot] == s) return true;
+    }
+    return false;
 }
 #endif // ENABLE_WAD16 && __3DS__
 

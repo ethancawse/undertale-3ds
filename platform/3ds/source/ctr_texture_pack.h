@@ -199,6 +199,23 @@ bool CtrPacked_read(CtrPacked* packed, FILE* f, uint32_t chunk);
 // read each. Returns nullptr if there is none, or if it couldn't be opened
 // with too many files open; then *busy (if not null) is set, else cleared.
 FILE* CtrPack_openFile(uint32_t pageId, bool* busy);
+// Profile builds (CTRPORT_RENDER_TIMING) log each page file open and close with the path that asked for it, as
+// "[fo] <site> <page> <ms>" and "[fc] <site> <page> <ms>" (utstall item 8, step 0): G the game thread in play, L its
+// room load, E the room load closing what it opened, S a shed or busy retry, P the game thread doing a queued read,
+// R the tile reader, C the reader closing at an empty queue, W the pack worker. Release builds compile neither.
+#ifdef CTRPORT_RENDER_TIMING
+extern __thread char CtrPack_openSite;
+extern bool CtrPack_traceRoomLoad; // within CtrTextures_roomLoadFinish
+int CtrPack_traceClose(FILE* f, char site, uint32_t pageId);
+#define CTR_OPEN_SITE(site) (CtrPack_openSite = (site))
+#define CTR_TRACE_CLOSE(f, site, pageId) CtrPack_traceClose((f), (site), (pageId))
+#define CTR_TRACE_ROOMLOAD(on) (CtrPack_traceRoomLoad = (on))
+#define CTR_SITE_GAME (CtrPack_traceRoomLoad ? 'L' : 'G')
+#else
+#define CTR_TRACE_ROOMLOAD(on) ((void) 0)
+#define CTR_OPEN_SITE(site) ((void) 0)
+#define CTR_TRACE_CLOSE(f, site, pageId) fclose(f)
+#endif
 // Reads an open cache file whole, checking its header against the data.win
 // and the page's blob. Returns nullptr if it is unreadable, not a valid
 // packed page or there is no memory for it.
@@ -285,5 +302,31 @@ void CtrPackWorker_hurry(CtrPackWorker* worker, uint32_t pageId);
 void CtrPackWorker_setKeepPacked(CtrPackWorker* worker, bool keep);
 // Stops the worker, waiting for the page in progress, and frees everything.
 void CtrPackWorker_stop(CtrPackWorker* worker);
+
+// ===[ Packed copies in spare linear memory (utflowey2, option 4; UNDERTALE Old only) ]===
+// CMake defines CTRPORT_PKLIN for UNDERTALE o3ds builds only, so every other build compiles the original calls
+// through the CTR_PKLIN_* names below. A packed copy then has two homes under one budget: the heap first (within the
+// game's measured heap share), then linear memory that the room's planned tiles, the 3 MB floor and the texture
+// reserve leave spare. z_utstall.c has the code (late sections .text.utfl2_late, .rodata.utfl2_in_text,
+// .bss.utfl2_late); the shared files only call it, each at an existing call with the same arguments.
+#ifdef CTRPORT_PKLIN
+#include <malloc.h>
+// mallinfo for the heap checks that admit a packed copy: the heap less what spare linear memory can take instead.
+struct mallinfo CtrPkLin_copyMallinfo(void);
+// The heap checks' free bytes for a copy (z_utstall.c's usMakeRoom): heap free plus the spare linear room.
+uint32_t CtrPkLin_copyHeapFree(void);
+// The game thread's whole read of a cache file (ctr_textures.c's, through the CtrPack_readFile wrap): heap first,
+// then spare linear, else as before.
+CtrPacked* CtrPkLin_readFile(FILE* f, const CtrPackKey* key, uint32_t blobOffset, uint32_t blobSize);
+// heapFree() as each shared file has it (static there), through CtrPkLin_copyMallinfo: the same code but the call.
+extern u32 __ctru_heap_size;
+static inline uint32_t CtrPkLin_heapFreeForCopy(void) {
+    struct mallinfo mi = CtrPkLin_copyMallinfo();
+    return __ctru_heap_size > (u32) mi.uordblks ? __ctru_heap_size - (u32) mi.uordblks : 0;
+}
+#define CTR_PKLIN_HEAP_FREE CtrPkLin_heapFreeForCopy
+#else
+#define CTR_PKLIN_HEAP_FREE heapFree
+#endif
 
 #endif

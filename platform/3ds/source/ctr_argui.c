@@ -76,6 +76,7 @@ ArguiState CtrArgui_state ARGUI_BSS;
 extern uint8_t CtrScreens_game;
 extern uint8_t CtrScreens_pacerGame;
 extern bool CtrScreens_otherOff;
+extern bool CtrScreens_onBottom;
 extern bool CtrScreens_consolesOnTop;
 extern bool CtrScreens_sharedBacklight;
 bool CtrScreens_benchLaunched(void);
@@ -212,15 +213,15 @@ ARGUI_STATIC bool arguiSampleGlyph(uint8_t ch, int32_t gx, int32_t gy) {
                    arguiMorton[px & 7u] | ((uint32_t) arguiMorton[py & 7u] << 1);
     return (((const uint16_t*) tile->tex.data)[idx << (tile->tex.fmt == GPU_RGBA8)] & 1u) != 0;
 }
-
+#if defined(ENABLE_WAD17) // UNDERTALE never runs this (argcheck, UT late-text reclaim)
 ARGUI_STATIC void arguiPlaySound(bool selectSound) {
     int32_t id = g.assetIds[selectSound];
     if (id >= 0) g.audio->vtable->playSound(g.audio, id, 100, false);
 }
-
+#endif
 // ===[ Unified text renderer ]===
 
-ARGUI_NOINLINE void arguiDrawText(int32_t x, int32_t y, const char* s, uint32_t col) {
+WAD17_ONLY(ARGUI_NOINLINE) WAD17_NONE(ARGUI_CODE) void arguiDrawText(int32_t x, int32_t y, const char* s, uint32_t col) { // UNDERTALE: global (CtrFps_drawText)
     for (; *s != '\0'; s++, x += g.adv * g.sx) {
         for (int32_t gy = 0; 12 > gy; gy++) {
             for (int32_t gx = 0; (g.menuIsOpen ? 9 : 6) > gx; gx++) {
@@ -266,7 +267,7 @@ typedef enum {
 } MenuItem;
 
 bool CtrLegal_shown(void);
-
+#if defined(ENABLE_WAD17) // UNDERTALE never runs this (argcheck, UT late-text reclaim): the menu rows, values and help
 ARGUI_STR(lblGame, "Game screen");
 ARGUI_STR(lblTop, "Top screen");
 ARGUI_STR(lblStereo, "3D mode");
@@ -404,7 +405,7 @@ static const char* const arguiHelps[41] ARGUI_RO = {
     hlpPerf, strEmpty, strEmpty, hlpQuit,
     hlpTopStd, disNew3ds, disNotWide, disNeedsTop, disNo3d
 };
-
+// (the #if above still holds: arguiDrawOptions)
 ARGUI_NOINLINE void arguiDrawOptions(CtrMenu* menu) {
     CtrLog_beginConsole();
     uint16_t* p = (uint16_t*) menu->console->frameBuffer;
@@ -452,11 +453,11 @@ ARGUI_NOINLINE void arguiDrawOptions(CtrMenu* menu) {
     GSPGPU_FlushDataCache(g.fb, 320u * 240u * 2u);
     CtrLog_endConsole();
 }
-
+#endif
 #undef CtrMenu_open
 #undef CtrMenu_update
 #undef CtrMenu_close
-
+#if defined(ENABLE_WAD17) // UNDERTALE never runs this (argcheck, UT late-text reclaim)
 ARGUI_CODE void CtrArgui_menuOpen(CtrMenu* menu, PrintConsole* console, const CtrDisplaySettings* settings, CtrDisplayCaps caps) {
     CtrMenu_open(menu, console, settings, caps);
     *(uint8_t*) &menu->edited = gHintSeen ^ 1u;
@@ -503,14 +504,18 @@ ARGUI_CODE CtrMenuAction CtrArgui_menuUpdate(CtrMenu* menu, u32 down) {
     if (menu->page == MENU_PAGE_OPTIONS && !CtrLegal_shown()) arguiDrawOptions(menu);
     return action;
 }
-
+#endif
 // ===[ In-game overlays: first-boot hint ("SELECT: Options") and FPS counter ]===
 
-ARGUI_STR(strHint, "SELECT: Options");
+ARGUI_STR(strHint, "SELECT: Options"); void CtrHint_draw(int32_t x, int32_t y, const char* s, uint32_t col); // hintpos: ctr_hintpos.c
 
+// While the options menu is open the counter keeps its last value: on the game's screen, and on the menu's when that
+// is the top screen (the menu fills its middle 320 columns; the counter, 35 columns at the largest size, stays in the
+// left border). On the bottom screen the menu covers it at every size. Its next reading counts from the close.
 ARGUI_NOINLINE void arguiPaintScreen(void* fb, bool rgb565) {
-    if (gFpsScreen < gHintSeen || g.menuIsOpen || g.texCache == nullptr || CtrBench_running()) return;
-    if (!rgb565 && fb == nullptr) g.fpsFrames++;
+    bool open = g.menuIsOpen;
+    if (gFpsScreen < gHintSeen || g.texCache == nullptr || CtrBench_running() || (open & rgb565 & !CtrScreens_onBottom)) return;
+    if (!rgb565 && fb == nullptr && !open) g.fpsFrames++;
     uint32_t game = CtrScreens_game;
     gfxScreen_t screen = (gfxScreen_t) (game ^ rgb565);
     bool other565 = gfxGetScreenFormat((gfxScreen_t) (game ^ 1u)) == GSP_RGB565_OES;
@@ -525,7 +530,10 @@ ARGUI_NOINLINE void arguiPaintScreen(void* fb, bool rgb565) {
     g.rgb565 = rgb565;
     g.adv = 5;
     uint32_t vb = C3D_FrameCounter(0) - g.fpsVb;
-    if (vb >= 60u) {
+    if (open) {
+        g.fpsVb += vb;
+        g.fpsFrames = 0;
+    } else if (vb >= 60u) {
         uint32_t v = g.fpsFrames < 30u ? g.fpsFrames : 30u;
         uint32_t d = '0';
         for (; v >= 10u; v -= 10u) d++;
@@ -536,13 +544,14 @@ ARGUI_NOINLINE void arguiPaintScreen(void* fb, bool rgb565) {
     }
 
     if (!rgb565) GSPGPU_InvalidateDataCache(fb, 320u * 240u * 2u);
-    else if (otherFree) memset(fb, 0, 320u * 240u * 2u);
+    else if (otherFree && !open) memset(fb, 0, 320u * 240u * 2u);
     g.fb = fb;
+    g.menuIsOpen = false; // the counter's own font and cells, not the menu's
     if (draw & 1u) {
         g.sx = (uint8_t) xMul;
         g.sy = 1;
         uint32_t col = rgb565 ? 0x9CF3u : (g.hintFrames++ < 150u ? 0xA8u : (181u - g.hintFrames) * 5u);
-        arguiDrawText(2, 228, strHint, col);
+        CtrHint_draw(2, 228, strHint, col);
     }
     if (draw & 2u) {
         uint32_t s = (uint32_t) gFpsSize + 1u;
@@ -550,6 +559,7 @@ ARGUI_NOINLINE void arguiPaintScreen(void* fb, bool rgb565) {
         g.sy = (uint8_t) s;
         __wrap_arguiDrawText(2, 2, g.fpsBuf, 0xFFFFu);
     }
+    g.menuIsOpen = open;
     GSPGPU_FlushDataCache(fb, 320u * 240u * 2u);
 }
 
@@ -606,4 +616,12 @@ ARGUI_CODE bool CtrArgui_keepLit(u32 screen) {
 __asm__(".global CtrFps_drawText\n.set CtrFps_drawText,arguiDrawText\n"
         ".global CtrFps_counterSize\n.type CtrFps_counterSize,%object\n"
         ".set CtrFps_counterSize,CtrArgui_state+1\n.size CtrFps_counterSize,1\n");
+#endif
+
+#if defined(__3DS__) && !defined(CTR_SCREENS_SETTINGS_ONLY)
+// hintpos (ctr_hintpos.c draws the first-boot hint for arguiPaintScreen): argui's rgb565 flag, the free other screen's
+// pass, as an exact alias like CtrFps_counterSize, so this file's functions keep their order and bytes.
+_Static_assert(__builtin_offsetof(ArguiState, rgb565) == 7, "CtrHint_rgb565 is CtrArgui_state.rgb565");
+__asm__(".global CtrHint_rgb565\n.type CtrHint_rgb565,%object\n"
+        ".set CtrHint_rgb565,CtrArgui_state+7\n.size CtrHint_rgb565,1\n");
 #endif

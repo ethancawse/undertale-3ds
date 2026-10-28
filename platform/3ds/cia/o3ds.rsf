@@ -4,7 +4,7 @@
 #   APP_TITLE, APP_PRODUCT_CODE, APP_UNIQUE_ID  per game and target, so every variant installs side by side:
 #       UNDERTALE n3ds 0xDE170 CTR-H-UT3N    UNDERTALE o3ds 0xDE171 CTR-H-UT3O
 #       DELTARUNE n3ds 0xDE172 CTR-H-DR3N    DELTARUNE o3ds 0xDE173 CTR-H-DR3O
-#   APP_SYSTEM_MODE      CTRPORT_O3DS_MEMORY: 80MB (default), 72MB or 64MB
+#   APP_SYSTEM_MODE      DELTARUNE: CTRPORT_O3DS_MEMORY, 80MB (default), 72MB or 64MB; UNDERTALE: always 64MB
 #
 # Memory (application region):
 #   80MB   The largest Old 3DS mode that keeps the HOME Menu working. The SYSTEM region shrinks from 44 MB to 28 MB,
@@ -14,7 +14,7 @@
 #   96MB   Not offered. The SYSTEM region drops to 12 MB, under the 18 MB the system reserves for applets, so the
 #          HOME Menu gets about 6 MB and crashes as the game starts; library applets (software keyboard, error
 #          display) get nothing.
-#   64MB   The normal layout: no reboot, 16 MB less for the game.
+#   64MB   The normal layout: no reboot, 16 MB less for the game. UNDERTALE always uses it (decided 10-25).
 # On a New 3DS this build keeps the normal New 3DS layout (no reboot) and is capped at the Old 3DS amount above.
 #
 # CPU: an Old 3DS always runs at 268 MHz without L2. The New 3DS settings below only matter when this build runs on a

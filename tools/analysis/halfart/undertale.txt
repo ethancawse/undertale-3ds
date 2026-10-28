@@ -1,0 +1,28 @@
+# UNDERTALE sprites stored at half resolution under build.sh halfart=point|box (flowhalf; tools/analysis/
+# halfart_pack.py). One sprite per line: the first 16 hex digits of the SHA-256 of its name (UTF-8; halfart_pack.py
+# name_hash), meaning all its frames, or entry:0,3,4 for those frames. halfart_pack.py matches the entries against the
+# player's own data.win at build time, so this list names no game identifiers; `halfart_pack.py --hash NAME` prints
+# the entry for a name. All are Photoshop Flowey's art (room 294), drawn in its 640x480 view onto the application
+# surface. The largest scale each was drawn at in a 9000-frame census of the bench scene "flowey" (build.sh
+# halfcensus; x, y) is noted: native drawing shows scale s at s/2 screen pixels per texel. Sprites drawn larger
+# (1.2-1.5: the mouth ball, the eyes, the TV insides and laugh, the noise, the pipe parts, the burst) are left out.
+5fce346b5f0a405d            # 1.00 x 1.01
+ac27e0544ac08e0d            # 1.00
+0b3b6c4eed9065dc            # 1.00
+1905adc888e8757d            # 1.00
+db4dd7c76be35d3e            # 1.00
+cfd433c46e76b5b2            # 1.00 (rotated)
+36bf992f2e24d047            # 1.00
+15e3e64fb230b387            # 1.00
+08a941b8f210ebe5            # 1.05 x 1.00 (rotated)
+861de925411e9785            # 1.00 x 1.03
+d1ec88c67f79c6ec            # 1.00 x 1.05
+c9a04b46a98a1f44            # 1.00 x 1.05
+41da270891cef85a            # 1.00 x 1.05
+c7e2d7afe099c4fa            # 1.01 x 1.00
+7e88fa1a4a37637c            # 1.00
+8b74a97c2c4c838a            # 1.06 x 1.00 (rotated)
+e120a1d33402a522            # 1.00
+138615d678bef750            # 1.00
+3a572f4c01a5e7c6            # 1.00
+eddefd044dbaa3f8            # 1.00

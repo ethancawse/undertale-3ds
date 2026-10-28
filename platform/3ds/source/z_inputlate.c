@@ -182,5 +182,5 @@ CODE void __wrap__exit(int status) {
     // HBLDR early return. Stop before libctru unmaps threadCreate's heap stack.
     // Self/faulted joins are bounded; the dedicated sleep guard covers those.
     CtrInput_stop();
-    __real__exit(status);
+    CTR_EXIT_AFTER_INPUTLATE(status);
 }

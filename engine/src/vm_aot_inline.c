@@ -9,7 +9,7 @@
 #define INLINE_BIND_COLD NOINLINE
 #endif
 
-#if VM_HAS_AOT
+#if VM_HAS_AOT && (defined(CTRPORT_AOT_MODULES) || defined(ENABLE_WAD17) || defined(CTRPORT_TYPED_INLINE) || !defined(__3DS__)) // UT: if AOT code binds (CMake)
 static INLINE_BIND_COLD bool inlineBindingMatches(VMContext* ctx, const AotInlineBinding* binding) {
     DataWin* dw = ctx->dataWin;
     const AotEntry* entry = &binding->entry;

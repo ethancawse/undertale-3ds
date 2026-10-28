@@ -51,11 +51,17 @@ IDENTIFIER_CLASSES = {
 REVIEWED_CLASSES = {'engine-lookups', 'engine-symbols', 'synthetic-fixture',
                     'gating-hashes', 'roomplan-record', 'roomplan-tool'}
 FALSE_POSITIVE_CLASSES = {'engine-symbols', 'synthetic-fixture'}
-ROOMPLAN_RECORD_RE = re.compile(r'tools/roomplan/records/(?:undertale-steam-1\.08|sounds/undertale-steam-1\.08|'
-                               r'deltarune-steam-0\.0\.253-chapter[1-5])\.json')
+ROOMPLAN_RECORD_RE = re.compile(r'tools/roomplan/records/(?:(?:sounds/)?undertale-(?:steam|gog)-1\.08|'
+                               r'deltarune-steam-0\.0\.253-chapter[1-5])\.json|'
+                               r'tools/roomplan/phases/deltarune-steam-0\.0\.253-chapter5\.json|'
+                               r'tools/roomplan/tracks/deltarune\.json')
 SFX_TOOL = 'tools/roomplan/build_sfxplan.py'
 ASSET_RULES = {'media-or-output-signature', 'large-binary'}
 PRESS_SOURCE = 'platform/3ds/source/ctr_pixfix_press.c'
+# The project's old working name stays out of the public tree (relaudit P2, 2026-10-27). Only the old SD folder
+# ("3ds/" + it) and settings file (it + ".ini"), which z_sdmigrate.c and z_gamedir.c move players' files from, may
+# carry it. Spelt in two parts so that this scanner and its tests are exported without a hit.
+WORKING_NAME_RE = re.compile('(?<!3ds/)' + 'delta' + 'tale' + r'(?!\.ini\b)', re.I)
 
 
 def evidence_sha256(finding):
@@ -95,6 +101,7 @@ def read_identifier_policy(path):
             raise ValueError('not an approved roomplan record: ' + member)
         if kind == 'roomplan-tool' and member not in (
                 'tools/roomplan/records.py', 'tools/roomplan/build_plan.py', 'tools/roomplan/dwinfo.py',
+                'tools/roomplan/build_phases.py', 'tools/roomplan/build_tracks.py', 'tools/roomplan/build_flowcode.py',
                 SFX_TOOL):
             raise ValueError('not a roomplan build tool: ' + member)
     return policy
@@ -343,6 +350,9 @@ def inspect_member(name, data, hashes):
     names = sorted(set(NAME_RE.findall(text) + NAME_RE.findall(name)), key=lambda s: (s.casefold(), s))
     if names:
         hit('flagged-game-names', {'count': len(names), 'names': names})
+    if WORKING_NAME_RE.search(text) or WORKING_NAME_RE.search(name):
+        lines = [i for i, line in enumerate(texts[0].splitlines(), 1) if WORKING_NAME_RE.search(line)]
+        hit('internal-name', {'count': len(WORKING_NAME_RE.findall(text)), 'lines': lines[:20]})
     binary = b'\0' in data or '\ufffd' in texts[0]
     if binary and len(data) >= LARGE_BINARY:
         hit('large-binary', '%d bytes >= %d bytes' % (len(data), LARGE_BINARY))
@@ -405,16 +415,30 @@ def export_and_scan_tree(archive_path, tree, expected_members, hashes):
     return members, hits
 
 
+def export_product(manifest, game):
+    """Select the matching default manifest, or validate an explicitly selected product."""
+    if manifest is None:
+        game = game or 'undertale'
+        return 'tools/release/manifest-' + ('ut' if game == 'undertale' else 'dr') + '.txt', game
+    inferred = {'manifest-ut.txt': 'undertale', 'manifest-dr.txt': 'deltarune'}.get(Path(manifest).name)
+    if inferred and game and inferred != game:
+        raise ValueError('--game ' + game + ' conflicts with ' + manifest)
+    game = game or inferred
+    if game is None:
+        raise ValueError('custom manifest needs --game undertale or --game deltarune')
+    return manifest, game
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--manifest', default='tools/release/manifest-ut.txt',
-                        help='repository-relative explicit allow-list')
+    parser.add_argument('--manifest',
+                        help='repository-relative explicit allow-list; defaults to the selected game (UNDERTALE if omitted)')
     parser.add_argument('--output', default='release-ut-candidate',
                         help='simple basename under scratch (ZIP and JSON)')
     parser.add_argument('--export-tree', action='store_true',
                         help='also expand to a fresh scratch/<output>/ tree and scan its files')
     parser.add_argument('--game', choices=('undertale', 'deltarune'),
-                        help='product for a custom manifest (inferred for manifest-ut/dr.txt)')
+                        help='select the default product manifest, or identify a custom manifest (inferred for manifest-ut/dr.txt)')
     parser.add_argument('--public-source', type=Path,
                         help='local repository containing exactly this curated public export commit')
     parser.add_argument('--public-commit', default='HEAD',
@@ -425,6 +449,7 @@ def main():
                         help='exact-byte original port media provenance policy')
     args = parser.parse_args()
     try:
+        manifest_name, game = export_product(args.manifest, args.game)
         if not re.fullmatch(r'[a-zA-Z0-9_-]+', args.output):
             raise ValueError('output must be a simple basename')
         scratch = ROOT / 'scratch'
@@ -440,11 +465,8 @@ def main():
         for path in outputs:
             if path.exists() or path.is_symlink():
                 raise ValueError('output already exists; choose another --output: ' + path.name)
-        manifest = safe_local(args.manifest)
+        manifest = safe_local(manifest_name)
         names, tracked, sources = read_manifest(manifest)
-        game = args.game or {'manifest-ut.txt': 'undertale', 'manifest-dr.txt': 'deltarune'}.get(manifest.name)
-        if game is None:
-            raise ValueError('custom manifest needs --game undertale or --game deltarune')
         closure = import_closure.check(import_closure.Repository(ROOT), set(names), game)
         if closure['missing']:
             raise ValueError('release input closure is incomplete: ' + '; '.join(

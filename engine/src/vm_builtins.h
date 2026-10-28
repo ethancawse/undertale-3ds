@@ -295,11 +295,14 @@ void Colflip14_registerAll(VMContext* ctx);
 // builtins over those (colline_gm14.c), then the console prompts (Btnprompt_registerAll,
 // z_btnprompt.c, which calls Colline14_registerAll first), then UNDERTALE's script builtins (UtFlames_registerAll,
 // z_utflames_waver.c, which calls Btnprompt_registerAll first), then the waving rows (UtKill_registerAll,
-// z_utkill_waver.c, which calls UtFlames_registerAll first). A macro: VM_create keeps its line numbers.
+// z_utkill_waver.c, which calls UtFlames_registerAll first), then collision_circle's no-hit answer
+// (UtFlames_registerCircle, z_utflames.c, which calls UtKill_registerAll first). A macro: VM_create keeps its line
+// numbers.
 #if defined(ENABLE_WAD16)
 void UtFlames_registerAll(VMContext* ctx);
 void UtKill_registerAll(VMContext* ctx);
-#define COLFLIP_REGISTER_ALL(ctx) UtKill_registerAll(ctx)
+void UtFlames_registerCircle(VMContext* ctx);
+#define COLFLIP_REGISTER_ALL(ctx) UtFlames_registerCircle(ctx)
 #else
 #define COLFLIP_REGISTER_ALL(ctx) Colflip14_registerAll(ctx)
 #endif

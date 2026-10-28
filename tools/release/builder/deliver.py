@@ -1,8 +1,7 @@
 """Wizard page 7: put the personal build and the user's own game files where the 3DS can use them.
 
-Copy to SD card (default), Save as files, or Send over Wi-Fi. Wi-Fi sending is off unless the builder runs with
---enable-wifi-send: it uses the official 3dslink client in send-only mode (never -s, never a probe of the console;
-a bare connect to the netloader's port crashes it) and FTP to the console's ftpd for the game files.
+Copy to SD card (default), Save as files, or FTP-only Install over Wi-Fi.
+FTP includes the programs and game files. The netloader is never contacted.
 """
 from __future__ import annotations
 
@@ -152,11 +151,12 @@ class CopyItem:
     dst: str           # relative to the SD root, forward slashes
     size: int
     skip: bool = False
+    digest: str = None  # verified source identity for data.win, captured while planning
 
 
 def plan_sd_copy(sd_root, product: products.Product, artifacts, game_folder, parts=None):
     """What goes where. .3dsx -> sd:/3ds/<app>/, .cia -> sd:/cia/, game files -> the runtime's data folder.
-    Files already there with the same size and time are skipped."""
+    data.win skips require fresh SHA-256 equality; other files use size and time."""
     if not os.path.isdir(os.path.join(sd_root, "3ds")):
         raise DeliverError(NO_3DS_FOLDER_MESSAGE)
     check_sd_writable(sd_root)
@@ -170,6 +170,15 @@ def plan_sd_copy(sd_root, product: products.Product, artifacts, game_folder, par
         items.append(CopyItem(src, product.sd_data_dir + "/" + rel, size))
     for it in items:
         d = os.path.join(sd_root, *it.dst.split("/"))
+        if os.path.basename(it.src).casefold() == "data.win":
+            import texcache
+            it.digest = texcache._digest(it.src)
+            texcache.checked_digest(it.src, it.digest)
+            try:
+                it.skip = texcache.checked_digest(d) == it.digest
+            except OSError:
+                it.skip = False
+            continue
         try:
             st, ss = os.stat(d), os.stat(it.src)
             it.skip = st.st_size == ss.st_size and abs(st.st_mtime - ss.st_mtime) <= FAT_SLACK
@@ -194,15 +203,37 @@ def copy_items(sd_root, items, progress=None, cancelled=lambda: False):
     for it in items:
         if cancelled():
             raise DeliverError("Copy cancelled.\nClick Copy to card to try again.")
+        d = os.path.join(sd_root, *it.dst.split("/"))
+        data_win = os.path.basename(it.src).casefold() == "data.win"
+        if data_win:
+            import texcache
+            it.digest = it.digest or texcache._digest(it.src)
+            texcache.checked_digest(it.src, it.digest)
+            # The card may have changed since planning (including same-size/date corruption).
+            if it.skip:
+                try:
+                    it.skip = texcache.checked_digest(d) == it.digest
+                except OSError:
+                    it.skip = False
+                if not it.skip:
+                    total += it.size
         if it.skip:
             skipped += 1
             continue
-        d = os.path.join(sd_root, *it.dst.split("/"))
         tmp = d + ".part"
         try:
             os.makedirs(os.path.dirname(d), exist_ok=True)
+            if data_win:
+                texcache.invalidate_version(d)
+                source_before = texcache.file_identity(os.stat(it.src))
             shutil.copy2(it.src, tmp)
+            if data_win:
+                if source_before != texcache.file_identity(os.stat(it.src)):
+                    raise OSError("Game data changed while copying. Verify the files and try again.")
+                texcache.checked_digest(tmp, it.digest)
             os.replace(tmp, d)
+            if data_win:
+                texcache.checked_digest(d, it.digest)
         except OSError as e:
             try:
                 if os.path.exists(tmp):
@@ -330,7 +361,7 @@ def instructions(product: products.Product, targets, outputs, sd_root=None,
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Send over Wi-Fi (behind --enable-wifi-send)
+# FTP-only Install over Wi-Fi
 
 def threedslink_argv(threedslink, path, address=None):
     """Send-only: 3dslink broadcasts to find the Homebrew Launcher's netloader (press Y in HBL) unless the user typed
@@ -342,19 +373,8 @@ def threedslink_argv(threedslink, path, address=None):
 
 
 def send_3dslink(threedslink, path, address=None, run=None, log=print):
-    def capture(argv):
-        result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, errors='replace', timeout=600, **hidden_options())
-        if result.stdout:
-            log(result.stdout)
-        return result.returncode
-    run = run or capture
-    argv = threedslink_argv(threedslink, path, address)
-    log("running " + " ".join(argv))
-    rc = run(argv)
-    if rc != 0:
-        raise DeliverError("3dslink failed (exit %d).\n"
-                           "Press Y in the Homebrew Launcher, then try again." % rc)
+    """Retained API guard for old callers: netloader delivery is no longer allowed."""
+    raise DeliverError("Sending with the Homebrew Launcher's netloader is no longer supported. Use Install over Wi-Fi with ftpd.")
 
 
 def wifi_items(product, artifacts, folder, parts=None):
@@ -366,42 +386,13 @@ def wifi_items(product, artifacts, folder, parts=None):
     return items
 
 
-def send_ftp(host, items, port=5000, ftp_factory=ftplib.FTP, progress=None, log=print):
-    """Game files to a running ftpd on the console. Console Wi-Fi is slow: about 156 MB for UNDERTALE can take
-    10-20 minutes."""
-    ftp = ftp_factory()
-    ftp.connect(host, port, timeout=30)
-    try:
-        ftp.login()
-        made = set()
-        total = sum(it.size for it in items)
-        done = 0
-        for it in items:
-            parts = it.dst.split("/")
-            for i in range(1, len(parts)):
-                d = "/" + "/".join(parts[:i])
-                if d in made:
-                    continue
-                try:
-                    ftp.mkd(d)
-                except ftplib.error_perm:
-                    pass
-                made.add(d)
-            remote = "/" + it.dst
-            try:
-                if ftp.size(remote) == it.size:
-                    done += it.size
-                    continue
-            except ftplib.all_errors:
-                pass
-            with open(it.src, "rb") as f:
-                ftp.storbinary("STOR " + remote, f, blocksize=1 << 16)
-            done += it.size
-            if progress:
-                progress(done, total, it.dst)
-        log("sent %d files to %s:%d" % (len(items), host, port))
-    finally:
-        try:
-            ftp.quit()
-        except ftplib.all_errors:
-            ftp.close()
+def send_ftp(host, items, port=5000, ftp_factory=None, progress=None, log=print):
+    """Compatibility entry point; all callers use the verified FTP-only path."""
+    import ftp_delivery
+    kwargs = {}
+    if ftp_factory is not None:
+        kwargs['factory'] = ftp_factory
+    if progress:
+        kwargs['progress'] = lambda event: progress(event.done, event.total, event.path)
+    ftp_delivery.send('%s:%d' % (host, port), items, **kwargs)
+    log("Sent and checked %d files." % len(items))

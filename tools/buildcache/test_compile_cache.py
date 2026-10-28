@@ -308,6 +308,10 @@ def compile_line(root, extra=()):
 def run_cached(root, cache, args, log=None, env=None):
     e = dict(os.environ)
     e.pop('CTRPORT_CCACHE', None)
+    # Environment overrides --cache-dir in production; fixture caches must start empty even when pytest runs
+    # inside a build campaign that supplies its own shared compiler cache.
+    e.pop('CTRPORT_CCACHE_DIR', None)
+    e.pop('CTRPORT_CCACHE_LOG', None)
     if log:
         e['CTRPORT_CCACHE_LOG'] = str(log)
     e.update(env or {})

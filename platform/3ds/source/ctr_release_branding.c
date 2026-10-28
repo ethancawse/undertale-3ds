@@ -12,6 +12,13 @@
 #define STATS_BUILD "%s"
 #define BOOT_LINES "%.0s (%s)\n%s\n"
 #endif
+// Release builds have no screenshot combo; the spaces keep the string's size (and so the late rodata layout) the same.
+#ifdef CTRPORT_PLAYER_SHOTS
+#define STATS_FOOTER "SELECT+START exit, SELECT+L shot"
+#else
+#define STATS_FOOTER "SELECT+START exit               "
+#endif
+_Static_assert(sizeof("SELECT+START exit, SELECT+L shot") == sizeof(STATS_FOOTER), "stats footer changed size");
 
 const char ctrReleaseAppName[] RELEASE_RODATA = PORT_NAME;
 const char ctrReleaseLabHeading[] RELEASE_RODATA = "\n=== 3DS diagnostics: ";
@@ -30,7 +37,7 @@ const char ctrReleaseStatsFormat[] RELEASE_RODATA =
     "fps %5.1f/%-3lu step %5.2f max %6.2f ms\n"
     "cpu draw %5.2f ms  gpu %5.2f ms     \n"
     "%4lu draws %5lu verts  heap %5.1f MB\n"
-    "SELECT+START exit, SELECT+L shot";
+    STATS_FOOTER;
 const char ctrReleaseWrongModelFormat[] RELEASE_RODATA =
     "This n3ds build needs a New 3DS\nor New 2DS XL.\n\n"
     "On this Old 3DS/2DS, use\n" CTR_RELEASE_O3DS_FILENAME "\n";

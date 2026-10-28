@@ -9,6 +9,7 @@ README.md
 THIRD_PARTY_NOTICES
 VERSION
 docs/release/build-contract.json
+docs/release/credits-port.txt
 engine/LICENSE
 engine/README.md
 engine/compat/getopt/getopt.h
@@ -203,6 +204,7 @@ platform/3ds/source/ctr_aot_module.h
 platform/3ds/source/ctr_apt_trace.c
 platform/3ds/source/ctr_apt_trace.h
 platform/3ds/source/ctr_argui.c
+platform/3ds/source/ctr_asgprobe.c
 platform/3ds/source/ctr_audio_decoder.c
 platform/3ds/source/ctr_audio_decoder.h
 platform/3ds/source/ctr_audio_selftest.c
@@ -211,12 +213,16 @@ platform/3ds/source/ctr_audio_system.h
 platform/3ds/source/ctr_audio_utaudio.h
 platform/3ds/source/ctr_bench_scene_start.c
 platform/3ds/source/ctr_bench_scene_start.h
+platform/3ds/source/ctr_benchheld.inc
 platform/3ds/source/ctr_benchmark.c
 platform/3ds/source/ctr_benchmark.h
 platform/3ds/source/ctr_benchmark_benchromfs_layout.inc
 platform/3ds/source/ctr_benchmark_prewindow.inc
 platform/3ds/source/ctr_benchmark_rooms.inc
 platform/3ds/source/ctr_benchmark_rooms_pool.inc
+platform/3ds/source/ctr_benchmark_rows.h
+platform/3ds/source/ctr_benchmark_rows.inc
+platform/3ds/source/ctr_benchmark_rows_sink.h
 platform/3ds/source/ctr_benchromfs.c
 platform/3ds/source/ctr_benchromfs.h
 platform/3ds/source/ctr_boot_trail.c
@@ -231,6 +237,8 @@ platform/3ds/source/ctr_chapters.h
 platform/3ds/source/ctr_cmdlabel.c
 platform/3ds/source/ctr_coverage.c
 platform/3ds/source/ctr_data_version.c
+platform/3ds/source/z_builderx_receipt.c
+docs/release/builder-version-receipts.md
 platform/3ds/source/ctr_data_version.h
 platform/3ds/source/ctr_dialogue.c
 platform/3ds/source/ctr_dialogue.h
@@ -258,6 +266,7 @@ platform/3ds/source/ctr_frame_pacer.c
 platform/3ds/source/ctr_frame_pacer.h
 platform/3ds/source/ctr_gpu_queue.c
 platform/3ds/source/ctr_gpu_queue.h
+platform/3ds/source/ctr_halfart.c
 platform/3ds/source/ctr_hbldr.c
 platform/3ds/source/ctr_hbldr.h
 platform/3ds/source/ctr_heap_profile.c
@@ -274,6 +283,7 @@ platform/3ds/source/ctr_knfuse_layout.inc
 platform/3ds/source/ctr_knfuse_tail.inc
 platform/3ds/source/ctr_input_schedule.h
 platform/3ds/source/ctr_inputlate_keys.h
+platform/3ds/source/z_dodgefront.c
 platform/3ds/source/z_inputlate.c
 platform/3ds/source/ctr_lab.c
 platform/3ds/source/ctr_lab.h
@@ -327,7 +337,9 @@ platform/3ds/source/ctr_renderer.c
 platform/3ds/source/ctr_renderer.h
 platform/3ds/source/ctr_renderer_palette_retry.inc
 platform/3ds/source/ctr_renderer_tpaggrow_layout.inc
+platform/3ds/source/ctr_repack.inc
 platform/3ds/source/ctr_romfs.c
+platform/3ds/source/ctr_rosalina.c
 platform/3ds/source/ctr_safe_save.c
 platform/3ds/source/ctr_safe_save.h
 platform/3ds/source/ctr_screens.c
@@ -348,6 +360,7 @@ platform/3ds/source/ctr_textures_lend_room.c
 platform/3ds/source/ctr_tile_reader.c
 platform/3ds/source/ctr_tile_reader.h
 platform/3ds/source/ctr_uthud_snap.c
+platform/3ds/source/ctr_utkill_waver.inc
 platform/3ds/source/ctr_video.c
 platform/3ds/source/ctr_video.h
 platform/3ds/source/ctr_video_layout.inc
@@ -373,6 +386,8 @@ platform/3ds/source/z_btnprompt_ctr.c
 platform/3ds/source/z_builderx_chapters.c
 platform/3ds/source/z_builderx_review.c
 platform/3ds/source/z_chapterleak.c
+platform/3ds/source/z_freewins.c
+platform/3ds/source/z_leavekeep.c
 platform/3ds/source/z_loadscreen.c
 platform/3ds/source/z_roomload.c
 platform/3ds/source/z_roomload_trace.c
@@ -559,17 +574,20 @@ platform/3ds/vendor/pvaac/src/unpack_idx.h
 platform/3ds/vendor/pvaac/src/window_block_fxp.h
 platform/3ds/vendor/pvaac/src/window_tables_fxp.c
 platform/3ds/vendor/pvaac/src/write_output.h
+tools/analysis/halfart/undertale.txt
+tools/analysis/halfart_pack.py
 tools/analysis/vine_extract.py
 tools/analysis/vine_old_observer_compile.py
 tools/analysis/vine_old_parent.py
+tools/aot/aot_select.py
 tools/aot/btnprompt.py
 tools/aot/builtin_audit.py
 tools/aot/corpus.py
+tools/aot/credits.py
 tools/aot/data_versions.py
 tools/aot/fontverdict.py
 tools/aot/gmlaot.py
 tools/aot/prepare.py
-tools/aot/select.py
 tools/aot/selection/typed-undertale.txt
 tools/aot/selection/undertale-hints.txt
 tools/aot/selection/undertale.txt
@@ -611,6 +629,9 @@ tools/release/builder/builder.py
 tools/release/builder/chapters.py
 tools/release/builder/audio-deltarune.json
 tools/release/builder/deliver.py
+tools/release/builder/ftp_delivery.py
+tools/release/builder/ftp_saves.py
+tools/release/builder/cleanup.py
 tools/release/builder/discover.py
 tools/release/builder/gui.py
 tools/release/builder/pipeline.py
@@ -692,12 +713,14 @@ tools/texprep/windows_utf8.h
 platform/3ds/source/z_cut10.c
 # utstall (UNDERTALE), benchfid (both games) and panelgrid (compiled for both games, gated off in UNDERTALE)
 platform/3ds/source/z_utstall.c
+platform/3ds/source/z_utorder.c
 platform/3ds/source/ctr_benchfid_rooms.inc
 platform/3ds/source/ctr_benchfid_window.h
 platform/3ds/source/z_benchfid_window.c
 platform/3ds/source/ctr_panelgrid.c
-# smalltext (UNDERTALE only; Crisp small text, keys off by default)
+# smalltext (UNDERTALE, and DELTARUNE New through z_smalltext_dr.c; Crisp small text)
 platform/3ds/source/z_smalltext.c
+platform/3ds/source/z_smalltext_dr.c
 # sdmigrate (both games; the first launch moves the old SD folder)
 platform/3ds/source/z_sdmigrate.c
 platform/3ds/source/ctr_krsharp.c
@@ -705,6 +728,9 @@ platform/3ds/source/ctr_krsharp.c
 platform/3ds/source/z_symverdict.c
 platform/3ds/source/z_symverdict_dr.c
 tools/aot/symverdict.py
+# credfix (both games): the missing credits/text file notice and the asset gain slots
+platform/3ds/source/z_credfix.c
+platform/3ds/source/ctr_audio_system_credfix_layout.inc
 
 # Renderer compiler launcher and its standard-library-only dependencies (actual kit build gate).
 # Production command-label and Crisp runtime inputs compiled for either game.
@@ -752,3 +778,51 @@ tools/release/import_closure.py
 tools/release/test_import_closure.py
 # swkbd: the software keyboard at the essay prompt
 platform/3ds/source/z_swkbd.c
+# smartcut item verdicts (fontverdict.py's build mode writes them)
+platform/3ds/source/z_itemverdict.c
+tools/aot/itemverdict.py
+# phaseplan (utflowey): its builder (build.sh names it, and runs it for DELTARUNE only), and its source (CMake
+# names it to leave it out of UNDERTALE builds)
+platform/3ds/source/z_phaseplan.c
+tools/roomplan/build_phases.py
+# utold scalar3: the lava's numeric draw_sprite_part call (UNDERTALE only)
+platform/3ds/source/z_utold_scalar.c
+# gogut: GOG UNDERTALE support
+platform/3ds/source/z_gogut.c
+tools/roomplan/records/undertale-gog-1.08.json
+tools/aot/gog_smart.py
+tools/aot/gog-smart-1.08.json
+tools/roomplan/records/sounds/undertale-gog-1.08.json
+# sdlat: profile-only emulator timing (excluded from ordinary Release linking)
+platform/3ds/source/z_sdlat.c
+platform/3ds/source/z_spikerec.c
+platform/3ds/source/ctr_hintpos.c
+# drresid: its builder (build.sh names it, and runs it for DELTARUNE New only), and its source (compiled empty here)
+platform/3ds/source/z_drresid.c
+tools/roomplan/build_tracks.py
+# utold partial sprites: draw_sprite_part's partial-tile path (both games)
+platform/3ds/source/ctr_renderer_parts.inc
+
+# Exact DR cold SHA checker (shared source include; disabled in UNDERTALE).
+platform/3ds/source/ctr_data_version_cold.inc
+
+# gamedir2: the game folder listing and settings.ini worker save (both games)
+platform/3ds/source/z_gamedir.c
+
+# flowervramg: DELTARUNE Old CIA80 palette priority and promotion reclaim (compiled out of other builds)
+platform/3ds/source/ctr_allocate_heaps.inc
+platform/3ds/source/ctr_flowervramg_palette.c
+platform/3ds/source/ctr_flowervramg_promotion.c
+tools/analysis/flowervramg_palette_retry.py
+
+# flowfull code paging and knightnew GPU-1 (DELTARUNE New only; compiled out of UNDERTALE, listed for the build inputs)
+platform/3ds/source/z_flowcode.c
+
+# Pinned native bannertool clang source fix and its MIT notice.
+tools/release/builder/bannertool-1.2.3-clang.patch
+tools/release/licenses/bannertool-MIT.txt
+
+# offkill (offdraw): the early destroy of bullets past the view (UNDERTALE only) and its builder entries
+platform/3ds/source/z_offkill.c
+tools/aot/offkill.py
+tools/aot/test_offkill.py

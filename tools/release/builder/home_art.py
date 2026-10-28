@@ -1,6 +1,6 @@
 """Generate approved HOME Menu art in the private build mirror, from the player's own files.
 
-Steam S2 is preferred independently for banner and icon. Missing/unrecognised cache art uses the FORM assets.
+UT icons prefer the verified executable's original SOUL. Steam art is the next source, then FORM assets.
 Only names, source hashes, measured grids and recovered hashes live here; no game pixels or sounds.
 """
 from __future__ import annotations
@@ -61,6 +61,97 @@ CACHE_ART = {
 }
 APPIDS = {"undertale": "391540", "deltarune": "1671210"}
 PALETTE = (b"\0\0\0\0", b"\xff\xff\xff\xff", b"\xff\0\0\xff")
+# Measured read-only from the owner's Steam and GOG Windows copies: identical executable and RT_ICON.
+UT_EXE_SIZE = 4136960
+UT_EXE_SHA256 = "c8c4191026bf5587a6fad120855b8b82ffb4fa0c3eaf10515be472ad84248e58"
+UT_ICON_SHA256 = "17627228a14a62c099da418e399f581400fefd956dacc2fde2587a0dd299f818"
+
+
+def pe_icon(data):
+    """Read RT_ICON / 1 / English from PE32; no Windows APIs, code loading or execution.
+
+    Format: learn.microsoft.com/en-us/windows/win32/debug/pe-format and
+    learn.microsoft.com/en-us/windows/win32/menurc/resource-file-formats.
+    Only the measured 16px, 4-bit, uncompressed DIB is supported. Other formats fall back.
+    """
+    def take(start, count):
+        if start < 0 or count < 0 or start + count > len(data):
+            raise ArtError("Truncated executable art")
+        return data[start:start + count]
+
+    def unpack(fmt, start):
+        return struct.unpack(fmt, take(start, struct.calcsize(fmt)))
+
+    pe, = unpack('<I', 60)
+    if take(0, 2) != b'MZ' or take(pe, 4) != b'PE\0\0':
+        raise ArtError("Unsupported executable art")
+    count, = unpack('<H', pe + 6)
+    optional_size, = unpack('<H', pe + 20)
+    optional = pe + 24
+    if not 1 <= count <= 96 or optional_size < 120 or unpack('<H', optional)[0] != 0x10b:
+        raise ArtError("Unsupported executable art")
+    resource, resource_size = unpack('<II', optional + 112)
+
+    def offset(address, size):
+        for index in range(count):
+            section = optional + optional_size + index * 40
+            rva, raw_size, raw = unpack('<III', section + 12)
+            if rva <= address and address + size <= rva + raw_size:
+                start = raw + address - rva
+                take(start, size)
+                return start
+        raise ArtError("Unmapped executable art")
+
+    base = offset(resource, resource_size)
+    def resource_bytes(relative, size):
+        if relative < 0 or relative + size > resource_size:
+            raise ArtError("Invalid executable art directory")
+        return take(base + relative, size)
+
+    directory = 0
+    for depth, wanted in enumerate((3, 1, 1033)):
+        header = resource_bytes(directory, 16)
+        entries = sum(struct.unpack_from('<HH', header, 12))
+        if entries > 4096:
+            raise ArtError("Invalid executable art directory")
+        table = resource_bytes(directory + 16, entries * 8)
+        matches = [value for name, value in struct.iter_unpack('<II', table) if name == wanted]
+        if len(matches) != 1 or bool(matches[0] & 0x80000000) != (depth < 2):
+            raise ArtError("Missing executable icon")
+        directory = matches[0] & 0x7fffffff
+    address, length, _, _ = struct.unpack('<IIII', resource_bytes(directory, 16))
+    if length != 296:
+        raise ArtError("Unsupported executable icon")
+    dib = take(offset(address, length), length)
+    if struct.unpack_from('<IiiHHI', dib) != (40, 16, 32, 1, 4, 0):
+        raise ArtError("Unsupported executable icon")
+    if struct.unpack_from('<I', dib, 32)[0] != 16:
+        raise ArtError("Unsupported executable icon palette")
+    pixels = bytearray()
+    for y in range(16):
+        for x in range(16):
+            packed = dib[104 + (15 - y) * 8 + x // 2]
+            colour = packed >> 4 if x % 2 == 0 else packed & 15
+            b, g, r, _ = dib[40 + colour * 4:44 + colour * 4]
+            transparent = dib[232 + (15 - y) * 4 + x // 8] & (128 >> (x % 8))
+            pixels.extend((0, 0, 0, 0) if transparent else (r, g, b, 255))
+    return Image(16, 16, bytes(pixels)), hashlib.sha256(dib).hexdigest()
+
+
+def executable_icon(data_dir):
+    """Read only the known executable in the already-verified game folder; never accept replacement art."""
+    try:
+        with (Path(data_dir) / 'UNDERTALE.exe').open('rb') as source:
+            data = source.read(UT_EXE_SIZE + 1)
+        if len(data) != UT_EXE_SIZE or hashlib.sha256(data).hexdigest() != UT_EXE_SHA256:
+            return None, {}
+        native, digest = pe_icon(data)
+        if digest != UT_ICON_SHA256 or native.digest() != CACHE_ART['undertale']['icon'].recovered_sha256:
+            return None, {}
+        return native, dict(source="player executable", source_sha256=UT_EXE_SHA256,
+                            resource_sha256=digest, native_rgba_sha256=native.digest())
+    except (OSError, ArtError, struct.error):
+        return None, {}
 
 
 def recover(image, spec):
@@ -390,9 +481,11 @@ def deltarune_icon(runtime):
 
 
 def generate(game, data_dir, destination, tex3ds, roots=None, specs=CACHE_ART, decoder=decode_cache,
-             runtime_factory=RuntimeArt):
+             runtime_factory=RuntimeArt, store="steam"):
     """Called after source mirroring, before CMake. Returns names/hashes only, suitable for a support log."""
-    if roots is None:
+    if store != "steam":
+        roots = []
+    elif roots is None:
         from products import verify_game
         roots = verify_game.default_steam_roots()
     destination = Path(destination)
@@ -406,10 +499,16 @@ def generate(game, data_dir, destination, tex3ds, roots=None, specs=CACHE_ART, d
     try:
         with runtime_factory(data) as runtime:
             for kind, size in (("banner", (256, 128)), ("icon", (48, 48))):
-                native, info = steam_art(game, kind, roots, tex3ds, destination, specs, decoder)
+                native, info = executable_icon(data_dir) if game == 'undertale' and kind == 'icon' else (None, {})
+                if native is None:
+                    native, info = steam_art(game, kind, roots, tex3ds, destination, specs, decoder)
                 if native is not None:
-                    rendered = centred(native, *size)
-                    info.update(integer_scale=min(size[0] // native.width, size[1] // native.height))
+                    # Leave eight black pixels around Steam's 16x16 UT SOUL. Both SMDH packers
+                    # halve this even grid exactly: the 24px icon has a native 16px SOUL and 4px padding.
+                    scale = 2 if game == 'undertale' and kind == 'icon' else min(
+                        size[0] // native.width, size[1] // native.height)
+                    rendered = centred(native, *size, scale=scale)
+                    info.update(integer_scale=scale)
                 elif kind == "banner":
                     rendered = fallback_banner(runtime, game)
                     info.update(sprite="spr_heartsmall", font="fnt_maintext" if game == "undertale" else "fnt_main")

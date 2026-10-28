@@ -35,6 +35,9 @@ static BuiltinFunc bnOriginal BB;
 
 static BX void bnTick(void) { CtrWatchdog_mark(bnProgress); }
 
+CtrDataVersionResult BxChapterHash_check(const char*, const char*, const char*, const char*,
+                                      void (*)(void), bool*, char[65]);
+#line 38
 static BX bool bnCheck(int chapter) {
     char part[32], path[600], cache[640], digest[65];
     if (chapter) snprintf(part, sizeof(part), bnChapter, chapter);
@@ -43,7 +46,7 @@ static BX bool bnCheck(int chapter) {
     snprintf(cache, sizeof(cache), bnCache, bnRoot, part, chapter ? bnSlash : bnEmpty);
     bool cached;
     // Preflight must not replace the active room-plan/crisp-art digest with a different chapter's digest.
-    CtrDataVersionResult result = __real_CtrDataVersion_check(path, bnGame, chapter ? part : bnRootPart,
+    CtrDataVersionResult result = BxChapterHash_check(path, bnGame, chapter ? part : bnRootPart,
                                                             cache, bnTick, &cached, digest);
     return result != CTR_DATA_UNREADABLE && (bnHasManifest ? !strcmp(digest, bnHashes[chapter]) :
                                                            result == CTR_DATA_KNOWN);

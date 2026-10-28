@@ -25,7 +25,7 @@ class FilesystemSource:
         self.files = {name for name in names if (root / name).is_file()}
         for directory in ('tools/aot', 'tools/roomplan', 'tools/buildcache', 'tools/release'):
             self.files.update(path.relative_to(root).as_posix() for path in (root / directory).rglob('*.py'))
-        for directory in ('tools/roomplan/records', 'tools/release/fixtures', 'tools/aot/selection'):
+        for directory in ('tools/roomplan/records', 'tools/roomplan/tracks', 'tools/release/fixtures', 'tools/aot/selection'):
             self.files.update(path.relative_to(root).as_posix() for path in (root / directory).rglob('*') if path.is_file())
 
     def read(self, name):
@@ -81,7 +81,7 @@ class ClosureTests(unittest.TestCase):
         self.assertEqual([r['path'] for r in result['missing']], ['tools/settings.json'])
 
     def test_fixed_directory_with_dynamic_filename_and_product_filter(self):
-        for folder in ('selection', 'records', 'fixtures'):
+        for folder in ('selection', 'records', 'fixtures', 'tracks'):
             files = {'tools/start.py': 'import os\nHERE=os.path.dirname(__file__)\n'
                      'def find(name):\n    return os.path.join(HERE,"%s",name+".json")' % folder,
                      'tools/%s/required.json' % folder: '{}'}
@@ -89,6 +89,20 @@ class ClosureTests(unittest.TestCase):
             self.assertEqual([r['path'] for r in result['missing']], ['tools/%s/required.json' % folder])
         self.assertFalse(gate.relevant('tools/roomplan/records/deltarune-version.json', 'undertale'))
         self.assertFalse(gate.relevant('tools/aot/selection/typed-deltarune.txt', 'undertale'))
+        self.assertFalse(gate.relevant('tools/roomplan/tracks/deltarune.json', 'undertale'))
+
+    def test_track_plan_driver_requires_its_default_record_only_for_deltarune(self):
+        files = {'build.sh': 'python tools/roomplan/build_tracks.py --out output\n',
+                 'tools/roomplan/build_tracks.py': 'import argparse, os\n'
+                     'HERE=os.path.dirname(__file__)\n'
+                     'ap=argparse.ArgumentParser()\n'
+                     'ap.add_argument("--records", default=os.path.join(HERE,"tracks","deltarune.json"))\n',
+                 'tools/roomplan/tracks/deltarune.json': '{}'}
+        result = gate.check(Source(files), set(files) - {'tools/roomplan/tracks/deltarune.json'},
+                            'deltarune', entry_points=(), drivers=('build.sh',))
+        self.assertEqual([r['path'] for r in result['missing']], ['tools/roomplan/tracks/deltarune.json'])
+        result = gate.check(Source(files), {'build.sh'}, 'undertale', entry_points=(), drivers=('build.sh',))
+        self.assertEqual(result['missing'], [])
 
     def test_write_only_outputs_and_player_inputs_are_not_required(self):
         files = {'tools/start.py': 'from pathlib import Path\nHERE=Path(__file__).parent\n'
@@ -120,6 +134,22 @@ class ClosureTests(unittest.TestCase):
         self.assertEqual({r['path'] for r in result['missing']},
                          {'tools/new.py', 'tools/helper.py', 'tools/missing.py'})
         self.assertTrue(next(r for r in result['missing'] if r['path'] == 'tools/missing.py')['absent_from_source'])
+
+    def test_gog_font_helper_and_profile_are_required_only_for_undertale(self):
+        files = {'build.sh': 'python tools/aot/fontverdict.py\npython tools/aot/gog_smart.py\n',
+                 'tools/aot/fontverdict.py': 'def gog_only():\n    import gog_smart\n',
+                 'tools/aot/gog_smart.py': 'from pathlib import Path\n'
+                     'PROFILE=Path(__file__).with_name("gog-smart-1.08.json")\n'
+                     'def read():\n    return PROFILE.read_text()\n',
+                 'tools/aot/gog-smart-1.08.json': '{}'}
+        for missing in ('tools/aot/gog_smart.py', 'tools/aot/gog-smart-1.08.json'):
+            with self.subTest(missing=missing):
+                result = self.audit(files, exported=set(files) - {missing}, entries=(), drivers=('build.sh',))
+                self.assertIn(missing, {row['path'] for row in result['missing']})
+        result = gate.check(Source(files), {'build.sh', 'tools/aot/fontverdict.py'}, 'deltarune',
+                            entry_points=(), drivers=('build.sh',))
+        self.assertEqual(result['missing'], [])
+        self.assertNotIn('tools/aot/gog_smart.py', result['required'])
 
     def test_dynamic_import_and_fixed_fingerprint_list(self):
         files = {'tools/start.py': 'import importlib\nimportlib.import_module("helper")\n'
@@ -182,6 +212,25 @@ class ClosureTests(unittest.TestCase):
             manifest = (root / ('tools/release/manifest-%s.txt' % short)).read_text().splitlines()
             self.assertIn('tools/roomplan/closure.py', manifest)
         self.assertTrue((root / 'tools/roomplan/closure.py').is_file())
+
+    def test_packaged_build_driver_closure_survives_the_source_filter(self):
+        root = Path(__file__).resolve().parents[2]
+        sys.path.insert(0, str(root / 'tools/release/builder'))
+        import pipeline
+        names = {line.strip() for short in ('ut', 'dr')
+                 for line in (root / ('tools/release/manifest-%s.txt' % short)).read_text().splitlines()
+                 if line.strip() and not line.lstrip().startswith('#')}
+        repo = FilesystemSource(root, names)
+        for game, short in (('undertale', 'ut'), ('deltarune', 'dr')):
+            with self.subTest(game=game):
+                manifest = {line.strip() for line in (root / ('tools/release/manifest-%s.txt' % short)).read_text().splitlines()
+                            if line.strip() and not line.lstrip().startswith('#')}
+                mirrored = {name for name in manifest if pipeline.source_wanted(name, game)}
+                report = gate.check(repo, mirrored, game, entry_points=())
+                self.assertEqual(report['missing'], [])
+                if game == 'deltarune':
+                    self.assertIn('tools/roomplan/build_tracks.py', report['required'])
+                    self.assertIn('tools/roomplan/tracks/deltarune.json', report['required'])
 
 
 if __name__ == '__main__':

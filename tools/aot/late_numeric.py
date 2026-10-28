@@ -37,6 +37,7 @@ def late_copy(original, candidate, regions, k):
     body = re.sub(r'^static (uint32_t aotuls_|AotLocalCache aotulc_)',
                   r'static __attribute__((section(".data.late.utoldloop"))) \1', body, flags=re.M)
     numeric = '\n\n'.join(t[2] for t in regions)
+    numeric = 'extern bool Utold_scalarPartIsBuiltin(BuiltinFunc);\nextern RValue Utold_scalarPart(VMContext*, GMLReal, GMLReal, GMLReal, GMLReal,\n                              GMLReal, GMLReal, GMLReal, GMLReal);\n' + numeric
     # Region symbols are private to this generated entry family too.
     region_name = re.compile(r'\baot([ts])_' + str(k) + r'_([0-9A-Fa-f]+)\b')
     body = region_name.sub(r'aotul\1_' + str(k) + r'_\2', body)

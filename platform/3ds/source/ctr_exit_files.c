@@ -57,7 +57,7 @@ static FILES_TEXT __attribute__((noreturn)) void filesRecover(void) {
     if (*CtrExit_logState.thread != NULL) threadJoin(*CtrExit_logState.thread, 250000000ULL);
     if (filesCloseSoc()) {
         if (filesMainThread != 0) svcSetThreadPriority(filesMainThread, 0x3F);
-        _exit(1);
+        CtrLeavekeep_exit(1); // z_leavekeep.c: _exit without the heap unmap
     }
     // SOC rejected closure: forced death would repeat the HOME error.
     for (;;) svcSleepThread(1000000000LL);
@@ -132,7 +132,7 @@ FILES_TEXT __attribute__((noreturn)) void CtrExitFiles_closeFailed(void) {
 // bypass the normal loader cleanup (APT may still be in flight).
 FILES_TEXT __attribute__((noreturn)) void CtrExitFiles_labExit(void) {
     filesCancelSocket();
-    if (filesCloseSoc()) _exit(1);
+    if (filesCloseSoc()) CtrLeavekeep_exit(1);
     for (;;) svcSleepThread(1000000000LL);
 }
 

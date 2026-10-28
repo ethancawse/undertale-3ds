@@ -418,6 +418,18 @@ static const char vdWhyMem[] VR_RO = "no linear memory";
 static const char vdWhyGone[] VR_RO = "a layer changed";
 static const char vdWhyCheck[] VR_RO = "a layer differs";
 
+/* climbnoise (Azahar only): the shared depth texture (cut 3) and the plain copies (cut 4b) store 368 of their 512
+ * rows. In Azahar's VRAM the cached texture then reaches into the render targets after it, and the tower drew missing
+ * or foreign texels; on a console it is exact (docs/3ds-hardware.md, "A VRAM texture whose stored rows stop short of
+ * its height drew wrong texels in Azahar"). So in Azahar both go to linear memory, where they are exact. The VRAM checks
+ * stay, but the textures take none in Azahar, so it can make more plain copies than a console does (same pixels). On a
+ * console: one test of vramtouch's cached flag at each make and each free. */
+bool CtrVramTouch_emulator(void); // ctr_vram_touch.c's vramTouchOn (an alias): svcGetSystemInfo(0x20000, 0), cached
+static __attribute__((noinline, used, section(".text.climbnoise_late"))) void cnTowerFree(void* tex) {
+    if (CtrVramTouch_emulator()) linearFree(tex);
+    else vramFree(tex);
+}
+
 // Whether s can be a shared layer: an unchanged 360x360 cut of one 180x180 page region, in a 512x512 RGBA8 texture.
 static VR_CODE bool vdCandidate(const CtrSurface* s) {
     const CtrPattern* p = &s->pattern;
@@ -435,7 +447,7 @@ static VR_CODE bool vdSameKey(const CtrPattern* p) {
 // Back to noting layers afresh; the texture (if made) and the stage are freed once the GPU is past them.
 static VR_CODE void vdDrop(CtrRenderer* r) {
     if (vd.freeStage != nullptr) linearFree(vd.freeStage);
-    if (vd.freeVram != nullptr) vramFree(vd.freeVram);
+    if (vd.freeVram != nullptr) cnTowerFree(vd.freeVram);
     vd.freeStage = vd.stage;
     vd.freeVram = vd.tex.data;
     vd.freeFrame = vd.freeStage != nullptr || vd.freeVram != nullptr ? r->frame + 3u : 0u;
@@ -544,7 +556,7 @@ static VR_CODE void vdBuildStep(CtrRenderer* r) {
         // wanted VRAM, and the shrink strip's share), but in these rooms VRAM is already below that, so no copy would
         // be made there; and the 736 KB layers that set mirror.extra find no block that large.
         uint32_t reserve = MIRROR_RESERVE;
-        if (reserve + bytes > CtrMemory_vramFreeNow() || !VR_CALL(initSurfaceTex)(&vd.tex, VD_COLS, 512, (int32_t) rows, true)) {
+        if (reserve + bytes > CtrMemory_vramFreeNow() || !VR_CALL(initSurfaceTex)(&vd.tex, VD_COLS, 512, (int32_t) rows, !CtrVramTouch_emulator())) {
             memset(&vd.tex, 0, sizeof(vd.tex));
             vdFail(r, vdWhyVram);
             return;
@@ -677,7 +689,7 @@ static VR_CODE bool pcCandidate(const CtrSurface* s) {
 static VR_CODE void pcRelease(CtrRenderer* r, int32_t i) {
     PcCopy* e = &pc.e[i];
     if (pc.freeStage[i] != nullptr) linearFree(pc.freeStage[i]);
-    if (pc.freeVram[i] != nullptr) vramFree(pc.freeVram[i]);
+    if (pc.freeVram[i] != nullptr) cnTowerFree(pc.freeVram[i]);
     pc.freeStage[i] = e->stage;
     pc.freeVram[i] = e->tex.data;
     if (e->stage != nullptr || e->tex.data != nullptr) pc.freeFrame = r->frame + 3u;
@@ -722,7 +734,7 @@ static VR_CODE void pcBuildStep(CtrRenderer* r, int32_t i) {
     }
     uint32_t rows = s->tex.size / (512u * 4u), bytes = rows * VD_COLS * 4u;
     if (e->row < 0) {
-        if (bytes + PC_MARGIN > CtrMemory_vramFreeNow() || !VR_CALL(initSurfaceTex)(&e->tex, VD_COLS, 512, (int32_t) rows, true)) {
+        if (bytes + PC_MARGIN > CtrMemory_vramFreeNow() || !VR_CALL(initSurfaceTex)(&e->tex, VD_COLS, 512, (int32_t) rows, !CtrVramTouch_emulator())) {
             memset(&e->tex, 0, sizeof(e->tex));
             pcFail(r, i, vdWhyVram, false);
             return;
@@ -832,7 +844,7 @@ static VR_CODE void pcHousekeep(CtrRenderer* r) {
     if (pc.freeFrame != 0 && 0 <= (int32_t) (r->frame - pc.freeFrame)) {
         for (int32_t i = 0; PC_MAX > i; i++) {
             if (pc.freeStage[i] != nullptr) linearFree(pc.freeStage[i]);
-            if (pc.freeVram[i] != nullptr) vramFree(pc.freeVram[i]);
+            if (pc.freeVram[i] != nullptr) cnTowerFree(pc.freeVram[i]);
             pc.freeStage[i] = nullptr;
             pc.freeVram[i] = nullptr;
         }
@@ -863,7 +875,7 @@ static VR_CODE bool pcEvict(CtrRenderer* r, size_t need) {
             continue;
         }
         if (e->stage != nullptr) linearFree(e->stage);
-        if (e->tex.data != nullptr) vramFree(e->tex.data);
+        if (e->tex.data != nullptr) cnTowerFree(e->tex.data);
         e->stage = nullptr;
         memset(&e->tex, 0, sizeof(e->tex));
         e->state = PC_IDLE;
@@ -900,7 +912,7 @@ static VR_CODE void vdHousekeep(CtrRenderer* r) {
     vdOwn(r);
     if (vd.freeFrame != 0 && 0 <= (int32_t) (r->frame - vd.freeFrame)) {
         if (vd.freeStage != nullptr) linearFree(vd.freeStage);
-        if (vd.freeVram != nullptr) vramFree(vd.freeVram);
+        if (vd.freeVram != nullptr) cnTowerFree(vd.freeVram);
         vd.freeStage = nullptr;
         vd.freeVram = nullptr;
         vd.freeFrame = 0;

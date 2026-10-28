@@ -305,6 +305,71 @@ class SteamPlatformTests(fixtures.MusicFixtures):
 
 
 class PipelinePlatformTests(unittest.TestCase):
+    def test_same_size_epoch_update_invalidates_objects_before_copy_even_if_interrupted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, dest = Path(tmp) / 'kit', Path(tmp) / 'work/src'
+            rel = 'engine/src/update.c'
+            write(str(source / rel), b'int result = 1;\n')
+            os.utime(source / rel, (0, 0))
+            pipeline.mirror_source(source, dest, 'undertale')
+            build = dest / 'build'
+            artifact = build / '3ds-undertale-o3ds/result.o'
+            write(str(artifact), b'old compiled code')
+            # Same kit is incremental; a timestamp-only change is also immaterial.
+            self.assertEqual(pipeline.mirror_source(source, dest, 'undertale'), (0, 0))
+            os.utime(source / rel, (1234, 1234))
+            self.assertEqual(pipeline.mirror_source(source, dest, 'undertale'), (0, 0))
+            self.assertTrue(artifact.exists())
+            write(str(source / rel), b'int result = 2;\n')
+            os.utime(source / rel, (0, 0))
+            self.assertEqual((source / rel).stat().st_size, (dest / rel).stat().st_size)
+            self.assertEqual((source / rel).stat().st_mtime, (dest / rel).stat().st_mtime)
+            # Even an interrupted copy has already invalidated every target's generated state.
+            with mock.patch.object(pipeline.shutil, 'copy2', side_effect=OSError('interrupted')):
+                with self.assertRaisesRegex(OSError, 'interrupted'):
+                    pipeline.mirror_source(source, dest, 'undertale')
+            self.assertFalse(build.exists())
+            self.assertEqual((dest / rel).read_bytes(), b'int result = 1;\n')
+            self.assertEqual(pipeline.mirror_source(source, dest, 'undertale'), (1, 0))
+            self.assertEqual((dest / rel).read_bytes(), b'int result = 2;\n')
+
+    def test_removed_inputs_and_same_size_top_level_files_clean_only_generated_state(self):
+        for remove, rel in ((True, 'engine/src/old.c'), (False, 'VERSION'),
+                            (False, 'docs/release/build-contract.json')):
+            with self.subTest(remove=remove, rel=rel), tempfile.TemporaryDirectory() as tmp:
+                source, work = Path(tmp) / 'kit', Path(tmp) / 'work'
+                dest = work / 'src'
+                write(str(source / rel), b'old input')
+                os.utime(source / rel, (0, 0))
+                pipeline.mirror_source(source, dest)
+                write(str(dest / 'build/aot/old.c'), b'old generated code')
+                write(str(work / 'out/game.3dsx'), b'kept output')
+                write(str(work / 'ccache/object'), b'kept compiler cache')
+                if remove:
+                    (source / rel).unlink()
+                    (source / rel).parent.rmdir()
+                else:
+                    write(str(source / rel), b'new input')
+                    os.utime(source / rel, (0, 0))
+                self.assertEqual(pipeline.mirror_source(source, dest), (0, 1) if remove else (1, 0))
+                self.assertFalse((dest / 'build').exists())
+                self.assertEqual((work / 'out/game.3dsx').read_bytes(), b'kept output')
+                self.assertEqual((work / 'ccache/object').read_bytes(), b'kept compiler cache')
+
+    def test_shipping_host_binaries_preserves_source_descriptor_but_builder_edits_do_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in pipeline.SOURCE_FILES + ('tools/release/release_contract.py',
+                        'tools/release/verify_game.py', 'tools/release/music-versions.json',
+                        'tools/release/builder/builder.py', 'tools/release/builder/texcache.py'):
+                write(str(root / rel), 'source fixture')
+            before = pipeline.source_payload(root, 'undertale')
+            write(str(root / 'tools/release/builder/bin/texprep-windows-x64.exe'), b'host binary fixture')
+            write(str(root / 'tools/release/builder/runtime/python.exe'), b'runtime fixture')
+            self.assertEqual(pipeline.source_payload(root, 'undertale'), before)
+            write(str(root / 'tools/release/builder/texcache.py'), 'changed builder source')
+            self.assertNotEqual(pipeline.source_payload(root, 'undertale'), before)
+
     def test_package_and_mirror_share_the_3ds_source_filter(self):
         keep = ("engine/src/aot/vm_aot_hooks.h", "engine/src/cli/state_hash_reach.inc",
                 "engine/src/physics/disabled/physics_engine.c", "platform/3ds/source/ctr_argui.c",
@@ -515,7 +580,7 @@ class PackageVersionLogTests(unittest.TestCase):
                 write(str(bdir / "undertale-3ds-n3ds.3dsx"), b"fixture artifact")
             build = pipeline.Build(fixtures.products.PRODUCTS["undertale"], detected, str(work), "n3ds", "/fixture",
                                    source_root=src, popen=lambda *a, **kw: fixtures.FakeProc([], 0, on_start=output),
-                                   art_generator=lambda *a: {})
+                                    art_generator=lambda *a, **k: {})
             with mock.patch.object(toolchain, 'compiler_details', return_value={
                     'path': '/fixture/gcc', 'version': '16.1.0', 'target': 'arm-none-eabi'}):
                 _arts, record = build.run()
@@ -532,6 +597,33 @@ CONTRACT = (Path(__file__).resolve().parents[2] / "docs/release/build-contract.j
 
 
 class PackagingTests(unittest.TestCase):
+    def test_same_version_tar_update_with_identical_size_and_mtime_replaces_build_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, unpacked, dest = (Path(tmp) / name for name in ('export', 'kit', 'work/src'))
+            for rel in pipeline.SOURCE_FILES + package_builder.EXTRA_FILES:
+                write(str(root / rel), '0.1.0\n' if rel == 'VERSION' else
+                      CONTRACT if rel == 'docs/release/build-contract.json' else 'fixture')
+            for rel in package_builder.DIRECTORIES:
+                (root / rel).mkdir(parents=True, exist_ok=True)
+            write(str(root / 'tools/release/builder/builder.py'), 'FIXED_GAME = None\n')
+            rel = 'engine/src/update.c'
+            for value in (1, 2):
+                write(str(root / rel), 'int result = %d;\n' % value)
+                archive = package_builder.package(root, Path(tmp) / 'out', 'undertale', 'linux')
+                with tarfile.open(archive) as tar:
+                    member = next(m for m in tar.getmembers() if m.name.endswith('/' + rel))
+                    self.assertEqual(member.mtime, 0)
+                    tar.extractall(unpacked, filter='data')
+                    kit = unpacked / member.name.split('/')[0]
+                pipeline.mirror_source(kit, dest, 'undertale')
+                self.assertEqual((dest / rel).read_text(), 'int result = %d;\n' % value)
+                self.assertFalse((dest / 'build').exists())
+                # Both targets, generated AOT and future-dated objects must be invalidated.
+                for target in ('o3ds', 'n3ds', 'aot'):
+                    obj = dest / 'build' / target / 'update.o'
+                    write(str(obj), b'previous kit object')
+                    os.utime(obj, (2000000000, 2000000000))
+
     def test_owner_descriptor_packages_only_the_same_game_version_and_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'export'
@@ -646,6 +738,14 @@ class PackagingTests(unittest.TestCase):
                         with tarfile.open(archive) as source:
                             source.extractall(unpacked, filter="data")
                     kit = next(unpacked.iterdir())
+                    if platform in ("windows", "macos"):
+                        opening = (kit / "README.md").read_text(encoding="utf-8")
+                        suffix = ".cmd" if platform == "windows" else ".command"
+                        self.assertIn("undertale-3ds-builder" + suffix, opening)
+                        self.assertTrue((kit / ("undertale-3ds-builder" + suffix)).is_file())
+                        self.assertIn("This beta builder is unsigned.", opening)
+                        self.assertNotIn(".sha256", opening)
+                        self.assertNotIn("Check the download", opening)
                     result = subprocess.run([sys.executable, "-I", "-c", code, str(kit),
                                              json.dumps(sorted(dependencies))], cwd=unpacked,
                                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -675,6 +775,11 @@ class PackagingTests(unittest.TestCase):
                     main = next(n for n in names if n.endswith("/builder/builder.py"))
                     self.assertIn(b'FIXED_GAME = "undertale"', tar.extractfile(main).read())
                     self.assertFalse(any("runtime/" in n or n.endswith(".ogg") for n in names))
+                    if platform == "macos":
+                        opening = tar.extractfile(next(n for n in names if n.endswith("/README.md"))).read()
+                        self.assertIn(Path(start).name.encode("utf-8"), opening)
+                        self.assertIn(b'choose "Open Anyway", then "Open".', opening)
+                        self.assertNotIn(b".sha256", opening)
                 self.assertTrue(archive.with_name(archive.name + ".sha256").is_file())
 
     def test_windows_runtime_is_required(self):

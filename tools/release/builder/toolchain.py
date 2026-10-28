@@ -232,7 +232,6 @@ def detect(tools_dir, env=None, platform=sys.platform, run=run_capture, isfile=o
     checks.append(Check("makerom (for .cia)", bool(makerom), makerom or "not found", "cia"))
     checks.append(Check("bannertool (for .cia)", bool(bannertool), bannertool or "not found", "cia"))
     threedslink = _find_tool("3dslink", [os.path.join(root, "tools", "bin")], exe)
-    checks.append(Check("3dslink (for Send over Wi-Fi)", bool(threedslink), threedslink or "not found", "wifi"))
     return Toolchain(root, bash, checks, missing, missing_rec, makerom, bannertool, threedslink, platform, versions)
 
 
@@ -374,6 +373,14 @@ def plan(tc: Toolchain, tools_dir, downloads_dir, want_cia):
     return keep
 
 
+def setup_inventory(tc, steps):
+    """Stable full bootstrap list. Only dependencies gate an individual action, never unrelated installers."""
+    needed = {s.key for s in plan(tc, '', '', want_cia=True)}
+    dependencies = {'packages': ('devkitpro',), 'bannertool': ('host', 'clt')}
+    return [(s, s.key in needed, next((p.title for p in steps
+             if p.key in dependencies.get(s.key, ()) and p.key in needed), None)) for s in steps]
+
+
 def licence_notice(platform=sys.platform):
     """The line beside the Install buttons and the links under it: every tool this platform's setup can install."""
     keys = {"win32": ("devkitpro", "makerom", "bannertool"),
@@ -504,6 +511,32 @@ def extract_tar(archive, dest, cmake_cli=False):
                 os.chmod(target, 0o755 if m.mode & 0o111 else 0o644)
 
 
+BANNER_PATCH_SHA256 = 'd23e4f94d0a986f45a12854dff49e2c1d453ad62a00b51bb5e7d5d090516a80c'
+BANNER_LZ11_SHA256 = 'edb1e8800ab594b6433d678c71419eeb0e2815dc9449e107c6890a2e238010c5'
+BANNER_LZ11_PATCHED_SHA256 = '7a87ae0932215fdb92323fd8c73c6c600c0b08b15cd61a5b14bd97ec56f3dcac'
+
+
+def patch_bannertool(source):
+    patch = os.path.join(os.path.dirname(__file__), 'bannertool-1.2.3-clang.patch')
+    with open(patch, 'rb') as f:
+        if hashlib.sha256(f.read()).hexdigest() != BANNER_PATCH_SHA256:
+            raise Refused("The bannertool source patch is damaged. Unpack the builder again.")
+    path = os.path.join(source, '3ds', 'lz11.cpp')
+    with open(path, 'rb') as f:
+        data = f.read()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest == BANNER_LZ11_PATCHED_SHA256:
+        return
+    if digest != BANNER_LZ11_SHA256:
+        raise Refused("The bannertool source does not match the pinned version. Unpack the builder again.")
+    data = data.replace(b'u8 pad[padLength] = {0};', b'u8 pad[4] = {0};')
+    if hashlib.sha256(data).hexdigest() != BANNER_LZ11_PATCHED_SHA256:
+        raise Refused("The bannertool source patch is damaged. Unpack the builder again.")
+    with open(path + '.part', 'wb') as f:
+        f.write(data)
+    os.replace(path + '.part', path)
+
+
 def build_bannertool(source, tools_dir, run, log):
     """Equivalent to upstream's CMake target, using only the native C++17 compiler.
 
@@ -513,6 +546,7 @@ def build_bannertool(source, tools_dir, run, log):
     cpp = sorted(os.path.join(d, f) for d, _, files in os.walk(source) for f in files if f.endswith(".cpp"))
     if len(cpp) != 10:
         raise Refused("The pinned bannertool source is incomplete (expected 10 .cpp files).")
+    patch_bannertool(source)
     os.makedirs(tools_dir, exist_ok=True)
     dest = os.path.abspath(os.path.join(tools_dir, "bannertool"))
     command = [host_tool("c++", tools_dir) or "c++", "-std=c++17", "-O2", '-DVERSION="1.2.3"',
@@ -673,7 +707,7 @@ class Actions:
     run: object = None           # callable(argv, log) -> exit code
 
 
-def run_step(step: Step, log, dry_run, actions: Actions | None = None, stage=None):
+def run_step(step: Step, log, dry_run, actions: Actions | None = None, stage=None, work=None, root=None):
     """Runs one consented step. In a dry run it only logs what it would do. Returns True on success.
 
     stage(kind, text), when given, hears each phase ("download" or "run") so a window can show progress."""
@@ -682,9 +716,16 @@ def run_step(step: Step, log, dry_run, actions: Actions | None = None, stage=Non
     if dry_run:
         log("[dry run] would do: " + step.describe())
         return True
+    if work is not None:
+        import cleanup
+        paths = installed_paths(step, work, root)
+        cleanup.record_before(work, paths)
+        cleanup.record_before(work, [d['dest'] for d in step.downloads], 'downloads')
     for d in step.downloads:
         stage("download", "Downloading %s..." % os.path.basename(d["dest"]))
         actions.download(d["url"], d["dest"], d["sha256"], size=d.get("size"))
+        if work is not None:
+            cleanup.record_after(work, [d['dest']])
         log("downloaded %s (SHA-256 checked)" % d["url"])
     for argv in step.commands:
         stage("run", "Waiting for the installer..." if step.admin else "Installing...")
@@ -714,7 +755,24 @@ def run_step(step: Step, log, dry_run, actions: Actions | None = None, stage=Non
                 raise Refused("devkitPro's package manager couldn't install %s. Check your internet connection and "
                               "try again." % " ".join(INSTALL_PACKAGES if step.platform == "win32" else UNIX_INSTALL_PACKAGES))
             raise Refused("%s exited with code %s." % (os.path.basename(argv[0]), code))
+    if work is not None:
+        cleanup.record_after(work, paths)
     return True
+
+
+def installed_paths(step, work, root=None):
+    """Only explicit installer destinations. OS package managers stay outside cleanup."""
+    if step.key in ('devkitpro', 'packages'):
+        return [root or ('C:/devkitPro' if step.platform == 'win32' else '/opt/devkitpro')]
+    paths = []
+    for argv in step.commands:
+        if argv[0] == 'extract':
+            paths.append(os.path.join(argv[3], argv[2]))
+        elif argv[0] == 'untar-cmake':
+            paths.append(argv[2])
+        elif argv[0] == 'build-bannertool':
+            paths.append(os.path.join(argv[2], 'bannertool'))
+    return paths
 
 
 def dry_run_report(tc: Toolchain, tools_dir, downloads_dir, want_cia=True):

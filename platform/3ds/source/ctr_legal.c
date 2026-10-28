@@ -56,7 +56,7 @@ static const char summary[] LATE_TEXT =
     "You may copy, modify and redistribute\n"
     "this runtime under that licence.\n"
     "NO WARRANTY. See the full licence.\n\n";
-static const char sourceHeading[sizeof("Development source:")] LATE_TEXT = CTR_RELEASE_LABEL " source";
+static const char sourceHeading[sizeof("Development source:")] LATE_TEXT = CTR_RELEASE_SOURCE_HEADING;
 static const char sourceUrl[] LATE_TEXT = CTR_RELEASE_SOURCE_URL;
 static const char buildHeading[] LATE_TEXT = "Build:";
 static const char unofficial[] LATE_TEXT =
@@ -242,7 +242,7 @@ static LATE_CODE CtrMenuAction updateLegal(CtrMenu* menu, u32 down) {
 // and every late function after it its address (the old slot stays filled).
 void CtrLegal_retiredMenuOpen(CtrMenu* menu, PrintConsole* console, const CtrDisplaySettings* settings, CtrDisplayCaps caps);
 CtrMenuAction CtrLegal_retiredMenuUpdate(CtrMenu* menu, u32 down);
-
+#if defined(ENABLE_WAD17) // UNDERTALE never runs this (argcheck, UT late-text reclaim)
 LATE_CODE void CtrLegal_retiredMenuOpen(CtrMenu* menu, PrintConsole* console, const CtrDisplaySettings* settings, CtrDisplayCaps caps) {
     // Also cover the scheduled-menu test hook, which opens before main updates
     // statsShown. Its log messages must not overwrite a settings/legal page.
@@ -281,7 +281,7 @@ LATE_CODE CtrMenuAction CtrLegal_retiredMenuUpdate(CtrMenu* menu, u32 down) {
     if (down && menu->page == MENU_PAGE_OPTIONS && (action == MENU_ACTION_NONE || action == MENU_ACTION_CHANGED)) drawOptions(menu);
     return action;
 }
-
+#endif
 // ===[ The entry points from the options page (screens-port round 3b) ]===
 //
 // In screens' late sections (platform/3ds/late_reserve.ld), after every older late input, so nothing above moves.
@@ -325,4 +325,341 @@ LEGAL_ENTRY void CtrLegal_close(void) {
 }
 
 // Reuse the original 20 B late slot: every existing instruction and pointer stays fixed.
-_Static_assert(sizeof(CTR_RELEASE_LABEL " source") <= sizeof(sourceHeading), "Release label exceeds retained legal heading");
+_Static_assert(sizeof(CTR_RELEASE_SOURCE_HEADING) <= sizeof(sourceHeading), "Source heading exceeds retained legal heading");
+
+// ===[ legalui (round 20): the Legal notices and Credits pages in the game's own menu font ]===
+//
+// Drawn like the options page (ctr_optmenu.c): into the menu screen's spare buffer (the menu console's while the menu
+// is open, 320 x 240 RGB565, column-major), which optmenu copies to the shown one each frame while a page here is up.
+// Glyphs come from optmenu's table through CtrOptmenu_text, so these pages use the menu's font (UNDERTALE's
+// fnt_maintext, DELTARUNE's fnt_main) with no texture or SD access of their own.
+// - Legal notices: the licence summary and disclaimer, with rows for the licence and the third-party notices. Each
+//   opens a reader that scrolls by line (Up/Down, held repeats) and by screen (Left/Right, L/R). Every row of the
+//   bundled .pages files is shown as it is (tools/release/prepare_legal.py wraps them at spaces).
+// - Credits: romfs:/credits.txt (tools/aot/credits.py: the game's own credits read from the player's data at build
+//   time, then this port's), centred, rolling up slowly; Up/Down scroll it by hand.
+// B goes back a page (from the Legal page and Credits, to the options page, where its cursor was); SELECT too.
+// The menu's sounds play from optKeys, before these keys reach here. Appended at the file's end, in sections named
+// outside .text.late.* (late_reserve.ld), so nothing above moves.
+#include <stdlib.h>
+#include <string.h>
+
+// Size over speed for these pages (UNDERTALE Old's late code reserve is small; they draw on key presses only).
+#pragma GCC optimize("Os")
+#define LUI_CODE __attribute__((noinline, section(".text.legalui_late")))
+#define LUI_RO __attribute__((section(".rodata.legalui_in_text")))
+#define LUI_BSS __attribute__((section(".bss.legalui_late")))
+
+void CtrOptmenu_text(uint16_t* fb, int32_t x, int32_t y, const char* s, uint32_t col);
+void CtrLegalui_open(CtrMenu* menu, bool credits);
+void CtrLegalui_update(CtrMenu* menu, u32 down);
+
+enum { LUI_HUB, LUI_DOC, LUI_CREDITS };
+// Lines 14 px apart: the menu font's ink is 12 px tall with its descenders, so 2 px stay clear between lines (as
+// the options page's rows). The reader shows 13 rows (title above, the help line below); the Legal page wraps its
+// text at 40 columns (x 24 to 304).
+enum { LUI_ROWS = 13, LUI_TOP = 30, LUI_PITCH = 14, LUI_COLS = CTR_RELEASE_LEGAL_COLUMNS, LUI_WIDE = 40 };
+#define LUI_WHITE 0xFFFFu
+#define LUI_YELLOW 0xFFE0u
+#define LUI_GREY 0x8410u
+#define LUI_LIGHT 0xC618u
+#define LUI_RED 0xF800u
+#define LUI_UP (KEY_DUP | KEY_CPAD_UP)
+#define LUI_DOWN (KEY_DDOWN | KEY_CPAD_DOWN)
+#define LUI_PREV (KEY_DLEFT | KEY_CPAD_LEFT)
+#define LUI_NEXT (KEY_DRIGHT | KEY_CPAD_RIGHT)
+#define LUI_MOVE (LUI_UP | LUI_DOWN | LUI_PREV | LUI_NEXT)
+
+static struct {
+    uint8_t view;
+    uint8_t row;     // the Legal page's cursor: 0 licence, 1 notices, 2 back
+    uint8_t held;    // frames Up or Down has been held
+    bool dirty;
+    int32_t top;     // reader: first row shown; credits: scroll in pixels
+    int32_t rows;    // reader: rows in the document
+    int32_t height;  // credits: the text's height in pixels
+    int32_t idle;    // credits: frames since a key moved it (the roll waits, then resumes)
+    char* credits;   // romfs:/credits.txt, NUL-terminated
+} lui LUI_BSS;
+
+// The Legal page's rows (the first two also the reader's titles) and their help lines, NUL-separated (luiNth).
+static const char luiRows[] LUI_RO = "Licence (GNU AGPL v3)\0Third-party notices\0Back";
+static const char luiHelp[] LUI_RO = "Read the licence.\0Read the notices of the code we use.\0Back to the options.";
+static const char luiDocHelp[] LUI_RO = "Up/Down scroll, Left/Right page, L/R ends";
+static const char luiCreditsPath[] LUI_RO = "romfs:/credits.txt";
+static const char luiHeart[] LUI_RO = "\x01";
+
+// A document (0 licence, 1 notices) or the credits (2), mounting the romfs once if it isn't (as the old viewer does).
+// relprep's late rodata is placed in the order its names are first used (section anchors), and this function is
+// compiled before readPage: it names fileMode, documentPaths and romfsName in readPage's order (the empty asm keeps
+// fileMode first) so that rodata keeps its layout.
+static LUI_CODE FILE* luiOpen(int32_t which) {
+    const char* mode = fileMode;
+    __asm__("" : "+r"(mode));
+    const char* path = which < 2 ? documentPaths[which] : luiCreditsPath;
+    FILE* file = fopen(path, mode);
+    if (file == NULL && !legal.mountTried) {
+        legal.mountTried = true;
+        if (R_SUCCEEDED(CtrLegal_mountSelf(romfsName))) file = fopen(path, mode);
+    }
+    return file;
+}
+
+// String i of NUL-separated strings.
+static LUI_CODE const char* luiNth(const char* s, uint32_t i) {
+    for (; i != 0; i--) s += strlen(s) + 1;
+    return s;
+}
+
+// The page cleared to black, with the options page's frame (border; the rule above the help line at y 214) unless bare.
+static LUI_CODE uint16_t* luiClear(CtrMenu* menu, bool bare) {
+    uint16_t* fb = (uint16_t*) menu->console->frameBuffer;
+#ifdef ENABLE_WAD16
+    const uint16_t border = 0xFFFFu;
+#else
+    const uint16_t border = 0x9D18u;
+#endif
+    uint16_t* p = fb;
+    for (uint32_t x = 0; x < 320u; x++) {
+        for (uint32_t y = 0; y < 240u; y++) {
+            *p++ = !bare && (x - 2u >= 316u || y - 2u >= 236u || y == 25u) ? border : 0u;
+        }
+    }
+    return fb;
+}
+
+static LUI_CODE void luiFill(uint16_t* fb, int32_t x0, int32_t y0, int32_t w, int32_t h, uint16_t col) {
+    for (int32_t x = x0; x < x0 + w; x++) {
+        for (int32_t y = y0; y < y0 + h; y++) fb[x * 240 + (239 - y)] = col;
+    }
+}
+
+// One line of at most LUI_COLS + 4 bytes; a control character (a line break joined into a line) shows as a space,
+// one outside ASCII (UTF-8, in two names) as '?'.
+static LUI_CODE void luiLine(uint16_t* fb, int32_t x, int32_t y, const char* s, int32_t n, uint32_t col) {
+    char buf[LUI_COLS + 5];
+    int32_t k = 0;
+    for (int32_t i = 0; i < n && s[i] != '\0' && k < LUI_COLS + 4; i++) {
+        uint8_t c = (uint8_t) s[i];
+        if ((c & 0xC0u) == 0x80u) continue; // a continuation byte: its lead byte drew the '?'
+        buf[k++] = c < 32u ? ' ' : c < 127u ? (char) c : '?';
+    }
+    buf[k] = '\0';
+    CtrOptmenu_text(fb, x, y, buf, col);
+}
+
+// Text from y at x 24, wrapped at LUI_WIDE after a space or '/' (a URL); a single '\n' joins as a space, "\n\n" ends a
+// line. Returns the next line's y.
+static LUI_CODE int32_t luiBlock(uint16_t* fb, int32_t y, const char* s, uint32_t col) {
+    for (;;) {
+        while (*s == ' ' || *s == '\n') s++;
+        if (*s == '\0') return y;
+        int32_t n = 0;
+        while (s[n] != '\0' && (s[n] != '\n' || s[n + 1] != '\n') && n < LUI_WIDE) n++;
+        if (n == LUI_WIDE && s[n] > ' ') {
+            int32_t cut = n;
+            while (cut > 0 && s[cut - 1] > ' ' && s[cut - 1] != '/') cut--;
+            if (cut > 0) n = cut;
+        }
+        luiLine(fb, 24, y, s, n, col);
+        y += LUI_PITCH;
+        s += n;
+    }
+}
+
+// Appends s to t (n bytes so far, at most 126), returning the new length.
+static LUI_CODE int32_t luiCat(char* t, int32_t n, const char* s) {
+    while (*s != '\0' && n < 126) t[n++] = *s++;
+    t[n] = '\0';
+    return n;
+}
+
+static LUI_CODE void luiDrawHub(CtrMenu* menu) {
+    uint16_t* fb = luiClear(menu, false);
+    for (uint32_t i = 0; i < 3u; i++) {
+        int32_t y = 8 + LUI_PITCH * (int32_t) i;
+        CtrOptmenu_text(fb, 24, y, luiNth(luiRows, i), i == lui.row ? LUI_YELLOW : LUI_WHITE);
+        if (i == lui.row) CtrOptmenu_text(fb, 11, y, luiHeart, LUI_RED);
+    }
+    // Under the rows (Back is the third, as on the options' other pages; a block's 20 px further): the summary, the
+    // source and build (light grey), the disclaimer: 11 lines, the last one's ink ending at y 207.
+    char t[128];
+    int32_t n = luiCat(t, 0, sourceHeading);
+    t[n++] = ' ';
+    n = luiCat(t, n, sourceUrl);
+    t[n++] = '\n';
+    t[n++] = '\n';
+    n = luiCat(t, n, buildHeading);
+    t[n++] = ' ';
+    luiCat(t, n, CTRPORT_COMMIT);
+    int32_t y = luiBlock(fb, 56, summary, LUI_WHITE);
+    luiBlock(fb, luiBlock(fb, y, t, LUI_LIGHT), unofficial, LUI_WHITE);
+    CtrOptmenu_text(fb, 12, 221, luiNth(luiHelp, lui.row), LUI_WHITE);
+}
+
+// count rows of the open .pages file from row into legal.lines.
+static LUI_CODE bool luiRead(FILE* file, int32_t row, int32_t count) {
+    return fseek(file, 8 + row * (LUI_COLS + 1), SEEK_SET) == 0 &&
+           fread(legal.lines, LUI_COLS + 1, (size_t) count, file) == (size_t) count;
+}
+
+// The reader: the title, LUI_ROWS rows from lui.top (CtrLegalui_update keeps it in range), and a scroll bar.
+static LUI_CODE void luiDrawDoc(CtrMenu* menu) {
+    uint16_t* fb = luiClear(menu, false);
+    CtrOptmenu_text(fb, 12, 8, luiNth(luiRows, (uint32_t) legal.document), LUI_YELLOW);
+    CtrOptmenu_text(fb, 12, 221, luiDocHelp, LUI_WHITE);
+    FILE* file = luiOpen(legal.document);
+    bool ok = false;
+    if (file != NULL) {
+        uint32_t header[2];
+        ok = fread(header, 4, 2, file) == 2 && header[0] == 0x314c474c && header[1] - 1u < 65535u;
+        if (ok && lui.rows == 0) {
+            // Once per opening: the rows up to the last one with text (the last page's padding isn't scrolled to).
+            int32_t last = (int32_t) header[1] * CTR_RELEASE_LEGAL_LINES;
+            if (luiRead(file, last - CTR_RELEASE_LEGAL_LINES, CTR_RELEASE_LEGAL_LINES)) {
+                while (last > 1 && legal.lines[(last - 1) % CTR_RELEASE_LEGAL_LINES][0] == '\0') last--;
+            }
+            lui.rows = last;
+        }
+        ok = ok && luiRead(file, lui.top, LUI_ROWS);
+        fclose(file);
+    }
+    if (!ok) {
+        luiBlock(fb, LUI_TOP, unavailable, LUI_WHITE);
+        return;
+    }
+    for (int32_t i = 0; i < LUI_ROWS; i++) luiLine(fb, 24, LUI_TOP + LUI_PITCH * i, legal.lines[i], LUI_COLS, LUI_WHITE);
+    // The bar: the track grey, the part shown white.
+    const int32_t track = LUI_ROWS * LUI_PITCH;
+    int32_t span = lui.rows - LUI_ROWS;
+    int32_t size = span > 0 ? track * LUI_ROWS / lui.rows : track;
+    if (size < 4) size = 4;
+    luiFill(fb, 309, LUI_TOP, 2, track, LUI_GREY);
+    luiFill(fb, 308, LUI_TOP + (span > 0 ? (track - size) * lui.top / span : 0), 4, size, LUI_WHITE);
+}
+
+// Credits: each line of credits.txt starts with its colour (Y yellow, G grey, W white); an empty line is a gap.
+static LUI_CODE void luiDrawCredits(CtrMenu* menu) {
+    uint16_t* fb = luiClear(menu, true);
+    int32_t y = 240 - LUI_PITCH * 8 - lui.top;
+    for (const char* s = lui.credits; s != NULL && *s != '\0'; y += LUI_PITCH) {
+        int32_t n = 0;
+        while (s[n] != '\0' && s[n] != '\n') n++;
+        if (n > 1 && y >= 0 && y <= 240 - LUI_PITCH) {
+            int32_t w = n - 1 > LUI_COLS + 4 ? LUI_COLS + 4 : n - 1;
+            uint32_t col = s[0] == 'Y' ? LUI_YELLOW : s[0] == 'G' ? LUI_GREY : LUI_WHITE;
+            int32_t x = (320 - 7 * w) / 2;
+            luiLine(fb, x < 0 ? 0 : x, y, s + 1, w, col);
+        }
+        s += n;
+        if (*s == '\n') s++;
+    }
+    lui.height = y + lui.top - (240 - LUI_PITCH * 8); // the text's height (luiDraw runs before any key is read)
+}
+
+static LUI_CODE void luiDraw(CtrMenu* menu) {
+    CtrLog_beginConsole();
+    if (lui.view == LUI_HUB) luiDrawHub(menu);
+    else if (lui.view == LUI_DOC) luiDrawDoc(menu);
+    else luiDrawCredits(menu);
+    CtrLog_endConsole();
+    lui.dirty = false;
+}
+
+static LUI_CODE void luiLoadCredits(void) {
+    free(lui.credits);
+    lui.credits = NULL;
+    FILE* file = luiOpen(2);
+    if (file == NULL) return;
+    if (fseek(file, 0, SEEK_END) == 0) {
+        long size = ftell(file);
+        char* text = size > 0 && size < 65536 ? malloc((size_t) size + 1u) : NULL;
+        if (text != NULL && fseek(file, 0, SEEK_SET) == 0 && fread(text, 1, (size_t) size, file) == (size_t) size) {
+            text[size] = '\0';
+            lui.credits = text;
+        } else free(text);
+    }
+    fclose(file);
+}
+
+// The options page's Legal notices (credits false) or Credits row was chosen.
+LUI_CODE void CtrLegalui_open(CtrMenu* menu, bool credits) {
+    legal.selected = true;
+    legal.active = true;
+    legal.document = -1;
+    lui.view = credits ? LUI_CREDITS : LUI_HUB;
+    lui.row = 0;
+    lui.top = 0;
+    lui.idle = 0;
+    lui.held = 0;
+    if (credits) luiLoadCredits();
+    luiDraw(menu);
+}
+
+// Each frame while a page here is up (down is 0 on frames without a press): keys, held Up/Down, the credits' roll.
+LUI_CODE void CtrLegalui_update(CtrMenu* menu, u32 down) {
+    if (!legal.active) return;
+    u32 held = hidKeysHeld() | down;
+    if ((down & KEY_SELECT) || ((down & KEY_B) && lui.view != LUI_DOC)) {
+        legal.active = false;
+        free(lui.credits);
+        lui.credits = NULL;
+        return; // the options page draws itself (optKeys marked it dirty)
+    }
+    // Up/Down a row, Left/Right a screen: one step on the press, then every other frame after 10 frames held.
+    int32_t step = 0;
+    if (held & LUI_MOVE) {
+        lui.held = lui.held < 255u ? (uint8_t) (lui.held + 1u) : lui.held;
+        if ((down & LUI_MOVE) || (lui.held > 10u && (lui.held & 1u) == 0)) {
+            step = (held & LUI_UP) ? -1 : (held & LUI_DOWN) ? 1 : (held & LUI_PREV) ? -LUI_ROWS : LUI_ROWS;
+        }
+    } else lui.held = 0;
+    if (lui.view == LUI_HUB) {
+        if (down & (LUI_UP | LUI_DOWN)) {
+            lui.row = (uint8_t) ((lui.row + ((down & LUI_UP) ? 2u : 1u)) % 3u);
+        } else if (down & KEY_A) {
+            if (lui.row == 2u) {
+                legal.active = false;
+                return;
+            }
+            legal.document = lui.row;
+            lui.view = LUI_DOC;
+            lui.top = 0;
+            lui.rows = 0;
+        } else return;
+        lui.dirty = true;
+    } else {
+        int32_t before = lui.top;
+        int32_t end;
+        if (lui.view == LUI_DOC) {
+            if (down & KEY_B) {
+                lui.view = LUI_HUB;
+                lui.dirty = true;
+            } else if (step != 0) lui.top += step;
+            else if (down & KEY_L) lui.top = 0;
+            else if (down & KEY_R) lui.top = lui.rows;
+            end = lui.rows - LUI_ROWS;
+        } else {
+            // The roll: half a pixel a frame after a second untouched; Up/Down move it 3 px a frame while held,
+            // Left/Right/L/R a screen.
+            if (held & (LUI_UP | LUI_DOWN)) {
+                lui.top += (held & LUI_UP) ? -3 : 3;
+                lui.idle = 0;
+            } else if (down & (LUI_PREV | LUI_NEXT | KEY_L | KEY_R)) {
+                lui.top += (down & (LUI_PREV | KEY_L)) ? -192 : 192;
+                lui.idle = 0;
+            } else if (++lui.idle > 30 && (lui.idle & 1) == 0) lui.top++;
+            end = lui.height - LUI_PITCH * 8;
+        }
+        if (lui.top > end) lui.top = end;
+        if (lui.top < 0) lui.top = 0;
+        lui.dirty |= lui.top != before;
+    }
+    if (lui.dirty) luiDraw(menu);
+}
+
+// luiDrawHub joins heading, ' ', URL, a blank line, "Build:", ' ' and the build ID in t[128]; luiCat stops at 126
+// bytes. The sizes below (NULs included; the build ID's storage is a leading NUL, the ID and its NUL) total at least
+// 1 byte more than that text, so this bound keeps it whole for any URL CMake accepts.
+_Static_assert(sizeof(CTR_RELEASE_SOURCE_HEADING) + sizeof(CTR_RELEASE_SOURCE_URL) + sizeof("Build:") +
+               CTR_RELEASE_BUILD_ID_SIZE <= 126 + 1, "Legal page source and build text would not fit its buffer");

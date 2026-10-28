@@ -63,6 +63,17 @@ static UtkWaver utkWaverInfo UTK_BSS_W;
 
 static const char utkWaverLogOn[] = "utkill: waving rows native\n";
 
+#if defined(__arm__) && defined(__3DS__) && !defined(UTKW_SHADOW)
+// The rows go to the renderer in one call (ctr_utkill_waver.inc, at the end of ctr_renderer.c), which draws them as
+// draw_sprite_part_ext would one by one, or answers false (the draw-hash wrapper is in, say) and they are drawn here
+// one by one. They are all worked out first: drawing changes none of a, c, i or anything they are made from.
+#define UTKW_BATCH 1
+#define UTKW_MAX_ROWS 640
+bool CtrUtk_waverRows(Renderer* renderer, int32_t spriteIndex, int32_t subimg, float left, float width, uint32_t colour,
+                      float alpha, int32_t n, const float* tops, const float* xs, const float* ys);
+static float utkRowTop[UTKW_MAX_ROWS] UTK_BSS_W, utkRowX[UTKW_MAX_ROWS] UTK_BSS_W, utkRowY[UTKW_MAX_ROWS] UTK_BSS_W;
+#endif
+
 #define UTK_WAVER_LENGTH 416u
 #define UTK_WAVER_DIGEST 0x903B935Au
 
@@ -163,6 +174,12 @@ static RValue utkShadowRecorder(VMContext* ctx, RValue* args, int32_t argCount) 
 }
 #endif
 
+#if defined(UTKW_PROF)
+#include <3ds/svc.h>
+static uint64_t utkProfEntry, utkProfHead, utkProfDry, utkProfReal;
+static uint32_t utkProfCalls, utkProfRows;
+#endif
+
 static RValue utkWaver(VMContext* ctx, RValue* args, int32_t argCount) UTK_LATE_W;
 static RValue utkWaver(VMContext* ctx, RValue* args, int32_t argCount) {
     const UtkWaver* w = &utkWaverInfo;
@@ -172,6 +189,9 @@ static RValue utkWaver(VMContext* ctx, RValue* args, int32_t argCount) {
         !vmIsPlainNumber(args[1].type) || utkOwns(inst, w->varB) || utkOwns(inst, w->varC) || utkOwns(inst, w->varI))
         return VM_callCodeIndex(ctx, w->codeIndex, args, argCount);
     Runner* runner = ctx->runner;
+#if defined(UTKW_PROF)
+    utkProfEntry = svcGetSystemTick();
+#endif
 #if defined(UTKW_SHADOW)
     RValue savedA = *pa, savedB, savedC, savedI;
     RValue* sb = utkFind(inst, w->varB);
@@ -222,7 +242,56 @@ static RValue utkWaver(VMContext* ctx, RValue* args, int32_t argCount) {
     // clip's `left -= tpag->targetX` becomes -0.0 where the builtin passes +0.0).
     float left = 0.0f;
     __asm__("" : "+m"(left));
+#if defined(UTKW_BATCH)
+    // i starts at sprite_height and drops by 1 a row: fewer rows than the arrays hold when it is below their size.
+    const bool batch = renderer != nullptr && (GMLReal) (UTKW_MAX_ROWS - 2) > i.real;
+    int32_t rows = 0;
+#endif
 
+#if defined(UTKW_PROF)
+    // Measurement builds only (never committed on): the same rows worked out once without drawing (the native's own
+    // cost), then the real loop (the same plus the draws): the difference is what the renderer takes per call.
+    uint64_t utkT0 = svcGetSystemTick();
+    {
+        RValue pa2 = a, pc = c, pi = i;
+        float sink = 0.0f;
+        int32_t rows = 0;
+        while (vmCmpNumbers(&pi, &zero, CMP_GT) != 0) {
+            vmArithNumbers(&pa2, &one, VM_ARITH_ADD, GML_TYPE_VARIABLE);
+            __asm__("" : "+m"(pa2));
+            if (vmCmpNumbers(&pc, &zero, CMP_GT) != 0) {
+                vmArithNumbers(&pc, &tenth, VM_ARITH_SUB, GML_TYPE_VARIABLE);
+                __asm__("" : "+m"(pc));
+            }
+            if (vmCmpNumbers(&pc, &zero, CMP_LT) != 0) {
+                vmArithNumbers(&pc, &tenth, VM_ARITH_SUB, GML_TYPE_VARIABLE);
+                __asm__("" : "+m"(pc));
+            }
+            RValue yi;
+            AOT_SET_REAL(&yi, y, GML_TYPE_VARIABLE);
+            vmArithNumbers(&yi, &pi, VM_ARITH_ADD, GML_TYPE_VARIABLE);
+            __asm__("" : "+m"(yi));
+            RValue q = pa2;
+            vmDivNumbers(&q, &b, false, GML_TYPE_VARIABLE, ctx->currentCodeName);
+            __asm__("" : "+m"(q));
+            AOT_SET_REAL(&q, aotMathSin(q.real), GML_TYPE_VARIABLE);
+            __asm__("" : "+m"(q));
+            vmArithNumbers(&q, &pc, VM_ARITH_MUL, GML_TYPE_VARIABLE);
+            __asm__("" : "+m"(q));
+            RValue xs;
+            AOT_SET_REAL(&xs, x, GML_TYPE_VARIABLE);
+            vmArithNumbers(&xs, &q, VM_ARITH_ADD, GML_TYPE_VARIABLE);
+            __asm__("" : "+m"(xs));
+            sink += (float) xs.real + (float) yi.real;
+            vmArithNumbers(&pi, &one, VM_ARITH_SUB, GML_TYPE_VARIABLE);
+            __asm__("" : "+m"(pi));
+            rows++;
+        }
+        __asm__("" : "+m"(sink));
+        utkProfRows += (uint32_t) rows;
+    }
+    uint64_t utkT1 = svcGetSystemTick();
+#endif
     // 0048-019C: the rows, while i > 0 (Cmp.i.v Gt: the interpreter's compare, with its epsilon).
     while (vmCmpNumbers(&i, &zero, CMP_GT) != 0) {
         vmArithNumbers(&a, &one, VM_ARITH_ADD, GML_TYPE_VARIABLE);   // a += 1
@@ -254,6 +323,14 @@ static RValue utkWaver(VMContext* ctx, RValue* args, int32_t argCount) {
         utkShadowNote(utkShadowNative, &utkShadowNativeCount, spriteIndex, subimg, left, (float) i.real, width, 1.0f,
                       (float) xs.real, (float) yi.real, 1.0f, 1.0f, colour, alpha);
 #else
+#if defined(UTKW_BATCH)
+        if (batch) {
+            utkRowTop[rows] = (float) i.real;
+            utkRowX[rows] = (float) xs.real;
+            utkRowY[rows] = (float) yi.real;
+            rows++;
+        } else
+#endif
         if (renderer != nullptr) {
             Renderer_drawSpritePartExt(renderer, spriteIndex, subimg, left, (float) i.real, width, 1.0f,
                                        (float) xs.real, (float) yi.real, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, colour, alpha);
@@ -262,9 +339,33 @@ static RValue utkWaver(VMContext* ctx, RValue* args, int32_t argCount) {
         vmArithNumbers(&i, &one, VM_ARITH_SUB, GML_TYPE_VARIABLE);   // i -= 1 (Sub.i.v)
         __asm__("" : "+m"(i));
     }
+#if defined(UTKW_BATCH)
+    if (batch && !CtrUtk_waverRows(renderer, spriteIndex, subimg, left, width, colour, alpha, rows, utkRowTop, utkRowX,
+                                   utkRowY)) {
+        for (int32_t k = 0; rows > k; k++)
+            Renderer_drawSpritePartExt(renderer, spriteIndex, subimg, left, utkRowTop[k], width, 1.0f, utkRowX[k],
+                                       utkRowY[k], 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, colour, alpha);
+    }
+#endif
     *utkFind(inst, w->varA) = a;
     *utkFind(inst, w->varC) = c;
     *utkFind(inst, w->varI) = i;
+#if defined(UTKW_PROF)
+    uint64_t utkT2 = svcGetSystemTick();
+    utkProfCalls++;
+    utkProfHead += utkT0 - utkProfEntry;
+    utkProfDry += utkT1 - utkT0;
+    utkProfReal += utkT2 - utkT1;
+    if (utkProfCalls % 300 == 0) {
+        // Ticks at 268111856 Hz; microseconds per call and per row.
+        double us = 1e6 / 268111856.0, n = (double) utkProfCalls, rows = (double) utkProfRows;
+        logInfo("utkill waver prof: %u calls, %.1f rows/call | per call: head %.1f us, compute %.1f us, compute+draw "
+                "%.1f us, draw %.1f us | per row: compute %.2f us, draw %.2f us\n", (unsigned) utkProfCalls, rows / n,
+                (double) utkProfHead * us / n, (double) utkProfDry * us / n, (double) utkProfReal * us / n,
+                (double) (utkProfReal - utkProfDry) * us / n, (double) utkProfDry * us / rows,
+                (double) (utkProfReal - utkProfDry) * us / rows);
+    }
+#endif
 #if defined(UTKW_SHADOW)
     (void) renderer;
     RValue na = a, nb = *utkFind(inst, w->varB), nc = c, ni = i;

@@ -359,6 +359,19 @@
           "file": "tools/release/licenses/winpthreads-COPYING"
         }
       ]
+    },
+    {
+      "name": "bannertool 1.2.3 source patch",
+      "license": "MIT",
+      "paths": [
+        "tools/release/builder/bannertool-1.2.3-clang.patch"
+      ],
+      "provenance": "Local minimal patch for Apple clang: replace the variable-size initialized padding array with four zero bytes; retain the original padLength write (1-3 bytes). Upstream pinned source: https://github.com/carstene1ns/3ds-bannertool/releases/tag/1.2.3 . Copyright and MIT permission reproduced unchanged.",
+      "texts": [
+        {
+          "file": "tools/release/licenses/bannertool-MIT.txt"
+        }
+      ]
     }
   ]
 }

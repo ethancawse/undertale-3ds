@@ -23,7 +23,7 @@
 //   runner's passes left them (Instance_computeSpeedFromComponents), with direction0 for the direction it keeps when
 //   both are 0.
 //
-// Nothing in UNDERTALE 1.08 can tell (scratch/sw/scan.py, the results file lists every event and observer): the
+// Nothing in UNDERTALE 1.08 can tell (a scan of every event and observer in its code): the
 // pixel's events are exactly Create, Outside Room and Animation End; no collision event names it; the only code that
 // looks at its instances is instance_exists(obj_whtpxlgrav) (answered here), and the only with (all) is in
 // obj_vsflowey_heartdefeated's Create. Anything that could see the instances turns the swarm into runner instances
@@ -53,7 +53,7 @@
 // - Anything that can't be placed is counted and logged ("UNPROVEN"); none can happen in UNDERTALE 1.08.
 // - The draw list gets span entries for runs of strips at their depth (Utsw_merge, Utsw_span), drawn as their
 //   instances' draw_self would draw them.
-// scratch/sw/scan3.py: the only code that looks at the strips' instances is instance_exists(obj_blkpxltall) in
+// A scan of the game's code: the only code that looks at the strips' instances is instance_exists(obj_blkpxltall) in
 // obj_vaporized's Step (object 158, before the strips' turn). Nothing reads a strip's id or user event 0. Only
 // obj_vsflowey_heart's Step runs after the strips' turn, and making obj_vsflowey_heartdefeated materializes first.
 //
@@ -64,7 +64,7 @@
 // - The pixel: by the object's name, its exact event list, and its three code entries by their bytecode
 //   (Utkill_codeIs, functions by name).
 // - The strips: by obj_blkpxltall's fields and exact event list, and its three entries and obj_vaporized's Alarm 0
-//   by their digests (swCanon; scratch/sw/canon.py computes the same digests from data.win).
+//   by their digests (swCanon; an analysis script computes the same digests from data.win).
 // - A strip mismatch leaves the strips runner instances. A pixel mismatch, the off-switch file
 //   (sdmc:/3ds/undertale-3ds/utswarm-off) or anything unexpected leaves everything a runner instance.
 // The file is looked for once, at the first frame end, and never in a dust maker's Draw, which often runs while a
@@ -102,6 +102,8 @@
 #define SW_COLD __attribute__((noinline, cold, section(".text.late.utswarm")))
 
 void CtrBench_handleRoomChange(Runner* runner);
+// offkill (platform/3ds/source/z_offkill.c): CtrBench_handleRoomChange, then the early destroy of bullets past the view.
+void OffKill_roomChange(Runner* runner);
 
 void Utsw_createDrop(VMContext* ctx, int32_t funcIndex, RValue* args, int32_t argCount) SW_LATE;
 void Utsw_animate(Runner* runner) SW_LATE;
@@ -186,7 +188,7 @@ enum { SWP_BEFORE, SWP_AFTER, SWP_UNKNOWN };
 static Instance* swBuild(Runner* runner, const UtswPixel* p) SW_COLD;
 static Instance* swBuild(Runner* runner, const UtswPixel* p) {
     GameObject* o = &runner->dataWin->objt.objects[swObject];
-    Instance* inst = Instance_create(p->id, swObject, (GMLReal) p->xstart, (GMLReal) p->ystart);
+    Instance* inst = Instance_create(p->id, swObject, (GMLReal) p->xstart, (GMLReal) p->ystart); inst->drawElementOrder = p->drawKey;
     inst->roomIndex = swRoomIndex;
     inst->spriteIndex = o->spriteId;
     inst->visible = o->visible;
@@ -275,7 +277,7 @@ static void swSetReal(Instance* inst, int32_t varID, GMLReal v) {
 static Instance* swBuildStrip(Runner* runner, const UtswPixel* s) SW_COLD;
 static Instance* swBuildStrip(Runner* runner, const UtswPixel* s) {
     GameObject* o = &runner->dataWin->objt.objects[swStripObject];
-    Instance* inst = Instance_create(s->id, swStripObject, (GMLReal) s->xstart, (GMLReal) s->ystart);
+    Instance* inst = Instance_create(s->id, swStripObject, (GMLReal) s->xstart, (GMLReal) s->ystart); inst->drawElementOrder = s->drawKey;
     inst->roomIndex = swRoomIndex;
     inst->spriteIndex = o->spriteId;
     inst->visible = o->visible;
@@ -683,7 +685,7 @@ static bool swFuncIs(VMContext* ctx, uint32_t index, const char* name) {
 
 // swCanon: FNV-1a 64 over a code entry's instructions (as the VM runs them, operands patched): each instruction word,
 // then a call's function by its name, a variable operand by its type bits and its name, a Push.s by its text (each
-// name or text with its NUL), any other operand bytes as they are. Sizes as gmlaot.Instr's. scratch/sw/canon.py
+// name or text with its NUL), any other operand bytes as they are. Sizes as gmlaot.Instr's. The analysis script
 // gives the same digest from data.win. False when the entry isn't exactly wordCount words long or doesn't read
 // straight through.
 static uint64_t swFnv(uint64_t h, const void* p, size_t n) SW_COLD;
@@ -758,7 +760,7 @@ static int32_t swEventDigest(DataWin* dw, const ObjectEvent* ev, uint32_t subtyp
 // that makes them:
 //     Create:      dt = instance_create(x, y, obj_whtpxlgrav)
 //     Step:        if (!instance_exists(dt)) instance_destroy()
-//     User event 0: dt.image_xscale = image_xscale   (nothing calls it: scratch/sw/scan3.py)
+//     User event 0: dt.image_xscale = image_xscale   (nothing calls it)
 // No parent or children, not solid or persistent, no physics; a sprite of one subimage (image_index stays 0) and no
 // Draw event (drawn as draw_self). Null when they can go in the swarm (swStripObject, swVapObject and swDtVar set).
 static const char* swStripBind(VMContext* ctx) SW_COLD;
@@ -1027,7 +1029,7 @@ static bool swCreate(VMContext* ctx, RValue* args) {
     swProtos(runner);
     if (swEnd == swCap && !swRoom()) return false;
 
-    uint32_t id = runner->nextInstanceId++;
+    uint32_t id = runner->nextInstanceId++; int32_t key = --Utorder_counter;
     if (runner->createCounts != nullptr) runner->createCounts[swObject]++;
     runner->drawableListStructureDirty = true;
 
@@ -1076,7 +1078,7 @@ static bool swCreate(VMContext* ctx, RValue* args) {
     p->xstart = m->xstart;
     p->ystart = m->ystart;
     p->direction0 = m->direction;
-    p->id = id;
+    p->id = id; p->drawKey = key;
     p->creator = caller->instanceId;
     swAdded++;
     return true;
@@ -1118,7 +1120,7 @@ static bool swCreateStrip(VMContext* ctx, RValue* args, RValue* out) {
     if (swEnd == swCap && !swRoom()) return false;
     if (swStEnd == swStCap && !swStRoom()) return false;
 
-    uint32_t id = runner->nextInstanceId++;
+    uint32_t id = runner->nextInstanceId++; int32_t key = --Utorder_counter;
     if (runner->createCounts != nullptr) runner->createCounts[swStripObject]++;
     runner->drawableListStructureDirty = true;
 
@@ -1151,7 +1153,7 @@ static bool swCreateStrip(VMContext* ctx, RValue* args, RValue* out) {
     r->x = r->xprevious = r->xstart = st->x;
     r->y = r->yprevious = r->ystart = st->y;
     r->imageIndex = swStripDraw->imageIndex;
-    r->id = id;
+    r->id = id; r->drawKey = key;
     r->creator = caller->instanceId;
     swStripsAdded++;
     *out = RValue_makeReal((GMLReal) id);
@@ -1391,22 +1393,22 @@ static void swSpans(const Drawable* l, int32_t n, int32_t* i, Drawable* d, const
                     int32_t end, int8_t strip) SW_LATE;
 static void swSpans(const Drawable* l, int32_t n, int32_t* i, Drawable* d, const UtswPixel* a, int32_t base,
                     int32_t end, int8_t strip) {
-    for (int32_t j = base; end > j;) {
-        d->order = (int32_t) a[j].id;
+    for (int32_t j = end - 1; j >= base;) {
+        d->order = a[j].drawKey;
         while (n > *i && 0 > swCompareDrawables(&l[*i], d)) (*i)++;
         int32_t start = j;
-        j++;
+        j--;
         if (n > *i) {
-            while (end > j) {
-                d->order = (int32_t) a[j].id;
+            while (j >= base) {
+                d->order = a[j].drawKey;
                 if (0 > swCompareDrawables(&l[*i], d)) break;
-                j++;
+                j--;
             }
         } else {
-            j = end;
+            j = base - 1;
         }
-        arrput(swSpanFirst, start);
-        arrput(swSpanCount, j - start);
+        arrput(swSpanFirst, j + 1);
+        arrput(swSpanCount, start - j);
         arrput(swSpanAt, *i);
         arrput(swSpanStrip, strip);
     }
@@ -1447,7 +1449,7 @@ void Utsw_merge(Runner* runner) {
         while (src >= swSpanAt[g]) l[w--] = l[src--];
         Drawable* d = swSpanStrip[g] ? &ds : &dp;
         const UtswPixel* a = swSpanStrip[g] ? swSt : swPx;
-        d->order = (int32_t) a[swSpanFirst[g] + swSpanCount[g] - 1].id;
+        d->order = a[swSpanFirst[g]].drawKey;
         d->elementOrder = UTSW_SPAN0 - g;
         l[w--] = *d;
     }
@@ -1513,7 +1515,7 @@ void Utsw_handleRoomChange(Runner* runner) {
                 (int) runner->frameCount, (unsigned) swAdded, (unsigned) swStripsAdded, (unsigned) swMaterialized,
                 (unsigned) swMidPass, (unsigned) swUnproven);
     }
-    CtrBench_handleRoomChange(runner);
+    OffKill_roomChange(runner);
 #if defined(UTSW_TEST_EVERY)
     // Test builds only (never committed on): the swarm made instances every UTSW_TEST_EVERY frames.
     if (runner->frameCount % UTSW_TEST_EVERY == 0) swMaterialize(runner, WHY_TEST);

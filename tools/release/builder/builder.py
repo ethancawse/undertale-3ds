@@ -17,16 +17,17 @@ Options:
     --openh264                      (--cli) build the software video decoder
     --sd DIR                        (--cli) SD card to copy to; without it the build stays in <work>/out
     --save-dir DIR                  PC save folder instead of %LOCALAPPDATA%\\<GAME> (read-only)
-    --import-saves                  (--cli) copy PC saves into the SD card's saves folder
-    --overwrite-saves               (--cli) replace existing 3DS saves on the SD card (backs them up first)
-    --enable-wifi-send              offer "Send over Wi-Fi" (files uploaded to ftpd)
+    --import-saves                  (--cli) copy PC saves to the 3DS (with --sd or --ftp)
+    --overwrite-saves               (--cli) replace existing 3DS saves (backs them up first)
+    --ftp IP:PORT                  (--cli) install over Wi-Fi using ftpd (default port 5000)
+    --enable-wifi-send              old option, no longer needed (Wi-Fi is always offered)
     --no-texprep                    (--cli) leave texture preparation to the 3DS (its first start takes longer)
     --toolchain-dry-run             the wizard's setup buttons only print what they would run
     --boring                       start the wizard with standard platform widgets (also for autopilot)
     --autopilot PLAN.json           drive the wizard's pages from a plan and print each page (testing)
     --registry-export FILE.reg      read Steam/GOG registry keys from an export instead of the registry (support)
 
-Nothing is uploaded; the only downloads are the toolchain steps you agree to.
+Wi-Fi sends only to the 3DS you choose. Toolchain downloads ask first.
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ FIXED_GAME = None
 
 def parse(argv):
     o = {"game": FIXED_GAME, "work": None, "devkitpro": None, "folder": None, "target": "both", "cia": False,
-         "sd": None, "save_dir": None, "import_saves": False, "overwrite_saves": False, "wifi": False,
+         "sd": None, "ftp": None, "save_dir": None, "import_saves": False, "overwrite_saves": False, "wifi": False,
          "tc_dry": False, "autopilot": None, "reg": None, "mode": "gui", "texprep": True, "boring": None,
          "chapters": None, "openh264": False}
     flags = {"--dry-run": ("mode", "dry"), "--cli": ("mode", "cli"), "--cia": ("cia", True),
@@ -66,7 +67,7 @@ def parse(argv):
              "--boring": ("boring", True), "--no-texprep": ("texprep", False), "--openh264": ("openh264", True)}
     values = {"--game": "game", "--work": "work", "--devkitpro": "devkitpro", "--folder": "folder",
               "--target": "target", "--sd": "sd", "--save-dir": "save_dir", "--autopilot": "autopilot",
-              "--registry-export": "reg", "--chapters": "chapters"}
+              "--registry-export": "reg", "--chapters": "chapters", "--ftp": "ftp"}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -102,6 +103,16 @@ def parse(argv):
     for k in ("work", "devkitpro", "folder", "sd", "save_dir"):
         if o[k]:
             o[k] = os.path.abspath(o[k])
+    if o['ftp']:
+        import ftp_delivery
+        try:
+            host, port = ftp_delivery.endpoint(o['ftp'])
+            o['ftp'] = '%s:%d' % (host, port)
+            if o['sd']:
+                raise ValueError('Use --sd or --ftp, not both.')
+        except (OSError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
     return o
 
 
@@ -208,21 +219,35 @@ def cli(o, out=print):
                 last[0], last[1] = p.stage, p.percent // 10
                 out("  %s%s %s" % (pipeline.STAGES[p.stage], " %d%%" % p.percent if p.stage == 2 else "",
                                    pipeline.format_eta(p.estimate())))
-        b = pipeline.Build(product, tc, work, t, folder, outputs=outputs, on_progress=prog,
-                           parts=parts, openh264=o['openh264'])
-        out("Building %s; log: %s" % (t, b.log_path))
         try:
+            b = pipeline.Build(product, tc, work, t, folder, outputs=outputs, on_progress=prog, store=v.result.store, parts=parts, openh264=o['openh264'])
+            out("Building %s; log: %s" % (t, b.log_path))
             a, rec = b.run()
         except pipeline.BuildFailed as e:
             out(str(e))
-            out("Log: %s" % e.log_path)
+            if e.log_path:
+                out("Log: %s" % e.log_path)
             return 1
         arts += a
         out("Built %s in %.1f s (%d compiler warnings)." % (t, rec["seconds"], rec["compiler_warnings"]))
         for x in a:
             out("  %s  %d bytes  sha256 %s" % (x.path, x.size, x.sha256))
     saves_res = None
-    if o["sd"]:
+    if o.get('ftp'):
+        import ftp_delivery
+        import ftp_saves
+        import preferences
+        try:
+            ftp_delivery.send_product(o['ftp'], product, arts, folder, work, parts or None, log=out)
+            preferences.save(work, preferences.load(work)['boring'], console=o['ftp'])
+            if o['import_saves']:
+                existing = ftp_saves.inspect(o['ftp'], product)
+                scan = deliver.scan_saves(product, probes.pc_save_dir(game))
+                saves_res = ftp_saves.copy(o['ftp'], product, scan, existing, overwrite=o['overwrite_saves'])
+        except (OSError, __import__('ftplib').Error) as exc:
+            out(ftp_delivery.error_text(exc))
+            return 1
+    elif o["sd"]:
         try:
             items = deliver.plan_sd_copy(o["sd"], product, arts, folder, parts or None)
             copied, skipped, nbytes, tex = deliver.copy_with_textures(o["sd"], items, product, folder, work,
@@ -258,7 +283,7 @@ def cli(o, out=print):
         out("Saved %d files (%.1f MB) to %s." % (saved.files, saved.bytes / 1e6, saved.root))
         out(saved.textures.message)
     out(deliver.instructions(product, targets, outputs, o["sd"], save_result=saves_res,
-                             delivery="sd" if o["sd"] else "files"))
+                             delivery="wifi" if o.get('ftp') else "sd" if o["sd"] else "files"))
     return 0
 
 

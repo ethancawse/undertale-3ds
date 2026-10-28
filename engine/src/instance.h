@@ -136,4 +136,27 @@ void Instance_computeComponentsFromSpeed(Instance* inst);
 
 char* Instance_toStringFancy(Instance* inst, DataWin* dataWin);
 
+// utorder (credfix, ruling 2026-10-27; UNDERTALE on the 3DS, where runner.c draws through utkDrawRoom: the
+// conditions of runner.h's UTK_PLAIN_RUNS): an instance's draw order key among the instances of its depth, ascending =
+// drawn first. GameMaker 1.4 puts an instance at the front of its depth's list (drawn first, so under the others) when
+// it is made and when its depth changes to another value, so at equal depth the newest is drawn first and the oldest
+// is on top. drawElementOrder (GameMaker 2's layer element index, never set in a 1.4 game) holds it:
+// platform/3ds/source/z_utorder.c takes each new key from a counter that only goes down. Elsewhere the id orders them.
+#if defined(PLATFORM_3DS) && defined(ENABLE_WAD16) && !defined(CTRPORT_RENDER_TIMING) && !defined(ENABLE_VM_TRACING)
+#define UTORDER_ON 1
+extern int32_t Utorder_counter;
+struct Runner;
+void Utorder_keep(struct Runner* runner);
+#define UTORDER_KEY(inst) ((inst)->drawElementOrder)
+#define UTORDER_KEEP(runner) Utorder_keep(runner)
+#define UTORDER_ADD_AT(count, n) ((count) - 1 - (n)) // the draw-list keep adds the new ones newest first
+// false, after the keep records the draw ranks z_utorder.c's in-place key update reads (runner.c's recordDrawRanks)
+#define UTORDER_KEPT(runner) (recordDrawRanks(runner), false)
+#else
+#define UTORDER_KEY(inst) ((int32_t) (inst)->instanceId)
+#define UTORDER_KEEP(runner) do { if ((runner)->drawableListStructureDirty) Utk_keepDrawList(runner); } while (0)
+#define UTORDER_ADD_AT(count, n) (n)
+#define UTORDER_KEPT(runner) false
+#endif
+
 #endif /* _BS_INSTANCE_H_ */

@@ -1,0 +1,5 @@
+--- a/source/3ds/lz11.cpp
++++ b/source/3ds/lz11.cpp
+@@ -115 +115 @@
+-		u8 pad[padLength] = {0};
++		u8 pad[4] = {0};

@@ -21,6 +21,12 @@ no marker, so the console checks each page. Other files in the folder (rooms.dtm
 are left as they are.
 
 Rounded tiles only (the cache folder). The exact-colours folder (cache_exact) is the console's.
+
+Half-resolution art (products.HALFART, UNDERTALE's Old 3DS build): that build keeps its pages in a folder of its own,
+cache_lt_<n>, n from its patch (platform/3ds/source/ctr_halfart.c). build.sh leaves the patch and the patched pages
+(tools/analysis/halfart_pack.py --pages) in the build folder; the pages go into a copy of the player's data.win in the
+work folder, each in its own blob's space (same file size, same blob offsets and sizes, so the same page headers),
+and texprep, unchanged, writes from that copy what the console would. Written as well as "cache", not instead.
 """
 from __future__ import annotations
 
@@ -59,9 +65,10 @@ PAD_START, PAD_END = 52, 56
 # docs/release/builder-status.md, "Texture preparation on the PC".
 # Rebuild and re-pin whenever any file in `texprep --sources` changes (a release step, builder-status.md).
 PINNED = {
-    # MSYS2 UCRT64 gcc 16.1.0, static, UTF-8 paths, sources texprep-src-1:0c7a8a5f9e7bb7dd... (2026-10-23)
-    ("win32", "x86_64"): ("texprep-windows-x64.exe", 351742,
-                          "e1eb3e393424a90210072833e55c26592f6fe2d4de1aabd323ff4ba29410c473"),
+    # MSYS2 UCRT64 gcc 16.1.0, static, UTF-8 paths (2026-10-27).
+    # texprep-src-1:1d5fb803283d665a541af94d6ebc1e0987bdb76ee4fcf8daa09cddd9ba63b8f9
+    ("win32", "x86_64"): ("texprep-windows-x64.exe", 354294,
+                          "c3b177ed1d13440ba9d33f06d5b9cbe22607dc96ceace34382f75c500455455f"),
     # Linux builds locally with the system compiler. The former static glibc 2.39 binary is
     # retired: it lacked a corresponding-source/relink kit and did not fit older Debian hosts.
     # macOS (arm64 and x86_64): texprep-macos-universal, built on an M1 Mac (steps in builder-status.md).
@@ -237,37 +244,151 @@ def sd_cache_dir(product, rel_dir):
     return "/".join(p for p in (product.sd_data_dir, rel_dir, CACHE_DIR) if p)
 
 
-def prepare(tool, product, folder, work, parts=None, run=None, log=print):
+def _run(argv):
+    return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8',
+                          errors='replace', timeout=1800, **hidden_options())
+
+
+def _run_texprep(tool, data_win, local, name, run, log, source=None):
+    """texprep from data_win (or the copy at source) into a fresh local folder: (page count, bytes) or a problem
+    string."""
+    if os.path.isdir(local):
+        shutil.rmtree(local)        # always from scratch, so the output depends only on data.win and the tool
+    os.makedirs(local)
+    try:
+        pages = page_count(data_win)
+        r = run([tool.path, source or data_win, local])
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        return "%s: %s" % (name, e)
+    out = (r.stdout or "").strip()
+    if out:
+        log(out.replace(source or data_win, name))
+    if r.returncode != 0 or not os.path.isfile(os.path.join(local, MARKER)):
+        return "%s: texprep exit %d" % (name, r.returncode)
+    missing = [i for i in range(pages) if not os.path.isfile(os.path.join(local, page_name(i)))]
+    # The console writes no file for an entry without an image; the marker counts every entry.
+    size = sum(os.path.getsize(os.path.join(local, page_name(i))) for i in range(pages) if i not in missing)
+    size += os.path.getsize(os.path.join(local, MARKER))
+    return pages, size
+
+
+def prepare(tool, product, folder, work, parts=None, run=None, log=print, halfart=None):
     """Runs texprep for every delivered data.win into <work>/texcache/<game>/... Returns (sets, problems): only
-    complete folders are in sets; a data.win whose folder didn't complete is left to the console."""
-    run = run or (lambda argv: subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                              encoding='utf-8', errors='replace',
-                                              timeout=1800, **hidden_options()))
+    complete folders are in sets; a data.win whose folder didn't complete is left to the console. halfart: None
+    follows products.HALFART; on, UNDERTALE's half-resolution art folder is prepared too (halfart_set)."""
+    import products
+    run = run or _run
     sets, problems = [], []
     for data_win, rel in data_wins(product, folder, parts):
         local = os.path.join(work, "texcache", product.key, *(rel.split("/") if rel else []), CACHE_DIR)
-        if os.path.isdir(local):
-            shutil.rmtree(local)        # always from scratch, so the output depends only on data.win and the tool
-        os.makedirs(local)
-        name = rel or "data.win"
-        try:
-            pages = page_count(data_win)
-            r = run([tool.path, data_win, local])
-        except (OSError, ValueError, subprocess.SubprocessError) as e:
-            problems.append("%s: %s" % (name, e))
+        got = _run_texprep(tool, data_win, local, rel or "data.win", run, log)
+        if isinstance(got, str):
+            problems.append(got)
             continue
-        out = (r.stdout or "").strip()
-        if out:
-            log(out.replace(data_win, name))
-        if r.returncode != 0 or not os.path.isfile(os.path.join(local, MARKER)):
-            problems.append("%s: texprep exit %d" % (name, r.returncode))
-            continue
-        missing = [i for i in range(pages) if not os.path.isfile(os.path.join(local, page_name(i)))]
-        # The console writes no file for an entry without an image; the marker counts every entry.
-        size = sum(os.path.getsize(os.path.join(local, page_name(i))) for i in range(pages) if i not in missing)
-        size += os.path.getsize(os.path.join(local, MARKER))
-        sets.append(CacheSet(data_win, sd_cache_dir(product, rel), local, pages, size))
+        sets.append(CacheSet(data_win, sd_cache_dir(product, rel), local, *got))
+        if not rel and products.halfart(product.key, "o3ds", halfart):
+            cs, problem = halfart_set(tool, product, data_win, work, run, log)
+            if cs is not None:
+                sets.append(cs)
+            else:
+                problems.append(problem)
     return sets, problems
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Half-resolution art (products.HALFART)
+
+# What build.sh writes for the release's "halfart" (box filter), relative to the build's source tree.
+HALFART_PATCH = ("build", "halfart-undertale", "undertale-box")
+HALFART_HEADER = struct.Struct("<4sIIIQIIII")    # ctr_halfart.c HaHeader
+HALFART_ITEM = 28                                # its HaItem
+
+
+def halfart_cache_run(patch):
+    """n in the build's cache_lt_<n>: the patch's SHA-256, first 32 bits, top bit set (CMake's
+    CTRPORT_HALFART_CACHE_RUN), XOR texture_cache_run, which is 0 outside tests."""
+    return int(hashlib.sha256(patch).hexdigest()[:8], 16) | 0x80000000
+
+
+def _fnv1a(data):
+    h = 0x811C9DC5
+    for b in data:
+        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def halfart_pages(patch, pages_file):
+    """The patch's pages ({page: first-4096-bytes hash}) and the build's patched pages [(page, blob offset, blob
+    size, PNG)], each page of the patch once. Raises ValueError for files that don't fit together."""
+    if len(patch) < HALFART_HEADER.size:
+        raise ValueError("short patch")
+    magic, version, _size, _game, _stamp, items, npages, _ops, _ = HALFART_HEADER.unpack_from(patch)
+    if magic != b"DTHR" or version != 1:
+        raise ValueError("not a version 1 patch")
+    at = HALFART_HEADER.size + items * HALFART_ITEM
+    if at + 16 * npages > len(patch):
+        raise ValueError("short patch")
+    hashes = {}
+    for k in range(npages):
+        page, h, _first, _count = struct.unpack_from("<4I", patch, at + 16 * k)
+        hashes[page] = h
+    if pages_file[:44] != struct.pack("<4sII", b"DTHP", 1, npages) + hashlib.sha256(patch).digest():
+        raise ValueError("the pages file is not this patch's")
+    out, at = [], 44
+    for _k in range(npages):
+        if at + 16 > len(pages_file):
+            raise ValueError("short pages file")
+        page, off, size, n = struct.unpack_from("<4I", pages_file, at)
+        at += 16
+        if page not in hashes or any(page == o[0] for o in out) or at + n > len(pages_file) or n > size:
+            raise ValueError("the pages file is not this patch's")
+        out.append((page, off, size, pages_file[at:at + n]))
+        at += n
+    if at != len(pages_file):
+        raise ValueError("the pages file is not this patch's")
+    return hashes, out
+
+
+def halfart_set(tool, product, data_win, work, run=None, log=print):
+    """(CacheSet, None) for the half-resolution art build's own folder, or (None, problem): the console prepares it
+    when the build's patch is missing, isn't for this data.win, or texprep doesn't finish."""
+    base = os.path.join(work, "src", *HALFART_PATCH)
+    name = "data.win (half-resolution art)"
+    try:
+        with open(base + ".dthr", "rb") as f:
+            patch = f.read()
+        with open(base + ".pages", "rb") as f:
+            pages_file = f.read()
+        hashes, pages = halfart_pages(patch, pages_file)
+        if HALFART_HEADER.unpack_from(patch)[2] != os.path.getsize(data_win):
+            raise ValueError("the build's patch is for another data.win")
+    except (OSError, ValueError) as e:
+        return None, "%s: %s" % (name, e)
+    n = halfart_cache_run(patch)
+    copy = os.path.join(work, "texcache", "halfart", "data.win")
+    os.makedirs(os.path.dirname(copy), exist_ok=True)
+    try:
+        shutil.copyfile(data_win, copy)
+        with open(copy, "r+b") as f:
+            for page, off, size, png in pages:
+                f.seek(off)
+                if _fnv1a(f.read(4096)) != hashes[page]:
+                    raise ValueError("page %d is not the one the build's patch was made from" % page)
+                f.seek(off)
+                f.write(png + bytes(size - len(png)))
+        got = _run_texprep(tool, data_win, os.path.join(work, "texcache", product.key, "cache_lt_%u" % n), name,
+                           run or _run, log, source=copy)
+    except (OSError, ValueError) as e:
+        got = "%s: %s" % (name, e)
+    finally:
+        try:
+            os.remove(copy)     # a copy of the player's game data: never kept
+        except OSError:
+            pass
+    if isinstance(got, str):
+        return None, got
+    return CacheSet(data_win, "/".join((product.sd_data_dir, "cache_lt_%u" % n)),
+                    os.path.join(work, "texcache", product.key, "cache_lt_%u" % n), *got), None
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -451,13 +572,13 @@ class Result:
 
 
 def deliver_textures(sd_root, product, folder, work, parts=None, tool=None, fs=None, progress=None,
-                     cancelled=lambda: False, log=print, run=None):
+                     cancelled=lambda: False, log=print, run=None, halfart=None):
     """Prepare on the PC and write to the card. Failures to prepare are not errors (the console prepares); a failed
     card write raises OSError like any other copy."""
     tool = tool or find_tool(work, log=log)
     if not tool.ok:
         return Result(False, "Textures: the 3DS will prepare them the first time (%s)." % tool.message)
-    sets, problems = prepare(tool, product, folder, work, parts, run=run, log=log)
+    sets, problems = prepare(tool, product, folder, work, parts, run=run, log=log, halfart=halfart)
     for pr in problems:
         log("texprep: " + pr)
     if not sets:
@@ -493,6 +614,10 @@ def dry_run_lines(product, folder, work, parts=None, tool=None):
         lines.append("  %s (%s) -> sd:/%s/: keep if it matches; else delete %s, write pages as .part then rename, "
                      "remove pages beyond the count, write %s last; keep rooms.dtm, bytecode.bin, data-version.txt"
                      % (rel or "data.win", n, sd_cache_dir(product, rel), MARKER, MARKER))
+        import products
+        if not rel and products.halfart(product.key):
+            lines.append("  %s, half-resolution art (the Old 3DS build) -> sd:/%s/cache_lt_<n>/ (n from the build's "
+                         "patch), the same way, from the build's patched pages" % (rel or "data.win", product.sd_data_dir))
     return lines
 
 
@@ -501,12 +626,14 @@ def data_version_dry_run_lines(product, folder, parts=None, source_root=SOURCE_R
     revision = data_versions_revision(source_root)
     lines = ["Version check on the PC: %s" % ("data_versions.inc revision %d" % revision if revision is not None
                                              else "off (no data_versions.inc revision); the 3DS hashes each data.win")]
+    if revision is not None:
+        lines[0] += "; runtime revision selected from the verified digest (GOG may differ)"
     if revision is None or folder is None or not os.path.isdir(folder):
         return lines
     for data_win, rel in data_wins(product, folder, parts):
-        lines.append("  %s -> sd:/%s/%s: keep if revision, size, SHA-256 and path match; else write \"%d <size> %d "
+        lines.append("  %s -> sd:/%s/%s: keep if revision, size, SHA-256 and path match; else write \"<runtime-revision> <size> %d "
                      "<SHA-256>\" + \"%s\" as .part then rename, after the texture folder"
-                     % (rel or "data.win", sd_cache_dir(product, rel), DATA_VERSION, revision, DATA_VERSION_MTIME,
+                     % (rel or "data.win", sd_cache_dir(product, rel), DATA_VERSION, DATA_VERSION_MTIME,
                         console_data_win_path(product, rel)))
     return lines
 
@@ -518,25 +645,46 @@ def data_version_dry_run_lines(product, folder, parts=None, source_root=SOURCE_R
 # (platform/3ds/source/ctr_data_version.c, CtrDataVersion_check): 24-64 s per data.win on an Old 3DS. It caches the
 # result in <data.win folder>/cache/data-version.txt as fprintf("%u %llu %lld %s\n%s\n", revision, st_size,
 # st_mtime, digest, data.win path) and skips the hash while all five fields still match. The builder writes that
-# same file, byte for byte, after the texture folder. mtime is written as 0: libctru's stat gives st_mtime 0 for SD
-# files in Azahar; on hardware this is unconfirmed. If a console reports another mtime, it sees a mismatch, hashes
-# as before and rewrites the file itself, so the worst case is losing the gain. The console's check is unchanged.
+# base receipt after freshly hashing the final destination. mtime is 0: libctru stat reports 0 on SD (hardware and
+# Azahar). The runtime adds a FAT1 archive timestamp on first trust, and rehashes if that timestamp changes.
+# A receipt authorizes the warning and generated-data consumers; it is not independent per-boot content proof.
 
 DATA_VERSION = "data-version.txt"
 DATA_VERSION_MTIME = 0
 FAT_SLACK = 2.0     # as deliver.FAT_SLACK: FAT keeps modification times to 2 s
 _REVISION_RE = re.compile(r"^\s*#define\s+DATA_VERSIONS_REVISION\s+([0-9]+)\s*$", re.M)
-_DATA_VERSION_RE = re.compile(r"^([0-9]+) ([0-9]+) (-?[0-9]+) ([0-9a-f]{64})\n([^\r\n]*)\n$")
+_BASE_REVISION_RE = re.compile(
+    r"^#if \(defined\(DATA_VERSIONS_BASE_ONLY\) \|\| defined\(DATA_VERSIONS_LATE_ONLY\)\)"
+    r" && !defined\(CTRPORT_GOG_COMPAT\)\n#undef DATA_VERSIONS_REVISION\n"
+    r"#define DATA_VERSIONS_REVISION ([0-9]+)\n#endif$", re.M)
+_GOG_ROWS_RE = re.compile(
+    r"^#if !defined\(DATA_VERSIONS_BASE_ONLY\) && !defined\(DATA_VERSIONS_LATE_ONLY\)\n"
+    r"(.*?)^#endif$", re.M | re.S)
+_DATA_VERSION_RE = re.compile(r"^([0-9]+) ([0-9]+) (-?[0-9]+) ([0-9a-f]{64})\n([^\r\n]*)\n(?:FAT1 [0-9]+\n)?$")
 
 
-def data_versions_revision(source_root=SOURCE_ROOT):
-    """DATA_VERSIONS_REVISION from the tree the console is built from, or None when it can't be read."""
+def data_versions_revision(source_root=SOURCE_ROOT, digest=None):
+    """Runtime receipt revision, including the retained non-GOG cache ABI.
+
+    The table reader's first define is not necessarily the console's define. Non-GOG
+    builds retain revision 2; build.sh enables GOG compatibility only for its full
+    container digest. Resolve that same table branch from the already verified digest.
+    Unknown conditional formats omit receipts rather than guessing a runtime ABI.
+    """
     try:
         with open(os.path.join(source_root, "platform", "3ds", "data_versions.inc"), encoding="utf-8") as f:
-            m = _REVISION_RE.search(f.read())
+            text = f.read()
     except OSError:
         return None
-    return int(m.group(1)) if m else None
+    revisions = _REVISION_RE.findall(text)
+    if len(revisions) == 1:
+        return int(revisions[0])
+    base = _BASE_REVISION_RE.search(text)
+    gog = _GOG_ROWS_RE.search(text)
+    if len(revisions) != 2 or base is None or gog is None or revisions[1] != base.group(1):
+        return None
+    gog_digests = re.findall(r'DATA_VERSION\("undertale", "root", [0-9]+ULL, "([0-9a-f]{64})"\)', gog.group(1))
+    return int(revisions[0] if digest in gog_digests else base.group(1))
 
 
 def console_data_win_path(product, rel_dir):
@@ -568,6 +716,8 @@ class VersionPlan:
     keep: bool
     why: str
     skip: bool = False  # the card's data.win isn't the copy of this one: write nothing, the console hashes
+    destination: str = None
+    digest: str = None
 
 
 def _digest(path):
@@ -578,11 +728,47 @@ def _digest(path):
         return sha256_file(path)
 
 
+def file_identity(st):
+    """Detect replacement or mutation during a read; dates alone never establish content."""
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def checked_digest(path, expected=None):
+    """Fresh SHA-256, with path and open-file pre/post checks. Never uses the digest memo."""
+    before = os.stat(path)
+    sha = hashlib.sha256()
+    count = 0
+    with open(path, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        # On Windows Python's stat/fstat disagree about ctime (creation vs change time).
+        # Compare ctime only within the same API; device/inode/size/mtime still bind the open handle.
+        if file_identity(opened)[:4] != file_identity(before)[:4]:
+            raise OSError("File changed before verification: %s" % path)
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            sha.update(block)
+            count += len(block)
+        after = os.fstat(stream.fileno())
+    if (file_identity(opened) != file_identity(after) or count != before.st_size or
+            file_identity(before) != file_identity(os.stat(path))):
+        raise OSError("File changed during verification: %s" % path)
+    result = sha.hexdigest()
+    if expected is not None and result != expected:
+        raise OSError("File content changed. Verify the game files and try again: %s" % path)
+    return result
+
+
+def invalidate_version(data_win):
+    """Remove a receipt before replacing its data, or when verification fails."""
+    try:
+        os.remove(os.path.join(os.path.dirname(data_win), "cache", DATA_VERSION))
+    except FileNotFoundError:
+        pass
+
+
 def plan_data_versions(sd_root, product, folder, parts=None, source_root=SOURCE_ROOT, digest=None):
     """One VersionPlan per delivered data.win. Keeps a file on the card that already holds this data.win's revision,
-    size, digest and path (whatever its mtime: a console that records a real mtime keeps its own file). The digest is
-    the PC file's, so it is written only when the card's data.win is the builder's copy of it: the same size and
-    modification time (within FAT's 2 s), the test the copy step uses to skip a file. Otherwise skip=True."""
+    size, digest and path. Freshly hash the destination against the verified source before keeping or publishing
+    any receipt. A size/date match is never content verification. Otherwise skip=True and invalidate the receipt."""
     revision = data_versions_revision(source_root)
     if revision is None:
         return []
@@ -593,15 +779,19 @@ def plan_data_versions(sd_root, product, folder, parts=None, source_root=SOURCE_
         path = console_data_win_path(product, rel)
         size = os.path.getsize(data_win)
         card_dw = os.path.join(sd_root, *sd_cache_dir(product, rel).split("/")[:-1], os.path.basename(data_win))
+        dig = digest(data_win)
+        checked_digest(data_win, dig)
+        revision = data_versions_revision(source_root, dig)
+        if revision is None:
+            continue
         try:
-            st, ss = os.stat(card_dw), os.stat(data_win)
-            copied = st.st_size == ss.st_size and abs(st.st_mtime - ss.st_mtime) <= FAT_SLACK
+            copied = os.path.getsize(card_dw) == size and checked_digest(card_dw) == dig
         except OSError:
             copied = False
         if not copied:
+            invalidate_version(card_dw)
             out.append(VersionPlan(sd_file, b"", False, "the card's data.win is not this one", skip=True))
             continue
-        dig = digest(data_win)
         data = data_version_text(revision, size, dig, path)
         try:
             with open(os.path.join(sd_root, *sd_file.split("/")), "rb") as f:
@@ -609,9 +799,10 @@ def plan_data_versions(sd_root, product, folder, parts=None, source_root=SOURCE_
         except OSError:
             have = None
         if have is not None and have[:2] == (revision, size) and have[3:] == (dig, path):
-            out.append(VersionPlan(sd_file, data, True, "already there"))
+            out.append(VersionPlan(sd_file, data, True, "already there", destination=card_dw, digest=dig))
         else:
-            out.append(VersionPlan(sd_file, data, False, "missing" if have is None else "stale"))
+            out.append(VersionPlan(sd_file, data, False, "missing" if have is None else "stale",
+                                   destination=card_dw, digest=dig))
     return out
 
 
@@ -622,6 +813,15 @@ def write_data_versions(sd_root, plans, fs=None, work=None):
     for p in plans:
         if p.skip:
             continue
+        try:
+            if p.destination:
+                before = file_identity(os.stat(p.destination))
+                checked_digest(p.destination, p.digest)
+                if before != file_identity(os.stat(p.destination)):
+                    raise OSError("Game data changed before writing its receipt. Try copying again.")
+        except OSError:
+            invalidate_version(p.destination)
+            raise
         if p.keep:
             kept += 1
             continue
@@ -632,6 +832,9 @@ def write_data_versions(sd_root, plans, fs=None, work=None):
             f.write(p.data)
         try:
             _write_file(src, dst, fs)
+            if p.destination and before != file_identity(os.stat(p.destination)):
+                invalidate_version(p.destination)
+                raise OSError("Game data changed while writing its receipt. Try copying again.")
         finally:
             if os.path.exists(src):
                 os.remove(src)

@@ -707,6 +707,7 @@ typedef struct {
     // The part of it that appeared or changed in the last few seconds, which
     // is what the magnifier prefers over static labels.
     bool freshTextValid;
+    bool fontVerdictsTried; // CtrRenderer_loadFontVerdicts looked for the build's table (in padding: nothing moves)
     float freshText[4];
     struct {
         uint32_t key;        // hash of the string and where it is drawn
@@ -4523,6 +4524,16 @@ static bool patternAdd(CtrRenderer* r, int32_t pageId, float sx0, float sy0, flo
 }
 
 static void emitPageTiles(CtrRenderer* r, CtrPage* page, float sx0, float sy0, float sx1, float sy1, const float* px, const float* py, const CtrColor* c);
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+// repack (ctr_repack.inc) draws through emitPageTiles, kept whole for it.
+static void emitPageTiles(CtrRenderer* r, CtrPage* page, float sx0, float sy0, float sx1, float sy1, const float* px, const float* py, const CtrColor* c) __attribute__((noinline, noclone));
+static void repackEmitPageTiles(CtrRenderer* r, CtrPage* page, float sx0, float sy0, float sx1, float sy1, const float* px, const float* py, const CtrColor* c);
+static bool repackSmartTile(CtrRenderer* r, CtrPage* page, float sx0, float sy0, float sx1, float sy1, int32_t tx, int32_t ty, CtrTile** out);
+// Smart smoothing's first looks read an item's texels from the new tiles where they hold it (ctr_repack.inc).
+static CtrPage* repackSmartPage(CtrTextureCache* cache, CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h);
+#define emitPageTiles repackEmitPageTiles
+#endif
+#line 4480
 
 static void smartNote(CtrRenderer* r, const float* px, const float* py, int32_t n) __attribute__((noinline)); static void smartNoteGate(CtrRenderer* r, const float* px, const float* py, int32_t n);
 
@@ -4640,6 +4651,11 @@ typedef struct {
     SmartQuad q[9];
 } SmartTile;
 
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+// With repack's test below it no longer fits its place in smartEmitAveraged: out of line, in repack's late section.
+static void smartTileBegin(CtrRenderer* r, CtrPage* page, float sx0, float sy0, float sx1, float sy1, SmartTile* t)
+    __attribute__((noinline, section(".text.repack_late")));
+#endif
 static void smartTileBegin(CtrRenderer* r, CtrPage* page, float sx0, float sy0, float sx1, float sy1, SmartTile* t) {
     t->tile = nullptr;
     t->n = 0;
@@ -4657,6 +4673,13 @@ static void smartTileBegin(CtrRenderer* r, CtrPage* page, float sx0, float sy0, 
             t->tx >= page->tilesX || t->ty >= page->tilesY)
             return;
     }
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+    // A piece repack moved is drawn from its new tile, so the original is neither loaded nor batched beside it.
+    if (!t->whole && repackSmartTile(r, page, sx0, sy0, sx1, sy1, t->tx, t->ty, &t->tile)) {
+        t->tex = CtrTextures_drawTex(t->tile);
+        return;
+    }
+#endif
     CtrTextures_ensureTiles(&r->textures, page, t->tx, t->ty, t->tx, t->ty);
     t->tile = &page->tiles[t->ty * page->tilesX + t->tx];
     t->tex = CtrTextures_drawTex(t->tile);
@@ -4677,6 +4700,18 @@ typedef struct {
     float s[2], uv[2];
     bool on;
 } SmartAxis;
+// static and UNDERTALE only (a non-static late helper changed palBuildTable's
+// code through GCC's section anchors, moving smartEmitAveraged).
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_SMART_NO_DIRECT)
+#define SMART_DIRECT 1
+static void smartColoursAxes(CtrRenderer* r, const CtrColor* c, SmartAxis* xa, int32_t nx, SmartAxis* ya, int32_t ny, const SmartTile* tile, CtrColor (*cc)[3]);
+#ifndef CTRPORT_SMART_DIRECT_CHECK
+static bool smartEmitTile(CtrRenderer* r, const SmartTile* t, const SmartAxis* xa, int32_t nx, const SmartAxis* ya, int32_t ny, CtrColor (*cc)[3]);
+#else
+static void smartDirectCheck(const SmartTile* t, const SmartAxis* xa, int32_t nx, const SmartAxis* ya, int32_t ny, CtrColor (*cc)[3]);
+#endif
+#endif
+#line 4643
 
 static inline void smartAxes(const float (*span)[5], int32_t n, float back, float o, float k, int32_t a0, float len, bool flip, SmartAxis* out) {
     for (int32_t i = 0; n > i; i++, out++) {
@@ -4831,9 +4866,13 @@ static bool smartEmitAveraged(CtrRenderer* r, CtrPage* page, float sx0, float sy
     smartAxes((const float (*)[5]) xs, nx, back, ox, kx, ax0, w, px[0] > px[1], xa);
     smartAxes((const float (*)[5]) ys, ny, back, oy, ky, ay0, h, py[0] > py[2], ya);
     CtrColor cc[3][3];
+#ifndef SMART_DIRECT
+#line 4797
     for (int32_t j = 0; ny > j; j++) {
         for (int32_t i = 0; nx > i; i++) cc[j][i] = nativeCornerColor(c, xa[i].f, ya[j].f, xa[i].weight * ya[j].weight, r->smart.straight);
     }
+#endif
+#line 4800
     SmartTile tile;
 #ifdef CTRPORT_RENDER_TIMING
     {
@@ -4847,10 +4886,19 @@ static bool smartEmitAveraged(CtrRenderer* r, CtrPage* page, float sx0, float sy
 #else
     smartTileBegin(r, page, tx0, ty0, tx1, ty1, &tile);
 #endif
+#ifndef SMART_DIRECT
+#line 4813
     if (tile.tile != nullptr) {
         for (int32_t i = 0; nx > i; i++) smartAxisTile(&xa[i], tile.whole, tile.tileW, tile.tx);
         for (int32_t j = 0; ny > j; j++) smartAxisTile(&ya[j], tile.whole, tile.tileH, tile.ty);
     }
+#else
+    smartColoursAxes(r, c, xa, nx, ya, ny, &tile, cc);
+#endif
+#if defined(SMART_DIRECT) && !defined(CTRPORT_SMART_DIRECT_CHECK)
+    if (r->smart.copy != nullptr || tile.tile == nullptr || !smartEmitTile(r, &tile, xa, nx, ya, ny, cc))
+#endif
+#line 4817
     {
         for (int32_t j = 0; ny > j; j++) {
             const SmartAxis* y = &ya[j];
@@ -4885,6 +4933,10 @@ static bool smartEmitAveraged(CtrRenderer* r, CtrPage* page, float sx0, float sy
 #ifdef CTRPORT_RENDER_TIMING
     r->timing.smartCount.pathTicks[countPath] += svcGetSystemTick() - countLoop;
 #endif
+#if defined(SMART_DIRECT) && defined(CTRPORT_SMART_DIRECT_CHECK)
+    if (r->smart.copy == nullptr && tile.tile != nullptr) smartDirectCheck(&tile, xa, nx, ya, ny, cc);
+#endif
+#line 4851
     {
         SMART_COUNT_TIMED(r, tileEndTicks);
         smartTileEnd(r, &tile);
@@ -4909,12 +4961,18 @@ static bool smartEmitAveraged(CtrRenderer* r, CtrPage* page, float sx0, float sy
 // nothing after the function moves. The asm sits in a function of its own
 // (never called), emitted after smartEmitAveraged, so smartEmitAveraged's
 // code is the same as without it (an asm inside would be a scheduling
-// barrier).
+// barrier). On UNDERTALE the direct tile path (smartcut) took another
+// 416 bytes out (into smartColoursAxes and smartEmitTile, late).
 #if defined(__3DS__) && defined(NDEBUG) && !defined(CTRPORT_RENDER_TIMING)
 static void __attribute__((used, noinline, section(".text.late.smartbatch"))) smartEmitSlot(void) {
+#if !defined(ENABLE_WAD16) || defined(CTRPORT_SMART_NO_DIRECT)
     __asm__(".pushsection .text.smartEmitAveraged, 1\n.space 40\n.popsection");
+#else
+    __asm__(".pushsection .text.smartEmitAveraged, 1\n.space 456\n.popsection");
+#endif
 }
 #endif
+#line 4881
 
 // The visible-quad part of a page draw, after effects and recording are
 // resolved. Keep per-draw hooks (including native Smart smoothing) here,
@@ -5031,6 +5089,9 @@ static void emitPageRegion(CtrRenderer* r, CtrPage* page, float sx0, float sy0, 
 #define emitPageRegion pillarEmitPageRegion
 #define emitPageRegionDirect pillarEmitPageRegionDirect
 #endif
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+#undef emitPageTiles
+#endif
 #line 4984
 
 // emitPageRegion's drawing, per tile.
@@ -5123,6 +5184,10 @@ static void emitPageTiles(CtrRenderer* r, CtrPage* page, float sx0, float sy0, f
         }
     }
 }
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+#define emitPageTiles repackEmitPageTiles
+#endif
+#line 5075
 
 // ===[ Castle reflections ]===
 //
@@ -9850,7 +9915,7 @@ static void applyBottomBacklight(CtrRenderer* r) {
 // compaction round). Main's body is there too, as screensConfigure with the game on top.
 static void screensConfigureKeepBottom(CtrRenderer* r);
 #line 9789
-static void screensConfigure(CtrRenderer* r);
+WAD17_ONLY(static void screensConfigure(CtrRenderer* r);)
 static void __attribute__((noinline)) configureScreens(CtrRenderer* r) {
     __asm__ volatile("b 1f\n\t.space 700\n1:");
     screensConfigureKeepBottom(r);
@@ -10013,7 +10078,7 @@ SCREENS_LATE static void screensMoveGame(CtrRenderer* r, bool onBottom) {
     if (shown) gspWaitForVBlank();
     logInfo(screensMoved, onBottom ? screensBottom : screensTop);
 }
-
+#if defined(ENABLE_WAD17) // UNDERTALE never runs this (argcheck, UT late-text reclaim)
 // configureScreens (main's body), with the game on the bottom screen when game_screen says so and the menu doesn't
 // have that screen; then each backlight as other_screen says, the one going on first, and Off on the original 2DS
 // blanking the screen without the game. noipa: main's callers of configureScreens see the same unknown callee
@@ -10099,6 +10164,7 @@ SCREENS_LATE __attribute__((noipa)) static void screensConfigure(CtrRenderer* r)
     r->nativeCheck = true;
     r->displayDirty = false;
 }
+#endif
 #line 9786
 
 // The HOME Menu takes a capture of the screens when it opens, and the console
@@ -10732,8 +10798,28 @@ static bool drawSymmetric(CtrRenderer* r, int32_t tpagIndex, TexturePageItem* tp
 #define SMART_ITEM_MAX 96   // largest fine sprite item's side, in texels
 #define SMART_COLOURS_MAX 3 // most colours of a fine sprite item
 
+#if defined(CTRPORT_GOG_COMPAT)
+// Keep the packed reader/table in place; active scans decode its texels in late code.
+#define GOGUT_SMART_LATE __attribute__((noinline, noclone, optimize("no-jump-tables"), section(".text.late.gogut")))
+#ifdef ENABLE_WAD16
+extern bool ctrGogutSmartDecoded;
+#else
+#define ctrGogutSmartDecoded false
+#define gogutSmartTexel smartTexel
+#endif
+#ifdef ENABLE_WAD16
+GOGUT_SMART_LATE static bool gogutSmartStored(const CtrTile* tile, size_t i, bool clear, uint32_t* out);
+GOGUT_SMART_LATE static bool gogutSmartTexel(CtrPage* page, int32_t x, int32_t y, uint32_t* out);
+#line 10249
+static bool __attribute__((noinline, noclone)) smartTexel(CtrPage* page, int32_t x, int32_t y, uint32_t* out);
+#endif
+#line 10249
+#else
+#line 10247
 // Texel (x, y) of the page as stored, 0 where transparent; false if its tile
 // isn't resident.
+#endif
+#line 10249
 static bool smartTexel(CtrPage* page, int32_t x, int32_t y, uint32_t* out) {
     int32_t tx = x / page->tileW, ty = y / page->tileH;
     CtrTile* tile = &page->tiles[ty * page->tilesX + tx];
@@ -10764,6 +10850,10 @@ static bool smartTexel(CtrPage* page, int32_t x, int32_t y, uint32_t* out) {
     }
 }
 
+#if defined(CTRPORT_GOG_COMPAT)
+#line 10279
+#endif
+#line 10279
 // The first look's scans (texcache-f1): Smart smoothing looks at a font's glyphs or an item's texels once, and the
 // ARM11 has no divide instruction, so smartTexel's two divisions per texel were most of a font's first look (about
 // 50 ms on the New 3DS for UNDERTALE's fnt_curs and fnt_main at the first battle, 150 on the Old). The late copies
@@ -10799,6 +10889,27 @@ static inline __attribute__((always_inline)) void smartF1ReaderRow(SmartF1Reader
 
 // smartTexel(page, x, rd->y, out): on entering another tile, smartTexel itself; within the tile, its body without the
 // divisions.
+#if defined(CTRPORT_GOG_COMPAT)
+#ifdef ENABLE_WAD16
+static inline __attribute__((always_inline)) bool smartF1Read(CtrPage* page, SmartF1Reader* rd, int32_t x, uint32_t* out) {
+    if (x < rd->x0 || x >= rd->x1) {
+        int32_t tx = x / page->tileW, ty = rd->y / page->tileH;
+        rd->tile = &page->tiles[ty * page->tilesX + tx];
+        rd->x0 = tx * page->tileW;
+        rd->x1 = rd->x0 + page->tileW;
+        rd->y0 = ty * page->tileH;
+        rd->y1 = rd->y0 + page->tileH;
+        rd->row = smartF1Row(rd->tile, (uint32_t) (rd->y - rd->y0));
+        return gogutSmartTexel(page, x, rd->y, out);
+    }
+    const CtrTile* tile = rd->tile;
+    *out = 0;
+    if (tile->format == CTR_TILE_EMPTY) return true;
+    if (!tile->valid) return false;
+    size_t i = rd->row + smartF1Col((uint32_t) (x - rd->x0));
+    return gogutSmartStored(tile, i, true, out);
+}
+#else
 static inline __attribute__((always_inline)) bool smartF1Read(CtrPage* page, SmartF1Reader* rd, int32_t x, uint32_t* out) {
     if (x < rd->x0 || x >= rd->x1) {
         int32_t tx = x / page->tileW, ty = rd->y / page->tileH;
@@ -10835,7 +10946,54 @@ static inline __attribute__((always_inline)) bool smartF1Read(CtrPage* page, Sma
         default: return false;
     }
 }
+#endif
+#line 10351
+#else
+#line 10314
+static inline __attribute__((always_inline)) bool smartF1Read(CtrPage* page, SmartF1Reader* rd, int32_t x, uint32_t* out) {
+    if (x < rd->x0 || x >= rd->x1) {
+        int32_t tx = x / page->tileW, ty = rd->y / page->tileH;
+        rd->tile = &page->tiles[ty * page->tilesX + tx];
+        rd->x0 = tx * page->tileW;
+        rd->x1 = rd->x0 + page->tileW;
+        rd->y0 = ty * page->tileH;
+        rd->y1 = rd->y0 + page->tileH;
+        rd->row = smartF1Row(rd->tile, (uint32_t) (rd->y - rd->y0));
+        return smartTexel(page, x, rd->y, out);
+    }
+    const CtrTile* tile = rd->tile;
+    *out = 0;
+    if (tile->format == CTR_TILE_EMPTY) return true;
+    if (!tile->valid) return false;
+    size_t i = rd->row + smartF1Col((uint32_t) (x - rd->x0));
+    switch (tile->format) {
+        case CTR_TILE_RGBA8: {
+            uint32_t v = ((const uint32_t*) tile->tex.data)[i];
+            *out = (v & 0xFFu) != 0 ? v : 0;
+            return true;
+        }
+        case CTR_TILE_RGBA5551: {
+            uint32_t v = ((const uint16_t*) tile->tex.data)[i];
+            *out = (v & 1u) != 0 ? v : 0;
+            return true;
+        }
+        case CTR_TILE_RGB565: *out = 0x10000u | ((const uint16_t*) tile->tex.data)[i]; return true;
+        case CTR_TILE_RGB8: {
+            const uint8_t* p = (const uint8_t*) tile->tex.data + i * 3;
+            *out = 0x1000000u | (uint32_t) p[0] | ((uint32_t) p[1] << 8) | ((uint32_t) p[2] << 16);
+            return true;
+        }
+        default: return false;
+    }
+}
+#endif
+#line 10350
 
+#if defined(CTRPORT_GOG_COMPAT)
+
+#line 10351
+#endif
+#line 10351
 // Whether the w x h texels at (x0, y0) of the page average correctly drawn
 // premultiplied (smartEmitAveraged): each one opaque, or transparent and black,
 // so that linear filtering's average of their colours is already their
@@ -10906,6 +11064,14 @@ static bool __attribute__((noinline)) smartRegionOneColour(CtrPage* page, int32_
     return smartRegionOneColourF1(page, x0, y0, w, h, colour);
 }
 
+#if defined(CTRPORT_GOG_COMPAT)
+#ifdef ENABLE_WAD16
+GOGUT_SMART_LATE static bool gogutSmartOneColour(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, uint32_t* colour);
+SMART_F1_LATE static bool smartRegionOneColourF1(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, uint32_t* colour) {
+    __asm__("b 1f\n\t.space 644\n1:" : "+r"(page));
+    return gogutSmartOneColour(page, x0, y0, w, h, colour);
+}
+#else
 SMART_F1_LATE static bool smartRegionOneColourF1(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, uint32_t* colour) {
     if (x0 + w > page->width || y0 + h > page->height) return false;
     uint32_t c = *colour;
@@ -10958,6 +11124,67 @@ SMART_F1_LATE static bool smartRegionOneColourF1(CtrPage* page, int32_t x0, int3
     *colour = c;
     return one;
 }
+#endif
+#line 10548
+
+
+#line 10548
+#else
+#line 10496
+SMART_F1_LATE static bool smartRegionOneColourF1(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, uint32_t* colour) {
+    if (x0 + w > page->width || y0 + h > page->height) return false;
+    uint32_t c = *colour;
+    bool one = true;
+    for (int32_t y = y0; y0 + h > y && one; y++) {
+        int32_t ty = y / page->tileH;
+        uint32_t ly = (uint32_t) (y - ty * page->tileH);
+        for (int32_t x = x0; x0 + w > x && one;) {
+            int32_t tx = x / page->tileW, tileX = tx * page->tileW, end = minI(tileX + page->tileW, x0 + w);
+            const CtrTile* tile = &page->tiles[ty * page->tilesX + tx];
+            // Nothing stored, nothing sampled: emitPageTiles skips the tile.
+            if (tile->format == CTR_TILE_EMPTY) {
+                x = end;
+                continue;
+            }
+            if (!tile->valid) {
+                one = false;
+                break;
+            }
+            size_t row = smartF1Row(tile, ly);
+            switch (tile->format) {
+                case CTR_TILE_RGBA8: {
+                    const uint32_t* data = (const uint32_t*) tile->tex.data + row;
+                    for (; end > x; x++) {
+                        uint32_t rgb = data[smartF1Col((uint32_t) (x - tileX))] >> 8;
+                        if (c == 0xFFFFFFFFu) c = rgb;
+                        else if (c != rgb) {
+                            one = false;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                case CTR_TILE_RGBA5551: {
+                    const uint16_t* data = (const uint16_t*) tile->tex.data + row;
+                    for (; end > x; x++) {
+                        uint32_t rgb = 0x1000000u | (data[smartF1Col((uint32_t) (x - tileX))] >> 1);
+                        if (c == 0xFFFFFFFFu) c = rgb;
+                        else if (c != rgb) {
+                            one = false;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                default: one = false; break; // opaque formats: smartRegionClean's
+            }
+        }
+    }
+    *colour = c;
+    return one;
+}
+#endif
+#line 10548
 #line 10514
 
 // A slot for a new copy (smartCleanCopy): an unused or free one, else the
@@ -11003,6 +11230,11 @@ static int32_t smartCopySlot(CtrRenderer* r, int32_t tpagIndex) {
 // transparent texels, made when first drawn and kept while there is room
 // (smartCopySlot), as the item's texels never change; if it can't be had,
 // nullptr and the item isn't averaged.
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+// Out of line in the late code: reading through repackSmartPage made smartSpriteFine, which had it inline, 12 B longer.
+__attribute__((noinline, section(".text.repack_late")))
+#endif
+#line 10558
 static const struct SmartCopy* smartCleanCopy(CtrRenderer* r, int32_t tpagIndex, TexturePageItem* tpag, CtrPage* page) {
     for (int32_t i = 0; r->smart.copyCount > i; i++) {
         if (r->smart.copies[i].tpag == tpagIndex) {
@@ -11016,7 +11248,13 @@ static const struct SmartCopy* smartCleanCopy(CtrRenderer* r, int32_t tpagIndex,
     int32_t texW = 8, texH = 8;
     while (w + 2 > texW) texW *= 2;
     while (h + 2 > texH) texH *= 2;
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+    page = repackSmartPage(&r->textures, page, x0, y0, w, h);
+#else
+#line 10571
     CtrTextures_ensureTiles(&r->textures, page, x0 / page->tileW, y0 / page->tileH, (x0 + w - 1) / page->tileW, (y0 + h - 1) / page->tileH);
+#endif
+#line 10572
     // A slot given up stays free (tpag -1) if the copy can't be made.
     struct SmartCopy* copy = &r->smart.copies[slot];
     if (!C3D_TexInit(&copy->tex, (u16) texW, (u16) texH, GPU_RGBA8)) return nullptr;
@@ -11083,6 +11321,14 @@ static bool __attribute__((noinline)) smartTally(CtrPage* page, int32_t x0, int3
     return smartTallyF1(page, x0, y0, w, h, t);
 }
 
+#if defined(CTRPORT_GOG_COMPAT)
+#ifdef ENABLE_WAD16
+GOGUT_SMART_LATE static bool gogutSmartTally(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, SmartTally* t);
+SMART_F1_LATE static bool smartTallyF1(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, SmartTally* t) {
+    __asm__("b 1f\n\t.space 1160\n1:" : "+r"(page));
+    return gogutSmartTally(page, x0, y0, w, h, t);
+}
+#else
 SMART_F1_LATE static bool smartTallyF1(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, SmartTally* t) {
     memset(t, 0, sizeof(*t));
     if (2 > w || 2 > h || x0 + w > page->width || y0 + h > page->height) return true;
@@ -11111,6 +11357,43 @@ SMART_F1_LATE static bool smartTallyF1(CtrPage* page, int32_t x0, int32_t y0, in
     }
     return true;
 }
+#endif
+#line 10666
+
+
+#line 10666
+#else
+#line 10638
+SMART_F1_LATE static bool smartTallyF1(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, SmartTally* t) {
+    memset(t, 0, sizeof(*t));
+    if (2 > w || 2 > h || x0 + w > page->width || y0 + h > page->height) return true;
+    int32_t bw = (w + 1) / 2, bh = (h + 1) / 2;
+    int32_t stepX = (bw + SMART_SAMPLE_BLOCKS - 1) / SMART_SAMPLE_BLOCKS, stepY = (bh + SMART_SAMPLE_BLOCKS - 1) / SMART_SAMPLE_BLOCKS;
+    // One reader for each of a block's three rows.
+    SmartF1Reader rd[3] = {{nullptr, 0, 0, 0, 0, 0, 0}, {nullptr, 0, 0, 0, 0, 0, 0}, {nullptr, 0, 0, 0, 0, 0, 0}};
+    for (int32_t by = 0; bh > by; by += stepY) {
+        for (int32_t j = 0; 3 > j; j++) smartF1ReaderRow(&rd[j], y0 + minI(2 * by + j, h - 1));
+        for (int32_t bx = 0; bw > bx; bx += stepX) {
+            // The 3x3 texels from (2bx, 2by), the item's edge repeated past
+            // it, hold the block of every phase.
+            uint32_t n[9];
+            for (int32_t j = 0; 3 > j; j++) {
+                for (int32_t i = 0; 3 > i; i++) {
+                    if (!smartF1Read(page, &rd[j], x0 + minI(2 * bx + i, w - 1), &n[j * 3 + i])) return false;
+                }
+            }
+            for (int32_t p = 0; 4 > p; p++) {
+                const uint32_t* q = n + (p >> 1) * 3 + (p & 1);
+                if ((q[0] | q[1] | q[3] | q[4]) == 0) continue;
+                t->visible[p]++;
+                if (q[0] == q[1] && q[0] == q[3] && q[0] == q[4]) t->uniform[p]++;
+            }
+        }
+    }
+    return true;
+}
+#endif
+#line 10666
 #line 10657
 
 static int32_t smartBestPhase(const SmartTally* t) {
@@ -11137,6 +11420,68 @@ static uint8_t smartVerdict(uint32_t uniform, uint32_t visible) {
 // (spr_pressfront_b's black panel) and whatever is drawn over it outside the
 // strokes as smoothing off shows them. False with *ok true for more colours
 // or no ink; *ok false if a tile isn't resident.
+#if defined(CTRPORT_GOG_COMPAT)
+static bool smartInk(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, bool* ok, uint8_t* ink, bool* kept) {
+    *ok = true;
+    uint32_t* t = malloc((size_t) w * (size_t) h * sizeof(uint32_t));
+    if (t == nullptr) return false;
+    // Transparency and SMART_COLOURS_MAX opaque colours at most.
+    uint32_t colour[SMART_COLOURS_MAX + 1], texels[SMART_COLOURS_MAX + 1] = { 0 };
+    int32_t colours = 0;
+    for (int32_t i = 0; w * h > i; i++) {
+        uint32_t c;
+        if (!gogutSmartTexel(page, x0 + i % w, y0 + i / w, &c)) {
+            free(t);
+            return *ok = false;
+        }
+        t[i] = c;
+        int32_t k = 0;
+        while (colours > k && colour[k] != c) k++;
+        if (k == colours) {
+            if (SMART_COLOURS_MAX + 1 == colours) {
+                free(t);
+                return false;
+            }
+            colour[colours++] = c;
+        }
+        texels[k]++;
+    }
+    int32_t opaque = 0, most = 0;
+    for (int32_t k = 0; colours > k; k++) {
+        opaque += colour[k] != 0 ? 1 : 0;
+        if (texels[k] > texels[most]) most = k;
+    }
+    if (opaque > SMART_COLOURS_MAX) {
+        free(t);
+        return false;
+    }
+    uint32_t common = colour[most];
+    uint32_t inked = 0, lost[4] = { 0 };
+    int32_t inkBox[4] = { w, h, 0, 0 };
+    for (int32_t y = 0; h > y; y++) {
+        for (int32_t x = 0; w > x; x++) {
+            uint32_t c = t[y * w + x];
+            if (c == common) continue;
+            inked++;
+            inkBox[0] = minI(inkBox[0], x);
+            inkBox[1] = minI(inkBox[1], y);
+            inkBox[2] = maxI(inkBox[2], x + 1);
+            inkBox[3] = maxI(inkBox[3], y + 1);
+            for (int32_t p = 0; 4 > p; p++) {
+                // The first texel of its block, the item's edge repeated before it.
+                int32_t fx = maxI(x - ((x - (p & 1)) & 1), 0), fy = maxI(y - ((y - (p >> 1)) & 1), 0);
+                if (t[fy * w + fx] != c) lost[p]++;
+            }
+        }
+    }
+    free(t);
+    for (int32_t i = 0; 4 > i; i++) ink[i] = (uint8_t) maxI(inkBox[i], 0);
+    // All of it, but for one texel in 200.
+    for (int32_t p = 0; 4 > p; p++) kept[p] = (uint64_t) lost[p] * 200u <= inked;
+    return 0 < inked;
+}
+#else
+#line 10682
 static bool smartInk(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, bool* ok, uint8_t* ink, bool* kept) {
     *ok = true;
     uint32_t* t = malloc((size_t) w * (size_t) h * sizeof(uint32_t));
@@ -11196,6 +11541,8 @@ static bool smartInk(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h
     for (int32_t p = 0; 4 > p; p++) kept[p] = (uint64_t) lost[p] * 200u <= inked;
     return 0 < inked;
 }
+#endif
+#line 10741
 
 // Sprites Smart smoothing leaves as smoothing off shows them though they are
 // fine: DELTARUNE's "HP" label beside each HP bar (spr_hpname, 16x11), which
@@ -11253,7 +11600,13 @@ static uint8_t itemVerdict(CtrRenderer* r, int32_t tpagIndex, TexturePageItem* t
     if (v != 0) return v;
     int32_t x0 = tpag->sourceX, y0 = tpag->sourceY, w = tpag->sourceWidth, h = tpag->sourceHeight;
     if (2 > w || 2 > h) return r->smart.itemState[tpagIndex] = ITEM_KNOWN;
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+    page = repackSmartPage(&r->textures, page, x0, y0, w, h);
+#else
+#line 10633
     CtrTextures_ensureTiles(&r->textures, page, x0 / page->tileW, y0 / page->tileH, (x0 + w - 1) / page->tileW, (y0 + h - 1) / page->tileH);
+#endif
+#line 10634
     SmartTally t;
     if (!smartTally(page, x0, y0, w, h, &t)) return 0;
     int32_t p = smartBestPhase(&t);
@@ -11282,6 +11635,11 @@ static uint8_t itemVerdict(CtrRenderer* r, int32_t tpagIndex, TexturePageItem* t
         }
     }
     r->smart.itemState[tpagIndex] = v;
+#ifdef CTRPORT_ITEMVERDICT_CHECK
+    void itemVerdictCheck(Renderer* renderer, int32_t i, uint8_t v);
+    itemVerdictCheck(&r->base, tpagIndex, v);
+#endif
+#line 10662
     if ((v & ITEM_FINE) != 0) logInfo("Smart smoothing: item %d (%dx%d) is fine\n", (int) tpagIndex, (int) w, (int) h);
     else if ((v & ITEM_PHASED) != 0) logInfo("Smart smoothing: item %d (%dx%d) is line art, at phase %d\n", (int) tpagIndex, (int) w, (int) h, (int) (v & 3u));
     return v;
@@ -12783,8 +13141,14 @@ static uint8_t smartFontState(CtrRenderer* r, int32_t fontIndex, Font* font) {
         fontPage = acquireTpagPage(r, font->tpagIndex, &fontTpag);
         if (fontPage == nullptr || 0 > fontTpag->texturePageId || !fontPage->layoutKnown) return 0;
         int32_t x0 = fontTpag->sourceX, y0 = fontTpag->sourceY;
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+        fontPage = repackSmartPage(&r->textures, fontPage, x0, y0, fontTpag->sourceWidth, fontTpag->sourceHeight);
+#else
+#line 11845
         CtrTextures_ensureTiles(&r->textures, fontPage, x0 / fontPage->tileW, y0 / fontPage->tileH,
                                 (x0 + fontTpag->sourceWidth - 1) / fontPage->tileW, (y0 + fontTpag->sourceHeight - 1) / fontPage->tileH);
+#endif
+#line 11847
     }
     uint32_t uniform = 0, visible = 0;
     uint32_t step = font->glyphCount > 64 ? font->glyphCount / 64 : 1;
@@ -12797,8 +13161,14 @@ static uint8_t smartFontState(CtrRenderer* r, int32_t fontIndex, Font* font) {
             TexturePageItem* tpag;
             CtrPage* page = acquireTpagPage(r, index, &tpag);
             if (page == nullptr || 0 > tpag->texturePageId || !page->layoutKnown) continue;
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+            page = repackSmartPage(&r->textures, page, tpag->sourceX, tpag->sourceY, tpag->sourceWidth, tpag->sourceHeight);
+#else
+#line 11859
             CtrTextures_ensureTiles(&r->textures, page, tpag->sourceX / page->tileW, tpag->sourceY / page->tileH,
                                     (tpag->sourceX + tpag->sourceWidth - 1) / page->tileW, (tpag->sourceY + tpag->sourceHeight - 1) / page->tileH);
+#endif
+#line 11861
             if (!smartTally(page, tpag->sourceX, tpag->sourceY, tpag->sourceWidth, tpag->sourceHeight, &t)) return 0;
         } else {
             if (glyph->sourceWidth == 0 || glyph->sourceHeight == 0) continue;
@@ -12829,16 +13199,28 @@ static uint8_t smartFontClean(CtrRenderer* r, int32_t fontIndex, Font* font) {
             TexturePageItem* tpag;
             CtrPage* page = acquireTpagPage(r, sprite->tpagIndices[g], &tpag);
             if (page == nullptr || 0 > tpag->texturePageId || !page->layoutKnown) return 0;
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+            page = repackSmartPage(&r->textures, page, tpag->sourceX, tpag->sourceY, tpag->sourceWidth, tpag->sourceHeight);
+#else
+#line 11891
             CtrTextures_ensureTiles(&r->textures, page, tpag->sourceX / page->tileW, tpag->sourceY / page->tileH,
                                     (tpag->sourceX + tpag->sourceWidth - 1) / page->tileW, (tpag->sourceY + tpag->sourceHeight - 1) / page->tileH);
+#endif
+#line 11893
             clean = smartRegionClean(page, tpag->sourceX, tpag->sourceY, tpag->sourceWidth, tpag->sourceHeight);
         }
     } else {
         TexturePageItem* tpag;
         CtrPage* page = acquireTpagPage(r, font->tpagIndex, &tpag);
         if (page == nullptr || 0 > tpag->texturePageId || !page->layoutKnown) return 0;
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+        page = repackSmartPage(&r->textures, page, tpag->sourceX, tpag->sourceY, tpag->sourceWidth, tpag->sourceHeight);
+#else
+#line 11899
         CtrTextures_ensureTiles(&r->textures, page, tpag->sourceX / page->tileW, tpag->sourceY / page->tileH,
                                 (tpag->sourceX + tpag->sourceWidth - 1) / page->tileW, (tpag->sourceY + tpag->sourceHeight - 1) / page->tileH);
+#endif
+#line 11901
         for (uint32_t g = 0; font->glyphCount > g && clean == 1; g++) {
             FontGlyph* glyph = &font->glyphs[g];
             if (glyph->sourceWidth == 0 || glyph->sourceHeight == 0) continue;
@@ -12856,11 +13238,19 @@ static uint8_t smartFontClean(CtrRenderer* r, int32_t fontIndex, Font* font) {
             for (uint32_t g = 0; sprite->textureCount > g && one; g++) {
                 TexturePageItem* tpag;
                 CtrPage* page = acquireTpagPage(r, sprite->tpagIndices[g], &tpag);
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+                if (page != nullptr) page = repackSmartPage(&r->textures, page, tpag->sourceX, tpag->sourceY, tpag->sourceWidth, tpag->sourceHeight);
+#endif
+#line 11918
                 one = page != nullptr && smartRegionOneColour(page, tpag->sourceX, tpag->sourceY, tpag->sourceWidth, tpag->sourceHeight, &colour);
             }
         } else {
             TexturePageItem* tpag;
             CtrPage* page = acquireTpagPage(r, font->tpagIndex, &tpag);
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+            if (page != nullptr) page = repackSmartPage(&r->textures, page, tpag->sourceX, tpag->sourceY, tpag->sourceWidth, tpag->sourceHeight);
+#endif
+#line 11923
             for (uint32_t g = 0; font->glyphCount > g && one; g++) {
                 FontGlyph* glyph = &font->glyphs[g];
                 if (glyph->sourceWidth == 0 || glyph->sourceHeight == 0) continue;
@@ -19282,7 +19672,7 @@ static void updateStereoDetail(CtrRenderer* r) {
 }
 
 void CtrRenderer_beginFrame(Renderer* renderer) {
-    CtrRenderer* r = (CtrRenderer*) renderer;
+    CtrRenderer* r = (CtrRenderer*) renderer; FW_T(fwB0);
     processDeferredFrees(r);
     parkIdleSurface(r);
     // Outside the frame, so the copy can't interleave with queued GPU work.
@@ -19308,7 +19698,7 @@ void CtrRenderer_beginFrame(Renderer* renderer) {
     // for the end of both. Never while the game reads the application surface or a screenshot is due.
     r->skip.forced = r->skip.half && r->skip.forceNext && r->skip.cooldown == 0 && r->screenshotNoticeUntil == 0 && !r->screenshotRequested &&
                      r->surfaceShotPath[0] == '\0';
-    r->skip.forceNext = false;
+    r->skip.forceNext = false; FW_ACC(7, fwB0);
     if (r->skip.forced) {
         CtrPacer_skipSlot();
         r->skip.active = true;
@@ -19317,7 +19707,7 @@ void CtrRenderer_beginFrame(Renderer* renderer) {
     }
     // After the wait, so the frame before keeps its own time: the main loop counts this to the new frame. The frames
     // after it start late, but aren't skipped for it.
-    r->surfaceShotMs = 0.0;
+    r->surfaceShotMs = 0.0; FW_T(fwB1);
     if (r->surfaceShotPath[0] != '\0') {
         uint64_t start = svcGetSystemTick();
         saveScreenshot(r, r->surfaceShotPath, false, false);
@@ -19341,9 +19731,9 @@ void CtrRenderer_beginFrame(Renderer* renderer) {
         r->probe.frame = r->frame;
         r->probe.listing = r->probe.batches;
         probeCheckAll(r);
-    }
-    CtrTextures_beginFrame(&r->textures, r->frame);
-    mirrorHotTiles(r);
+    } FW_T(fwB2);
+    CtrTextures_beginFrame(&r->textures, r->frame); FW_ACC(6, fwB2); FW_T(fwB4);
+    mirrorHotTiles(r); FW_ACC(13, fwB4); FW_T(fwB3);
     if (r->palFrameTicks > r->palStats.worstTicks) {
         r->palStats.worstTicks = r->palFrameTicks;
         r->palStats.worstTexels = r->palFrameTexels;
@@ -19366,7 +19756,7 @@ void CtrRenderer_beginFrame(Renderer* renderer) {
     if (r->palBytes > 0 && CtrTextures_roomThrashing(&r->textures)) palGiveBack(r);
     else if ((r->frame & 31u) == 0) palAgeCopies(r);
     palForgive(r);
-    palReclaim(r);
+    palReclaim(r); FW_ACC(12, fwB3);
 
     // This frame's vertices follow the last frame's (see makeVertexRoom).
     r->frameVertexStart = r->vertexCount;
@@ -19436,7 +19826,7 @@ void CtrRenderer_beginFrame(Renderer* renderer) {
         r->smart.scaleY = scaleY;
         r->smart.active = smoothingShown(r) == SMOOTHING_SMART && scaleY == 0.5f && (scaleX == 0.5f || scaleX == 1.0f) && !r->depth.active;
         r->smart.vertical = scaleX == 1.0f || r->stereoActive;
-    }
+    } FW_ACC(8, fwB1);
 }
 
 // Sets up copying the application surface (or an image made from it) onto
@@ -20210,7 +20600,7 @@ static void logMagnifierStats(CtrRenderer* r) {
 }
 
 void CtrRenderer_endFrame(Renderer* renderer) {
-    CtrRenderer* r = (CtrRenderer*) renderer;
+    CtrRenderer* r = (CtrRenderer*) renderer; FW_T(fwE0);
     if (!r->inFrame) return;
     {
         RENDER_TIMED(r, TIME_FRAME);
@@ -20223,7 +20613,7 @@ void CtrRenderer_endFrame(Renderer* renderer) {
         r->skipPresent = false;
     } else {
         RENDER_TIMED(r, TIME_PRESENT);
-        present(r);
+        present(r); FW_ACC(9, fwE0);
         presented = true;
     }
     {
@@ -20251,10 +20641,10 @@ void CtrRenderer_endFrame(Renderer* renderer) {
         behind = r->skip.forced && r->skip.overlap && CtrGpu_frameEndBehind();
         if (behind) r->skip.behind++;
     }
-    CtrPacer_stressStep(!r->skip.active);
+    CtrPacer_stressStep(!r->skip.active); FW_T(fwE1);
     // Done with the frame before, the GPU can start this one (C3D_FrameEnd),
     // and the frame before's flip has been asked for.
-    if (!behind) CtrGpu_waitIdle();
+    if (!behind) CtrGpu_waitIdle(); FW_ACC(10, fwE1);
     if (r->flicker.counts != nullptr && !behind) flickerProbeRead(r, false);
     CtrPacer_frameBegun();
     if (r->flicker.flags & FLICKER_FLUSH) flickerProbeFlush(r);
@@ -20273,8 +20663,8 @@ void CtrRenderer_endFrame(Renderer* renderer) {
 #endif
         return;
     }
-    CtrPacer_frameEnding();
-    C3D_FrameEnd(0);
+    CtrPacer_frameEnding(); FW_T(fwE2);
+    C3D_FrameEnd(0); FW_ACC(11, fwE2);
     r->inFrame = false;
     r->frameStats.gpuMs = C3D_GetDrawingTime();
     CtrPacer_frameEnded(r->frameStats.gpuMs);
@@ -22093,7 +22483,7 @@ bool CtrRenderer_selfTest(Renderer* renderer, const char* name) {
 // layout and vertex emission. Text at alpha 0 is never tracked for the magnifier (isDimText), so nothing else
 // sees it either. Surface draws keep their seen/touched bookkeeping and go through as before.
 // These wrappers sit in the vtable in front of the unchanged draws, in late code (late_reserve.ld), so the warm
-// text keeps its place (RULES.md); the alpha test is inline and only alpha 0 calls e5xNoop. Each draw is called
+// text keeps its place (the layout rules); the alpha test is inline and only alpha 0 calls e5xNoop. Each draw is called
 // through E5X_OPAQUE, so GCC can't inline it here: the small ones (ctrDrawLine, ctrDrawText, ...) keep their
 // own bodies at main's addresses. The prototypes come from E5X_DECLARE (ctr_renderer.h), so no line above the warm
 // functions moves.
@@ -22112,7 +22502,7 @@ static void E5X_LATE e5xDrawSprite(Renderer* renderer, int32_t tpagIndex, float 
 static void E5X_LATE e5xDrawSpritePart(Renderer* renderer, int32_t tpagIndex, float srcOffX, float srcOffY, float srcW, float srcH, float x, float y,
                                        float xscale, float yscale, float angleDeg, float pivotX, float pivotY, uint32_t color, float alpha) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(ctrDrawSpritePart)(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x, y, xscale, yscale, angleDeg, pivotX, pivotY, color, alpha);
+    E5X_OPAQUE(partDrawSprite)(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x, y, xscale, yscale, angleDeg, pivotX, pivotY, color, alpha);
 }
 
 static void E5X_LATE e5xDrawSpritePartColor(Renderer* renderer, int32_t tpagIndex, float srcOffX, float srcOffY, float srcW, float srcH, float x,
@@ -22638,7 +23028,7 @@ static void oomVineDropOps(CtrSurface* s) {
 // __wrap_CtrRenderer_yieldBottomScreen call this copy.
 __attribute__((noipa, noinline, section(".text.late.engfix"))) static void screensConfigureKeepBottom(CtrRenderer* r) {
     // Keeps main's screensConfigure emitted where it was (an address reference, no code).
-    __asm__ volatile("" :: "X"(screensConfigure));
+    WAD17_ONLY(__asm__ volatile("" :: "X"(screensConfigure));)
     CtrDisplaySettings* d = &r->display;
     bool onBottom = CtrScreens_gameBelow() && !r->bottomYielded;
     bool wide = d->topMode == TOP_MODE_WIDE && r->displayCaps.wide;
@@ -22810,10 +23200,18 @@ __attribute__((noinline, no_reorder, section(".text.late.engfix6"))) static bool
 // roomload fonts F2(a): the per-font Smart smoothing verdicts (smartFontState's doubled/single glyphs and
 // smartFontClean's clean/one colour), worked out from the game data by the build (tools/aot/fontverdict.py, checked
 // against these functions by tools/analysis/test_fontverdict.py) instead of at each font's first draw, where they cost
+#if defined(CTRPORT_GOG_COMPAT)
+// the Old 3DS about 65 ms on the first battle frame. romfs:/fonts/<data.win folder>.dtfv: "DTFV", version 1 (GOG 2), the
+#else
+#line 21751
 // the Old 3DS about 65 ms on the first battle frame. romfs:/fonts/<data.win folder>.dtfv: "DTFV", version 1, the
+#endif
+#line 21752
 // CtrPackKey, the font count, then 4 bytes per font (smart, clean with rounded colours; smart, clean with exact ones;
 // 0 = not known, looked at here as before). Read once per renderer, at its first room change, into the fontReach
-// records, whose other fields fontReach() fills as before. A missing or stale file changes nothing.
+// records, whose other fields fontReach() fills as before. A missing or stale file changes nothing. A room whose
+// first frame draws text (DELTARUNE's chapter select) has made the records already: then only the verdicts not
+// found yet (0) are filled, with the values the runtime would find (tools/analysis/test_fontverdict.py).
 #define RL_FONT_LATE __attribute__((noinline, section(".text.late.roomload")))
 #define RL_FONT_RODATA __attribute__((section(".rodata.roomload_in_text")))
 #define RL_FONT_MAGIC 0x56465444u // "DTFV"
@@ -22827,18 +23225,42 @@ static const char rlFontRounded[] RL_FONT_RODATA = "rounded";
 static const char rlFontExact[] RL_FONT_RODATA = "exact";
 Result CtrRomfs_init(const char* name);
 bool CtrPack_romfsName(char* name, size_t size);
+
+#if defined(CTRPORT_GOG_COMPAT)
+#ifdef ENABLE_WAD16
+static void gogutLoadItems(CtrRenderer* r, FILE* f) GOGUT_SMART_LATE;
+// This pack belongs to the digest-verified game; a bench-only data root is not a new game or chapter.
+static const char gogutFontFolder[] __attribute__((section(".rodata.gogut_in_text"))) = "undertale";
+#endif
+#if defined(ENABLE_WAD16) && defined(__3DS__) && defined(NDEBUG)
+// The GOG version selector grows this cold loader. Keep main's measured 640-B roomload slot below;
+// the replacement is appended in our own late section, so every later change retains its address.
+static void gogutLoadFontVerdicts(Renderer* renderer) GOGUT_SMART_LATE __attribute__((used));
+#define RL_FONT_IMPL gogutLoadFontVerdicts
+#else
+#define RL_FONT_IMPL CtrRenderer_loadFontVerdicts
 void CtrRenderer_loadFontVerdicts(Renderer* renderer) RL_FONT_LATE;
-void CtrRenderer_loadFontVerdicts(Renderer* renderer) {
+#endif
+#line 21769
+void RL_FONT_IMPL(Renderer* renderer) {
     CtrRenderer* r = (CtrRenderer*) renderer;
     if (r == nullptr || r->fontReach != nullptr || r->base.dataWin == nullptr) return;
     DataWin* dw = r->base.dataWin;
     uint32_t count = dw->font.count;
     if (count == 0 || count > RL_FONT_MAX) return;
-    // The table is named after the data.win's folder (CtrPack_romfsName), as the chapter's AOT module is.
+    // Use the shared SD-to-RomFS naming rule, including the per-game "-3ds" suffix.
+
+
+
+
+
     // "romfs:/fonts/" + at most 63 + ".dtfv" fits.
     char file[96], folder[64];
     if (!CtrPack_romfsName(folder, sizeof(folder))) return;
-    snprintf(file, sizeof(file), rlFontPath, folder);
+
+
+    snprintf(file, sizeof(file), rlFontPath, ctrGogutSmartDecoded ? gogutFontFolder : folder);
+#line 21787
     if (R_FAILED(CtrRomfs_init(rlFontMount))) return;
     FILE* f = fopen(file, rlFontMode);
     if (f == nullptr) return;
@@ -22855,13 +23277,18 @@ void CtrRenderer_loadFontVerdicts(Renderer* renderer) {
         memcpy(&timestamp, head + 16, 8);
         memcpy(&fonts, head + 24, 4);
         CtrPackKey key = CtrPack_keyFor(dw);
-        ok = magic == RL_FONT_MAGIC && version == 1 && size == key.dataWinSize && gameId == key.gameId && timestamp == key.timestamp &&
+        ok = magic == RL_FONT_MAGIC && version == (ctrGogutSmartDecoded ? 2u : 1u) && size == key.dataWinSize && gameId == key.gameId && timestamp == key.timestamp &&
              fonts != 0 && fonts <= count; // the game may add fonts (font_add_sprite) before its first room
     }
     if (ok) {
         table = malloc((size_t) fonts * 4);
         ok = table != nullptr && fread(table, 4, fonts, f) == fonts;
     }
+    // Optional GOG-only trailer. The whole packet is checked before any cached item changes.
+#ifdef ENABLE_WAD16
+    if (ok && ctrGogutSmartDecoded && CtrPack_lossy()) gogutLoadItems(r, f);
+#endif
+#line 21810
     fclose(f);
     if (!ok) {
         free(table);
@@ -22889,6 +23316,80 @@ void CtrRenderer_loadFontVerdicts(Renderer* renderer) {
     free(table);
     logInfo(rlFontLog, (unsigned) known, (unsigned) count, file, exact ? rlFontExact : rlFontRounded);
 }
+#else
+#line 21768
+void CtrRenderer_loadFontVerdicts(Renderer* renderer) RL_FONT_LATE;
+void CtrRenderer_loadFontVerdicts(Renderer* renderer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    if (r == nullptr || r->fontVerdictsTried || r->base.dataWin == nullptr) return;
+    DataWin* dw = r->base.dataWin;
+    uint32_t count = dw->font.count;
+    if (count == 0 || count > RL_FONT_MAX) return;
+    // The table is named after the data.win's folder (CtrPack_romfsName), as the chapter's AOT module is.
+    // "romfs:/fonts/" + at most 63 + ".dtfv" fits.
+    char file[96], folder[64];
+    if (!CtrPack_romfsName(folder, sizeof(folder))) return;
+    snprintf(file, sizeof(file), rlFontPath, folder);
+    if (R_FAILED(CtrRomfs_init(rlFontMount))) return;
+    FILE* f = fopen(file, rlFontMode);
+    r->fontVerdictsTried = true; // not again for this renderer, as when its first draw made the records
+    if (f == nullptr) return;
+    uint8_t head[RL_FONT_HEADER];
+    uint8_t* table = nullptr;
+    bool ok = fread(head, 1, sizeof(head), f) == sizeof(head);
+    uint32_t magic = 0, version = 0, size = 0, gameId = 0, fonts = 0;
+    uint64_t timestamp = 0;
+    if (ok) {
+        memcpy(&magic, head, 4);
+        memcpy(&version, head + 4, 4);
+        memcpy(&size, head + 8, 4);
+        memcpy(&gameId, head + 12, 4);
+        memcpy(&timestamp, head + 16, 8);
+        memcpy(&fonts, head + 24, 4);
+        CtrPackKey key = CtrPack_keyFor(dw);
+        ok = magic == RL_FONT_MAGIC && version == 1 && size == key.dataWinSize && gameId == key.gameId && timestamp == key.timestamp &&
+             fonts != 0 && fonts <= count; // the game may add fonts (font_add_sprite) before its first room
+    }
+    if (ok) {
+        table = malloc((size_t) fonts * 4);
+        ok = table != nullptr && fread(table, 4, fonts, f) == fonts;
+    }
+    fclose(f);
+    if (!ok) {
+        free(table);
+        return;
+    }
+    // Plain calloc (safeCalloc's inline body would move this file's warm strings); without memory, nothing changes.
+    if (r->fontReach == nullptr) {
+        struct CtrFontReach* reach = calloc(count, sizeof(struct CtrFontReach));
+        if (reach == nullptr) {
+            free(table);
+            return;
+        }
+        r->fontReach = reach;
+        r->fontReachCount = count;
+    }
+    bool exact = !CtrPack_lossy();
+    uint32_t known = 0;
+    for (uint32_t i = 0; fonts > i && r->fontReachCount > i; i++) {
+        const uint8_t* v = table + (size_t) i * 4 + (exact ? 2 : 0);
+        // Only verdicts the runtime could give: SMART_COARSE/SMART_FINE, and clean 1-4.
+        if (v[0] != SMART_COARSE && v[0] != SMART_FINE) continue;
+        if (v[1] < 1 || v[1] > 4) continue;
+        if (r->fontReach[i].smart == 0) r->fontReach[i].smart = v[0];
+        if (r->fontReach[i].clean == 0) r->fontReach[i].clean = v[1];
+        known++;
+    }
+    free(table);
+    logInfo(rlFontLog, (unsigned) known, (unsigned) count, file, exact ? rlFontExact : rlFontRounded);
+}
+#endif
+#line 21837
+#if defined(CTRPORT_GOG_COMPAT)
+#undef RL_FONT_IMPL
+#line 21837
+#endif
+#line 21837
 
 // ===[ Battle command labels at native (cmdlabel; DELTARUNE only) ]===
 // Where source/ctr_cmdlabel.c finds the renderer's own vtable and the bound surface's shift. Data only, as
@@ -22926,6 +23427,10 @@ __asm__(".pushsection .text.emitPageRegionVisible, 1\n.space 32\n.popsection");
 #undef screensCtrDestroy
 #include "ctr_pillar_exact.inc"
 #endif
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_O3DS)
+#include "ctr_repack.inc"
+#endif
+#line 21874
 
 // ===[ Smart smoothing: items over tiles of two formats (cmdlabel; DELTARUNE only) ]===
 // A page's tiles each have their own format (ctr_texture_pack.c): RGBA5551 where at most 2% of the tile's visible
@@ -23904,13 +24409,13 @@ typedef struct {
     float xscale, yscale, angleDeg;
     float lx0, ly0, lx1, ly1;
     CtrColor c;
-} UtkPlain;
+} UtkPlain; static __attribute__((noinline, section(".text.late.utflpk"))) bool utflOffView(CtrRenderer* r, const UtkPlain* d, float x, float y);
 
 // utkDrawSprite's draw after its checks, from the corners on: false when it is done, true when the draw needs the full
 // way (ctrDrawSprite) instead. Before that answer it has only stamped what ctrDrawSprite stamps the same way.
 static __attribute__((noinline, section(".text.late.utkill"))) bool utkEmit(CtrRenderer* r, const UtkPlain* d, CtrPage* page, float x,
                                                                            float y) {
-    TexturePageItem* tpag = d->tpag;
+    TexturePageItem* tpag = d->tpag; if (d->angleDeg != 0.0f && utflOffView(r, d, x, y)) return false;
     Matrix4f transform;
     setDrawTransform(&transform, x, y, d->xscale, d->yscale, d->angleDeg);
     float px[4], py[4];
@@ -23940,53 +24445,53 @@ static __attribute__((noinline, section(".text.late.utkill"))) bool utkEmit(CtrR
         emitPageRegionVisible(r, page, dataPage, sx0, sy0, sx1, sy1, px, py, cs);
         return false;
     }
-    float gx[4], gy[4];
-    const float* qx = px;
-    const float* qy = py;
-    if (gridSnapQuad(r, px, py, sx1 - sx0, sy1 - sy0, gx, gy)) {
-        qx = gx;
-        qy = gy;
-    }
-    // emitPageTiles, without a palette.
-    if (utkTile.page != page || utkTile.sx0 != sx0 || utkTile.sy0 != sy0 || utkTile.sx1 != sx1 || utkTile.sy1 != sy1 ||
-        utkTile.tileW != page->tileW || utkTile.tileH != page->tileH || utkTile.tilesX != page->tilesX || utkTile.tilesY != page->tilesY) {
-        utkTilePart(page, sx0, sy0, sx1, sy1);
-    }
-    if (utkTile.whole) {
-        if (!utkTileDone(r, &page->tiles[0])) CtrTextures_ensureTiles(&r->textures, page, 0, 0, 0, 0);
-        if (!page->tiles[0].valid) return false;
-        emitQuad(r, CtrTextures_drawTex(&page->tiles[0]), qx, qy, utkTile.uv[0], utkTile.uv[1], utkTile.uv[2], utkTile.uv[3], cs);
-        r->palNextB = nullptr;
-        return false;
-    }
-    if (utkTile.tile == -2) {
-        emitPageTiles(r, page, sx0, sy0, sx1, sy1, qx, qy, cs);
-        return false;
-    }
-    if (utkTile.tile == -1) return false;
-    CtrTile* tile = &page->tiles[utkTile.tile];
-    if (!utkTileDone(r, tile)) CtrTextures_ensureTilesBut(&r->textures, page, utkTile.tx0, utkTile.ty0, utkTile.tx0, utkTile.ty0, 0);
-    if (!tile->valid || !utkTile.part) return false;
-    float ex[4], ey[4];
-    const float* s = utkTile.s;
-    if (floatBits(qx[0]) == floatBits(qx[3]) && floatBits(qx[1]) == floatBits(qx[2]) && floatBits(qy[0]) == floatBits(qy[1]) &&
-        floatBits(qy[2]) == floatBits(qy[3])) {
-        // A rectangle: quadPosition's bottom edge x is its top edge x, bit for bit, so each is worked out once.
-        float tx0 = qx[0] + (qx[1] - qx[0]) * s[0], ty0 = qy[0] + (qy[1] - qy[0]) * s[0], by0 = qy[3] + (qy[2] - qy[3]) * s[0];
-        float tx2 = qx[0] + (qx[1] - qx[0]) * s[2], ty2 = qy[0] + (qy[1] - qy[0]) * s[2], by2 = qy[3] + (qy[2] - qy[3]) * s[2];
-        ex[0] = tx0 + (tx0 - tx0) * s[1], ey[0] = ty0 + (by0 - ty0) * s[1];
-        ex[1] = tx2 + (tx2 - tx2) * s[1], ey[1] = ty2 + (by2 - ty2) * s[1];
-        ex[2] = tx2 + (tx2 - tx2) * s[3], ey[2] = ty2 + (by2 - ty2) * s[3];
-        ex[3] = tx0 + (tx0 - tx0) * s[3], ey[3] = ty0 + (by0 - ty0) * s[3];
-    } else {
-        quadPosition(qx, qy, s[0], s[1], &ex[0], &ey[0]);
-        quadPosition(qx, qy, s[2], s[1], &ex[1], &ey[1]);
-        quadPosition(qx, qy, s[2], s[3], &ex[2], &ey[2]);
-        quadPosition(qx, qy, s[0], s[3], &ex[3], &ey[3]);
-    }
-    emitQuad(r, CtrTextures_drawTex(tile), ex, ey, utkTile.uv[0], utkTile.uv[1], utkTile.uv[2], utkTile.uv[3], cs);
-    r->palNextB = nullptr;
+    partEmit(r, page, sx0, sy0, sx1, sy1, px, py, cs);
     return false;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
 
 // A run of plain draws (runner.c's utkDrawRoom): the runner arms it before the first draw of a run, utkDrawSprite keeps
@@ -24062,7 +24567,47 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawSprit
     // Before the full way, which keeps its tail call: a kept draw that goes it then never proves plain (utkRun.used).
     if (utkRun.state != 0) utkRun.used = r->vertexUsed;
     if (full) ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+} static __attribute__((noinline, section(".text.late.utasgore"))) void utaFineSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale, float angleDeg, uint32_t color, float alpha);
+// (utasgore) Whether a fine sprite goes to utaFineSprite rather than straight to ctrDrawSprite: a held run of fine
+// draws open in this frame (utaHeldSteady's first tests; nothing utaFineDraw does before them changes anything), in a
+// frame after one with at least UTA_GATE_CALLS such calls. On Old a call into utaFineSprite's late page costs about
+// 1.3 us even when it only jumps on (o3ds utasgore9h: +0.16 ms in Asgore), and where few of a frame's fine draws can
+// take the path (Asgore's attacks outside the helix: about 90-105 held calls a frame) the trips cost more than the path
+// saves; in the helix (about 220-340 a frame, most on the path) it saves 3.7 ms. The count is the same whatever the
+// gate says (a draw the path refuses goes the full way, which leaves what the path would), and any draw may go the
+// full way, so the gate never changes a pixel. Here, in utkDrawSprite, so every other fine sprite keeps its tail call.
+#if !defined(ENABLE_WAD17) && !defined(CTRPORT_RENDER_TIMING) && ASG_FORCE_SPLIT == 0
+#define UTA_GATE_CALLS 160
+static uint32_t utaGateFrame __attribute__((section(".bss.late.utasgore")));
+static uint32_t utaGateCalls __attribute__((section(".bss.late.utasgore")));
+static uint8_t utaGateOn __attribute__((section(".bss.late.utasgore")));
+#ifdef CTRPORT_ASG_PROBE
+extern uint8_t utaOff;
+extern uint32_t utaWhy[48];
+#endif
+static inline __attribute__((always_inline)) bool utaTakes(const CtrRenderer* r) {
+#ifdef CTRPORT_ASG_PROBE
+    if (utaOff) return false;
+#endif
+    if (!asgRun.open || r->addHold.mode != ADD_HOLD_HELD || r->frame != asgRun.endFrame) return false;
+    if (utaGateFrame != r->frame) {
+        utaGateOn = utaGateCalls >= UTA_GATE_CALLS;
+        utaGateCalls = 0;
+        utaGateFrame = r->frame;
+    }
+    utaGateCalls++;
+#ifdef CTRPORT_ASG_PROBE
+    if (!utaGateOn) utaWhy[41]++;
+#endif
+    return utaGateOn;
 }
+#else
+// The forced split's builds (ASG_FORCE_SPLIT, tests): utaFineSprite is the full path.
+static inline __attribute__((always_inline)) bool utaTakes(const CtrRenderer* r) {
+    (void) r;
+    return true;
+}
+#endif
 
 // The vtable's drawSprite under e5x. What can't be drawn the plain way goes straight to ctrDrawSprite before any frame
 // is set up: an item outside the data's own, one smart smoothing already knows is fine (utkCoarse would say so after
@@ -24073,7 +24618,8 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawSprit
     const CtrRenderer* r = (const CtrRenderer*) renderer;
     if (0 > tpagIndex || (uint32_t) tpagIndex >= r->originalTpagCount ||
         (r->smart.active && r->smart.itemState != nullptr && (r->smart.itemState[tpagIndex] & ITEM_FINE) != 0) || !utkPlainState(r)) {
-        ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+        if (utaTakes(r)) utaFineSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+        else ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
         return;
     }
     utkDrawSpriteBody(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
@@ -24478,4 +25024,1287 @@ const uint32_t Symverdict_layout[3] __attribute__((aligned(4), section(".rodata.
     __builtin_offsetof(CtrRenderer, originalTpagCount),
     SYM_STATE_PLAIN,
 };
+#endif
+#ifdef ENABLE_WAD16
+// ===[ Smart smoothing's tile quads, straight into the batch (smartcut) ]===
+
+// smartEmitAveraged's quads on one tile, as its quad loop and smartTileEnd
+// made them, without the SmartQuad copies in between: the same quads, in the
+// same order, with the same floats. On an upright quad (qx = {x0, x1, x1, x0},
+// qy = {y0, y0, y1, y1}) quadPosition's x depends on s alone and its y on t
+// alone: top and bottom are the same expression, so their difference is 0 and
+// x is top's x0 + (x1 - x0) * s; y is y0 + (y1 - y0) * t, top's and bottom's
+// y being y0 and y1 (y0 + 0 * s). So each span's two sides are worked out once
+// (X, Y) instead of four times a quad. Build with -DCTRPORT_SMART_NO_DIRECT
+// for the quad loop and smartTileEnd, or with -DCTRPORT_SMART_DIRECT_CHECK to
+// run those and compare every quad with what this path would emit.
+#ifdef SMART_DIRECT
+// smartEmitAveraged's colours (nativeCornerColor for each pair of spans) and
+// its spans' parts of the tile, the same arithmetic, out of line: the direct
+// path's call made smartEmitAveraged outgrow its slot. The colours come after
+// smartTileBegin now, which they don't depend on.
+static void __attribute__((noinline, section(".text.late.smartdirect"))) smartColoursAxes(CtrRenderer* r, const CtrColor* c, SmartAxis* xa, int32_t nx,
+                                                                                        SmartAxis* ya, int32_t ny, const SmartTile* tile, CtrColor (*cc)[3]) {
+    for (int32_t j = 0; ny > j; j++) {
+        for (int32_t i = 0; nx > i; i++) cc[j][i] = nativeCornerColor(c, xa[i].f, ya[j].f, xa[i].weight * ya[j].weight, r->smart.straight);
+    }
+    if (tile->tile != nullptr) {
+        for (int32_t i = 0; nx > i; i++) smartAxisTile(&xa[i], tile->whole, tile->tileW, tile->tx);
+        for (int32_t j = 0; ny > j; j++) smartAxisTile(&ya[j], tile->whole, tile->tileH, tile->ty);
+    }
+}
+
+static inline __attribute__((always_inline)) void smartDirectSides(const SmartTile* t, const SmartAxis* a, int32_t n, float (*out)[2]) {
+    for (int32_t i = 0; n > i; i++, a++) {
+        if (!a->on) continue;
+        if (t->whole) {
+            out[i][0] = a->q0;
+            out[i][1] = a->q1;
+        } else {
+            out[i][0] = a->q0 + (a->q1 - a->q0) * a->s[0];
+            out[i][1] = a->q0 + (a->q1 - a->q0) * a->s[1];
+        }
+    }
+}
+
+#ifndef CTRPORT_SMART_DIRECT_CHECK
+static bool __attribute__((noinline, section(".text.late.smartdirect"))) smartEmitTile(CtrRenderer* r, const SmartTile* t, const SmartAxis* xa, int32_t nx,
+                                                                                    const SmartAxis* ya, int32_t ny, CtrColor (*cc)[3]) {
+    if (!t->tile->valid) return true;
+    // smartTileEnd's choice: one reserveBatch if every quad's v is on the
+    // same side of joining a multi-texture batch. Else, or if a quad's corners
+    // are all clear (smartTileEnd leaves it out if that draws nothing), false
+    // before doing anything: the quad loop and smartTileEnd as before. Calls
+    // from here to emitQuad or to transparentDrawIsNoop reordered the
+    // E5X_LATE functions on UNDERTALE (GCC's output order).
+    bool keep[3][3];
+    int32_t n = 0;
+    bool multiSafe = false, mixed = false;
+    for (int32_t j = 0; ny > j; j++) {
+        const SmartAxis* y = &ya[j];
+        bool safe = y->uv[0] >= MULTI_MIN_V && y->uv[1] >= MULTI_MIN_V && 1.0f >= y->uv[0] && 1.0f >= y->uv[1];
+        for (int32_t i = 0; nx > i; i++) {
+            keep[j][i] = false;
+            if (!xa[i].on || !y->on) continue;
+            if (cc[j][i].a == 0) return false;
+            keep[j][i] = true;
+            if (n++ == 0) multiSafe = safe;
+            else if (safe != multiSafe) mixed = true;
+        }
+    }
+    if (n == 0) return true;
+    if (mixed) return false;
+    float xs[3][2], ys[3][2];
+    smartDirectSides(t, xa, nx, xs);
+    smartDirectSides(t, ya, ny, ys);
+    CtrVertex* v = reserveBatch(r, t->tex, 6 * (uint32_t) n, multiSafe, (uint32_t) n);
+    r->palNextB = nullptr;
+    if (v == nullptr) return true;
+    float z = r->vertexZ;
+    bool quads = r->batchQuads;
+    for (int32_t j = 0; ny > j; j++) {
+        float y0 = ys[j][0], y1 = ys[j][1], v0 = ya[j].uv[0], v1 = ya[j].uv[1];
+        for (int32_t i = 0; nx > i; i++) {
+            if (!keep[j][i]) continue;
+            float x0 = xs[i][0], x1 = xs[i][1], u0 = xa[i].uv[0], u1 = xa[i].uv[1];
+            CtrColor c = cc[j][i];
+            setVertex(&v[0], x0, y0, z, u0, v0, c);
+            setVertex(&v[1], x1, y0, z, u1, v0, c);
+            setVertex(&v[2], x1, y1, z, u1, v1, c);
+            if (quads) {
+                setVertex(&v[3], x0, y1, z, u0, v1, c);
+                v += 4;
+            } else {
+                setVertex(&v[3], x0, y0, z, u0, v0, c);
+                setVertex(&v[4], x1, y1, z, u1, v1, c);
+                setVertex(&v[5], x0, y1, z, u0, v1, c);
+                v += 6;
+            }
+        }
+    }
+    return true;
+}
+#else
+// Test builds: the quad loop has filled t->q; compare each quad, bit for
+// bit, with the corners, texture coordinates and colour this path takes.
+static struct {
+    uint32_t draws, quads, mismatches, clear, mixed;
+} smartDirect __attribute__((section(".bss.late.smartcut")));
+
+static void __attribute__((noinline, section(".text.late.smartdirect"))) smartDirectCheck(const SmartTile* t, const SmartAxis* xa, int32_t nx, const SmartAxis* ya,
+                                                                                       int32_t ny, CtrColor (*cc)[3]) {
+    float xs[3][2], ys[3][2];
+    smartDirectSides(t, xa, nx, xs);
+    smartDirectSides(t, ya, ny, ys);
+    int32_t k = 0;
+    bool same = true, clear = false;
+    int8_t side = -1;
+    if (t->tile->valid) {
+        for (int32_t j = 0; ny > j; j++) {
+            for (int32_t i = 0; nx > i; i++) {
+                if (!xa[i].on || !ya[j].on) continue;
+                clear = clear || cc[j][i].a == 0;
+                int8_t safe = ya[j].uv[0] >= MULTI_MIN_V && ya[j].uv[1] >= MULTI_MIN_V && 1.0f >= ya[j].uv[0] && 1.0f >= ya[j].uv[1];
+                if (side < 0) side = safe;
+                else if (side != safe) side = 2;
+                if (k >= t->n) {
+                    same = false;
+                    continue;
+                }
+                const SmartQuad* q = &t->q[k++];
+                float ex[4] = { xs[i][0], xs[i][1], xs[i][1], xs[i][0] }, ey[4] = { ys[j][0], ys[j][0], ys[j][1], ys[j][1] };
+                float euv[4] = { xa[i].uv[0], ya[j].uv[0], xa[i].uv[1], ya[j].uv[1] }, quv[4] = { q->u0, q->v0, q->u1, q->v1 };
+                same = same && memcmp(ex, q->x, sizeof(ex)) == 0 && memcmp(ey, q->y, sizeof(ey)) == 0 && memcmp(euv, quv, sizeof(euv)) == 0 &&
+                       memcmp(&cc[j][i], &q->c, sizeof(CtrColor)) == 0;
+            }
+        }
+    }
+    same = same && k == t->n;
+    smartDirect.draws++;
+    smartDirect.quads += (uint32_t) k;
+    if (clear) smartDirect.clear++;
+    else if (side == 2) smartDirect.mixed++;
+    if (!same && 16 > smartDirect.mismatches++) {
+        static const char badFmt[] __attribute__((section(".rodata.smartdirect_in_text"))) =
+            "[smartcut] direct check MISMATCH %lu: nx %ld ny %ld whole %d quads %ld/%ld\n";
+        logInfo(badFmt, (unsigned long) smartDirect.mismatches, (long) nx, (long) ny, t->whole ? 1 : 0, (long) k, (long) t->n);
+    }
+    if ((smartDirect.draws & 0x3fffu) == 0) {
+        static const char sumFmt[] __attribute__((section(".rodata.smartdirect_in_text"))) =
+            "[smartcut] direct check: %lu draws, %lu quads, %lu mismatches, handed back %lu clear %lu mixed\n";
+        logInfo(sumFmt, (unsigned long) smartDirect.draws, (unsigned long) smartDirect.quads, (unsigned long) smartDirect.mismatches,
+                (unsigned long) smartDirect.clear, (unsigned long) smartDirect.mixed);
+    }
+}
+#endif
+#endif // SMART_DIRECT
+#endif // ENABLE_WAD16
+
+// ===[ Smart smoothing's item verdicts from the build (smartcut) ]===
+//
+// source/z_itemverdict.c fills smart.itemState and smart.itemInk from the
+// build's table at the first room change (see there); itemVerdict then finds
+// them filled. That file reads the fields through this table, so this one
+// only gains data: the fields' offsets, the ITEM_* bits, and where the
+// smoothing mode is.
+const uint32_t Smartiv_layout[10] __attribute__((aligned(4), section(".rodata.itemverdict_in_text"))) = {
+    __builtin_offsetof(CtrRenderer, smart.itemState),
+    __builtin_offsetof(CtrRenderer, smart.itemInk),
+    __builtin_offsetof(CtrRenderer, originalTpagCount),
+    ITEM_KNOWN, ITEM_FINE, ITEM_CLEAN, ITEM_BLACKEN, ITEM_PHASED,
+    __builtin_offsetof(CtrRenderer, display.smoothing), SMOOTHING_SMART,
+};
+
+// ===[ Fine sprites outside the view and in steady runs (utasgore) ]===
+//
+// A fine sprite (smartSpriteFine) that follows another, with nothing drawn between them, continues the held run of
+// fine draws (asgBegin, asgEnd). When it is wholly outside the view, emitPageRegionDirect drops its quad, so its whole
+// draw comes down to asgBegin taking the run's last held batch back and asgEnd holding it again. With the run in the
+// state asgEnd's held path leaves (utaHeldSteady), the two leave every field as it was: so the draw is nothing but its
+// page's use stamp. UNDERTALE's Asgore fight draws some 200 fine flames a frame, a third of them out of view, and on
+// the Old 3DS the fine path costs some 15,000 cycles a call, mostly waiting for instructions (docs/3ds-hardware.md,
+// "Smart's fine sprite path is bound by instruction fetch"). utaFineSprite takes the place of ctrDrawSprite for a
+// sprite smart smoothing knows is fine; anything else, or anything it can't tell for sure, goes the full way.
+// DELTARUNE's region draw differs (pillarEmitPageRegion) and timing builds count inside the chain, so neither has it.
+#if !defined(ENABLE_WAD17) && !defined(CTRPORT_RENDER_TIMING) && ASG_FORCE_SPLIT == 0
+#define UTA_LATE __attribute__((noinline, section(".text.late.utasgore")))
+#ifdef CTRPORT_ASG_PROBE
+uint32_t utaCount[8] __attribute__((section(".bss.late.utasgore"))), utaShadowCount[4] __attribute__((section(".bss.late.utasgore")));
+uint64_t utaStampT[6] __attribute__((section(".bss.late.utasgore"))), utaTicks[6] __attribute__((section(".bss.late.utasgore")));
+#ifdef UTA_PARTS
+#define UTA_STAMP(n) (utaStampT[n] = svcGetSystemTick())
+#define UTA_TALLY() for (int32_t i_ = 1; 6 > i_; i_++) utaTicks[i_] += utaStampT[i_] - utaStampT[i_ - 1]
+#else
+#define UTA_STAMP(n) ((void) 0)
+#define UTA_TALLY() ((void) 0)
+#endif
+#define UTA_COUNT(n) (utaCount[n]++)
+// Why a plan said no (UTA_NO's number, utaWhy's index), and the switch that sends every draw the full way
+// (<game dir>/utaoff.txt, read by the probe; utaTakes tests it): the same build measured with and without the path.
+uint32_t utaWhy[48] __attribute__((section(".bss.late.utasgore")));
+uint8_t utaOff __attribute__((section(".bss.late.utasgore")));
+#define UTA_NO(n) (utaWhy[n]++, false)
+#else
+#define UTA_COUNT(n) ((void) 0)
+#define UTA_STAMP(n) ((void) 0)
+#define UTA_TALLY() ((void) 0)
+#define UTA_NO(n) false
+#endif
+
+// Whether the held run of fine draws is as asgEnd's held path left it after the last fine sprite, with nothing drawn
+// or changed since, so that asgBegin would continue it and, given a draw that emits nothing, asgEnd would hold the same
+// batch again and put back every field: asgBegin's own tests; asgRoom making no room; the last held batch ending at
+// the pending vertices, of one texture, with vertices, and the pending batch's fields as asgEnd sets them from it.
+static inline __attribute__((always_inline)) bool utaHeldSteady(const CtrRenderer* r) {
+    const CtrAddHold* h = &r->addHold;
+    if (!asgRun.open || asgRun.cont || asgRun.adjacent || h->mode != ADD_HOLD_HELD || h->page != nullptr || h->count == 0 ||
+        r->frame != asgRun.frame || r->frame != asgRun.endFrame || r->vertexCount != asgRun.endVertex || r->boundTarget != asgRun.target ||
+        r->batchStart != r->vertexCount || r->smart.copy != nullptr || r->smart.emitting || r->smart.straight) {
+        return false;
+    }
+    uint32_t word = blendFuncWord(ASG_PREMULT);
+    if (asgRun.word != word || CITRO_WORD(r->citroBlendAt) != word) return false;
+    if (r->inFrame && (r->vertexCount + ASG_ROOM_VERTICES > r->vertexLimit ||
+                       (gpuCmdBuf != nullptr && gpuCmdBufOffset + CMDBUF_RESERVE_WORDS + ASG_ROOM_WORDS > gpuCmdBufSize))) {
+        return false;
+    }
+    const CtrHeldBatch* b = &h->batches[h->count - 1];
+    return b->start + b->count == r->vertexCount && b->count != 0 && b->texCount == 1 && r->batchTex == b->texes[0] &&
+           r->batchTexes[0] == b->texes[0] && r->batchTexes[1] == b->texes[1] && r->batchTexes[2] == b->texes[2] && r->batchTexB == nullptr &&
+           r->batchTexCount == 1 && r->batchMultiOk && !r->batchPlainOnly && !r->batchQuads && !r->batchQuadsAuto;
+}
+
+// smartSpriteFine's answer for a draw of a data item smart smoothing knows is fine and clean (so no copy), by its
+// tests in order, none of which changes anything: true, fine. The texel's side is smartTexelSide's sums, copied (a call
+// from here could change how GCC inlines it into smartSpriteFine), so an answer near its limit goes the full way.
+static inline __attribute__((always_inline)) bool utaFine(const CtrRenderer* r, int32_t tpagIndex, const TexturePageItem* tpag,
+                                                           const float* px, const float* py, float alpha) {
+    float sw = (float) tpag->sourceWidth, sh = (float) tpag->sourceHeight;
+    if (!r->smart.active || 0.0f >= alpha || 0.0f >= sw || 0.0f >= sh) return false;
+    if (r->boundSurface != r->base.runner->applicationSurfaceId) return false;
+    float ux = (px[1] - px[0]) / sw, uy = (py[1] - py[0]) / sw, vx = (px[3] - px[0]) / sh, vy = (py[3] - py[0]) / sh;
+    const C3D_Mtx* p = &r->projection;
+    float kx = 0.5f * (float) r->viewport.w * r->smart.scaleX, ky = 0.5f * (float) r->viewport.h * r->smart.scaleY;
+    float sux = (p->r[0].x * ux + p->r[0].y * uy) * kx, suy = (p->r[1].x * ux + p->r[1].y * uy) * ky;
+    float svx = (p->r[0].x * vx + p->r[0].y * vy) * kx, svy = (p->r[1].x * vx + p->r[1].y * vy) * ky;
+    float side = minF(sqrtf(sux * sux + suy * suy), sqrtf(svx * svx + svy * svy));
+    if (!(0.9f * SMART_FINE_SIDE > side)) return false;
+    const BlendFactors* f = &r->base.blendFactors;
+    if (!(r->blendEnable && r->blendMode == bm_normal && f->src == bm_src_alpha && f->dst == bm_inv_src_alpha && r->shaderFx == SHADER_FX_NONE &&
+          r->palKind == PAL_NONE)) {
+        return false;
+    }
+    const uint8_t* ink = r->smart.itemInk[tpagIndex];
+    return !(maxF((float) ink[0], 0.0f) >= minF((float) ink[2], sw) || maxF((float) ink[1], 0.0f) >= minF((float) ink[3], sh));
+}
+
+// A float as it is rounded now: GCC may not fold, reorder or distribute across it, so each expression below keeps the
+// operations, in the order, that GCC compiled smartEmitAveraged's own into (-ffast-math lets it change them; VFPv2's
+// multiply-accumulate rounds the product, so a*b + c is the same either way).
+static inline __attribute__((always_inline)) float utaKeep(float v) {
+    __asm__("" : "+t"(v));
+    return v;
+}
+
+// makeColor, gridDoubled and quadPosition, always inlined: a call GCC leaves out of line from late code would put
+// their bodies in the warm text, before the late code, and move everything after them. The same sums, in the same order
+// (quadPosition's products rounded before each add, as VFPv2's multiply-add does).
+static inline __attribute__((always_inline)) CtrColor utaColor(uint32_t bgr, float alpha) {
+    CtrColor c;
+    c.r = (uint8_t) BGR_R(bgr);
+    c.g = (uint8_t) BGR_G(bgr);
+    c.b = (uint8_t) BGR_B(bgr);
+    if (0.0f >= alpha) c.a = 0;
+    else if (alpha >= 1.0f) c.a = 255;
+    else c.a = (uint8_t) (alpha * 255.0f + 0.5f);
+    return c;
+}
+static inline __attribute__((always_inline)) bool utaGridDoubled(float quad, float src) {
+    float q = fabsf(quad);
+    if (GRID_SIZE_SLACK > fabsf(q - src)) return ((int32_t) src & 1) == 0;
+    return GRID_SIZE_SLACK > fabsf(q - 2.0f * src) || GRID_SIZE_SLACK > fabsf(q - 4.0f * src);
+}
+static inline __attribute__((always_inline)) void utaQuadPosition(const float* px, const float* py, float s, float t, float* outX, float* outY) {
+    float topX = utaKeep(px[0] + utaKeep(utaKeep(px[1] - px[0]) * s));
+    float topY = utaKeep(py[0] + utaKeep(utaKeep(py[1] - py[0]) * s));
+    float botX = utaKeep(px[3] + utaKeep(utaKeep(px[2] - px[3]) * s));
+    float botY = utaKeep(py[3] + utaKeep(utaKeep(py[2] - py[3]) * s));
+    *outX = utaKeep(topX + utaKeep(utaKeep(botX - topX) * t));
+    *outY = utaKeep(topY + utaKeep(utaKeep(botY - topY) * t));
+}
+
+// One axis of smartEmitAveraged's quads (smartAxes): its expressions, as compiled there.
+static inline __attribute__((always_inline)) void utaAxes(const float (*span)[5], int32_t n, float bo, float rk, float a0, float rlen, bool flip,
+                                                           SmartAxis* out) {
+    for (int32_t i = 0; n > i; i++, out++) {
+        float q0 = utaKeep(utaKeep(span[i][0] - bo) * rk), q1 = utaKeep(utaKeep(span[i][1] - bo) * rk);
+        float f = utaKeep(utaKeep(utaKeep(utaKeep(span[i][0] + span[i][1]) * 0.5f) - a0) * rlen);
+        f = f < 0.0f ? 0.0f : f > 1.0f ? 1.0f : f;
+        out->f = flip ? utaKeep(1.0f - f) : f;
+        float t0 = span[i][2], t1 = span[i][3];
+        bool swap = t0 > t1;
+        out->q0 = swap ? q1 : q0;
+        out->q1 = swap ? q0 : q1;
+        out->t0 = swap ? t1 : t0;
+        out->t1 = swap ? t0 : t1;
+        out->weight = span[i][4];
+    }
+}
+
+// nativeCornerColor of four corners of colour c, premultiplied (smart.straight false), as compiled there.
+static inline __attribute__((always_inline)) CtrColor utaCornerColor(CtrColor c, float fx, float fy, float w) {
+    float gx = utaKeep(1.0f - fx), gy = utaKeep(1.0f - fy);
+    float k[4] = { utaKeep(gx * gy), utaKeep(fx * gy), utaKeep(fx * fy), utaKeep(gx * fy) };
+    float rr = 0.0f, gg = 0.0f, bb = 0.0f, aa = 0.0f;
+    float ca = (float) c.a, cr = (float) c.r, cg = (float) c.g, cb = (float) c.b;
+    for (int32_t i = 0; 4 > i; i++) {
+        float a = utaKeep(ca * k[i]);
+        aa = utaKeep(aa + a);
+        float m = utaKeep(a * (1.0f / 255.0f));
+        rr = utaKeep(rr + utaKeep(cr * m));
+        gg = utaKeep(gg + utaKeep(cg * m));
+        bb = utaKeep(bb + utaKeep(cb * m));
+    }
+    return (CtrColor) { (uint8_t) (uint32_t) utaKeep(utaKeep(rr * w) + 0.5f), (uint8_t) (uint32_t) utaKeep(utaKeep(gg * w) + 0.5f),
+                        (uint8_t) (uint32_t) utaKeep(utaKeep(bb * w) + 0.5f), (uint8_t) (uint32_t) utaKeep(utaKeep(aa * w) + 0.5f) };
+}
+
+// A fine sprite's draw in view, worked out ahead: its quads as smartEmitAveraged and smartTileEnd would put them in
+// the batch, and what is noted of it.
+typedef struct {
+    SmartQuad q[9];
+    int32_t n;
+    uint32_t count; // vertices
+    float px[4], py[4]; // where it is drawn (on the grid)
+    uint32_t pixels;
+    bool averaged; // smartEmitAveraged's quads (else emitPageRegionVisible's fallback: utaLinear)
+} UtaPlan;
+
+// What smartEmitAveraged works out for a draw that doesn't depend on where it lands, only on the parity of its first
+// surface pixel: the item, its colour, the parities, its size in surface pixels and which way it is mirrored give the
+// same spans (nativeSpans, relative to the first pixel: whole numbers, so the floats are exact either way), the same
+// colour along each (whole numbers and halves, again exact), the same texels and the same part of the same tile.
+// So these are kept for the last few such draws, and a draw like one of them makes only its positions.
+#define UTA_KEYS 8
+typedef struct {
+    int32_t tpag; // -1: empty
+    uint32_t color;
+    int32_t aw, ah;
+    uint8_t parity, flip;
+    // Everything else utaFill reads, so that a key gives the same result whatever data file or page it came from:
+    // the page, its tile grid and the texels (flipped as drawn).
+    const CtrPage* page;
+    int32_t tileW, tileH, tilesX, tilesY;
+    float tx0, tx1, ty0, ty1;
+    // The spans: ends relative to the first pixel, whether the ends swap (t0 > t1), the fractions on the tile.
+    int8_t nx, ny, n, whole;
+    int32_t tx, ty;
+    int32_t xr[3][2], yr[3][2];
+    bool xswap[3], yswap[3];
+    float xs[3][2], ys[3][2];
+    // The quads: their spans and what smartAxisTile and nativeCornerColor gave them.
+    uint8_t qi[9], qj[9];
+    float uv[9][4];
+    CtrColor cc[9];
+} UtaKey;
+static UtaKey utaKeys[UTA_KEYS] __attribute__((section(".bss.late.utasgore")));
+static uint8_t utaKeysInit __attribute__((section(".bss.late.utasgore")));
+
+// floorf(v), as a whole number, for v well inside the int32_t range (*ok false outside it): the conversion truncates,
+// and one less where that went up.
+static inline __attribute__((always_inline)) int32_t utaFloor(float v, bool* ok) {
+    if (!(v > -1.0e6f && 1.0e6f > v)) *ok = false;
+    int32_t t = (int32_t) v;
+    return (float) t > v ? t - 1 : t;
+}
+
+// Fills key k (its key fields set) as smartEmitAveraged would work the draw out at first pixels (ax0, ay0): false
+// where it wouldn't make its quads this way.
+static UTA_LATE bool utaFill(UtaKey* k, CtrPage* page, CtrColor c, int32_t ax0, int32_t ay0, float tx0, float tx1, float ty0, float ty1) {
+    float xs[3][5], ys[3][5];
+    int32_t nx = nativeSpans(ax0, ax0 + k->aw, tx0, tx1, xs);
+    int32_t ny = nativeSpans(ay0, ay0 + k->ah, ty0, ty1, ys);
+    if (nx == 0 || ny == 0) return UTA_NO(30);
+    // smartAxes' t0, t1, f and weight (f: the span's middle from the first pixel, exact, over the size).
+    SmartAxis xa[3], ya[3];
+    utaAxes((const float (*)[5]) xs, nx, 0.0f, 1.0f, (float) ax0, utaKeep(1.0f / (float) k->aw), (k->flip & 2) != 0, xa);
+    utaAxes((const float (*)[5]) ys, ny, 0.0f, 1.0f, (float) ay0, utaKeep(1.0f / (float) k->ah), (k->flip & 8) != 0, ya);
+    for (int32_t i = 0; nx > i; i++) {
+        k->xr[i][0] = (int32_t) xs[i][0] - ax0;
+        k->xr[i][1] = (int32_t) xs[i][1] - ax0;
+        k->xswap[i] = xs[i][2] > xs[i][3];
+    }
+    for (int32_t j = 0; ny > j; j++) {
+        k->yr[j][0] = (int32_t) ys[j][0] - ay0;
+        k->yr[j][1] = (int32_t) ys[j][1] - ay0;
+        k->yswap[j] = ys[j][2] > ys[j][3];
+    }
+    // smartTileBegin: the one tile the texels lie in.
+    bool whole = page->tilesX == 1 && page->tilesY == 1;
+    float tileW = (float) page->tileW, tileH = (float) page->tileH;
+    int32_t tx = 0, ty = 0;
+    if (!whole) {
+        // tileW and tileH are powers of two, so the divisions are exact however they are compiled.
+        float minX = minF(tx0, tx1), maxX = maxF(tx0, tx1), minY = minF(ty0, ty1), maxY = maxF(ty0, ty1);
+        tx = (int32_t) (minX / tileW);
+        ty = (int32_t) (minY / tileH);
+        if (tx != (int32_t) ((maxX - 0.001f) / tileW) || ty != (int32_t) ((maxY - 0.001f) / tileH) || 0 > tx || 0 > ty || tx >= page->tilesX ||
+            ty >= page->tilesY)
+            return UTA_NO(31);
+    }
+    for (int32_t i = 0; nx > i; i++) smartAxisTile(&xa[i], whole, tileW, tx);
+    for (int32_t j = 0; ny > j; j++) smartAxisTile(&ya[j], whole, tileH, ty);
+    // The quads; smartTileEnd's tests.
+    int32_t n = 0;
+    bool multiSafe = false;
+    for (int32_t j = 0; ny > j; j++) {
+        const SmartAxis* y = &ya[j];
+        for (int32_t i = 0; nx > i; i++) {
+            const SmartAxis* x = &xa[i];
+            if (!x->on || !y->on) continue;
+            CtrColor cc = utaCornerColor(c, x->f, y->f, utaKeep(y->weight * x->weight));
+            if (cc.a == 0) return UTA_NO(32);
+            bool safe = y->uv[0] >= MULTI_MIN_V && y->uv[1] >= MULTI_MIN_V && 1.0f >= y->uv[0] && 1.0f >= y->uv[1];
+            if (n == 0) multiSafe = safe;
+            else if (safe != multiSafe) return UTA_NO(33);
+            k->qi[n] = (uint8_t) i;
+            k->qj[n] = (uint8_t) j;
+            k->uv[n][0] = x->uv[0];
+            k->uv[n][1] = y->uv[0];
+            k->uv[n][2] = x->uv[1];
+            k->uv[n][3] = y->uv[1];
+            k->cc[n] = cc;
+            n++;
+        }
+    }
+    if (n == 0) return UTA_NO(34);
+    for (int32_t i = 0; nx > i; i++) memcpy(k->xs[i], xa[i].s, sizeof(k->xs[i]));
+    for (int32_t j = 0; ny > j; j++) memcpy(k->ys[j], ya[j].s, sizeof(k->ys[j]));
+    k->nx = (int8_t) nx;
+    k->ny = (int8_t) ny;
+    k->n = (int8_t) n;
+    k->whole = whole;
+    k->tx = tx;
+    k->ty = ty;
+    return true;
+}
+
+// emitPageRegionVisible's draw of the fine sprite px/py (a data page's item tpagIndex, in the colour c) continuing the
+// held run, worked out without changing anything: false where the full path would do anything else, or anything this
+// can't tell for sure.
+static UTA_LATE bool utaPlan(CtrRenderer* r, CtrPage* page, int32_t tpagIndex, const TexturePageItem* tpag, const float* px, const float* py,
+                             CtrColor c, UtaPlan* plan, bool* turnedDown) {
+    if (0 > r->boundSurface || drawingBothEyes(r) || r->palNextB != nullptr || !r->inFrame || r->boundTarget == nullptr || r->spillLoadPending) {
+        return UTA_NO(1);
+    }
+    CtrSurface* s = &r->surfaces[r->boundSurface];
+    if (s->shift <= 0 || s->pattern.version == s->version || s->skipRec != nullptr || s->lazy != nullptr) return UTA_NO(2);
+    // gridSnapQuad.
+    memcpy(plan->px, px, sizeof(plan->px));
+    memcpy(plan->py, py, sizeof(plan->py));
+    if (r->gridHold == 0) {
+        if (r->gridMap.surface != r->boundSurface) return UTA_NO(3);
+        if (r->gridMap.on && quadUpright(px, py)) {
+            if (0 <= r->snapItem.tpag) return UTA_NO(4);
+            float dx, dy;
+            gridDelta(r, px[0], py[0], &dx, &dy);
+            float sw = (float) tpag->sourceWidth, sh = (float) tpag->sourceHeight;
+            if (!((floatBits(dx) | floatBits(dy)) << 1 == 0 || (r->gridMap.x && !utaGridDoubled((px[1] - px[0]) * r->gridMap.kx, sw)) ||
+                  (r->gridMap.y && !utaGridDoubled((py[2] - py[0]) * r->gridMap.ky, sh)))) {
+                for (int32_t i = 0; 4 > i; i++) {
+                    plan->px[i] = px[i] + dx;
+                    plan->py[i] = py[i] + dy;
+                }
+            }
+        }
+    }
+    px = plan->px;
+    py = plan->py;
+    // smartEmitAveraged, at half resolution (nativeSpans). Where it surely answers false (*turnedDown), px/py are
+    // gridSnapQuad's quad.
+    const C3D_Mtx* m = &r->projection;
+    if (!r->gameProjection || m->r[0].y != 0.0f || m->r[1].x != 0.0f || m->r[3].x != 0.0f || m->r[3].y != 0.0f || m->r[3].w != 1.0f) {
+        return *turnedDown = true, UTA_NO(5);
+    }
+    if (px[0] != px[3] || px[1] != px[2] || py[0] != py[1] || py[2] != py[3]) return *turnedDown = true, UTA_NO(6);
+    float vw = (float) r->viewport.w, vh = (float) r->viewport.h;
+    float kx = utaKeep(utaKeep(m->r[0].x * 0.5f) * vw), ky = utaKeep(utaKeep(m->r[1].y * -0.5f) * vh);
+    if (kx == 0.0f || ky == 0.0f) return *turnedDown = true, UTA_NO(7);
+    float ox = utaKeep((float) r->viewport.x + utaKeep(utaKeep(vw + utaKeep(m->r[0].w * vw)) * 0.5f));
+    float oy = utaKeep((float) r->viewport.y + utaKeep(utaKeep(1.0f - m->r[1].w) * utaKeep(vh * 0.5f)));
+    float sx0 = (float) tpag->sourceX, sy0 = (float) tpag->sourceY;
+    float sx1 = sx0 + (float) tpag->sourceWidth, sy1 = sy0 + (float) tpag->sourceHeight;
+    float x0 = utaKeep(ox + utaKeep(px[0] * kx)), x1 = utaKeep(ox + utaKeep(px[1] * kx));
+    float y0 = utaKeep(oy + utaKeep(py[0] * ky)), y1 = utaKeep(oy + utaKeep(py[2] * ky));
+    float tx0 = sx0, tx1 = sx1, ty0 = sy0, ty1 = sy1;
+    uint8_t flip = (uint8_t) ((px[0] > px[1] ? 2 : 0) | (py[0] > py[2] ? 8 : 0));
+    if (x0 > x1) {
+        float t = x0; x0 = x1; x1 = t;
+        t = tx0; tx0 = tx1; tx1 = t;
+        flip |= 1;
+    }
+    if (y0 > y1) {
+        float t = y0; y0 = y1; y1 = t;
+        t = ty0; ty0 = ty1; ty1 = t;
+        flip |= 4;
+    }
+    float xw = utaKeep(x1 - x0), yh = utaKeep(y1 - y0);
+    // Its size test (within 0.01 of the texels): scaled further, surely turned down; close to the edge, left to it.
+    float ex = fabsf(xw - fabsf(tx1 - tx0)), ey = fabsf(yh - fabsf(ty1 - ty0));
+    if (ex > 0.02f || ey > 0.02f) return *turnedDown = true, UTA_NO(8);
+    if (ex > 0.005f || ey > 0.005f) return UTA_NO(9);
+    bool ok = true;
+    int32_t ax0 = utaFloor(utaKeep(x0 + 0.5f), &ok), ay0 = utaFloor(utaKeep(y0 + 0.5f), &ok);
+    int32_t aw = utaFloor(utaKeep(xw + 0.5f), &ok), ah = utaFloor(utaKeep(yh + 0.5f), &ok);
+    if (!ok || 0 >= aw || 0 >= ah) return UTA_NO(10);
+    // The draw's key, and what it gives.
+    if (!utaKeysInit) {
+        for (int32_t i = 0; UTA_KEYS > i; i++) utaKeys[i].tpag = -1;
+        utaKeysInit = 1;
+    }
+    uint32_t color;
+    memcpy(&color, &c, sizeof(color));
+    uint8_t parity = (uint8_t) ((ax0 & 1) | (ay0 & 1) << 1);
+    UtaKey* k = &utaKeys[((uint32_t) tpagIndex ^ parity) & (UTA_KEYS - 1)];
+    if (k->tpag != tpagIndex || k->color != color || k->aw != aw || k->ah != ah || k->parity != parity || k->flip != flip ||
+        k->page != page || k->tileW != page->tileW || k->tileH != page->tileH || k->tilesX != page->tilesX || k->tilesY != page->tilesY ||
+        k->tx0 != tx0 || k->tx1 != tx1 || k->ty0 != ty0 || k->ty1 != ty1) { // whole numbers from the item: never NaN or -0
+        k->tpag = tpagIndex;
+        k->color = color;
+        k->aw = aw;
+        k->ah = ah;
+        k->parity = parity;
+        k->flip = flip;
+        k->page = page;
+        k->tileW = page->tileW;
+        k->tileH = page->tileH;
+        k->tilesX = page->tilesX;
+        k->tilesY = page->tilesY;
+        k->tx0 = tx0;
+        k->tx1 = tx1;
+        k->ty0 = ty0;
+        k->ty1 = ty1;
+        if (!utaFill(k, page, c, ax0, ay0, tx0, tx1, ty0, ty1)) {
+            k->tpag = -1;
+            return UTA_NO(11);
+        }
+    }
+    // smartTileBegin's ensureTiles leaves a tile already used this frame (and recorded, while recording) as it was;
+    // the full path draws the first of a tile's draws in a frame.
+    CtrTile* tile = &page->tiles[k->ty * page->tilesX + k->tx];
+    const CtrTextureCache* cache = &r->textures;
+    if (tile->lastUsedFrame != cache->frame || !tile->valid || (0 <= cache->recordRoom && tile->seenVisit != cache->recordVisit)) return UTA_NO(12);
+    if (CtrTextures_drawTex(tile) != r->batchTex) return UTA_NO(13);
+    // reserveBatch, joining the run's own batch (asgBegin took it back): its texture, unit 0, no padding.
+    const CtrHeldBatch* b = &r->addHold.batches[r->addHold.count - 1];
+    // reserveBatch tests the room for 6 vertices a quad (makeVertexRoom) before quad indices cut that to 4.
+    uint32_t count = (b->quads ? 4u : 6u) * (uint32_t) k->n;
+    if (r->vertexCount + 6u * (uint32_t) k->n > r->vertexLimit) return UTA_NO(14);
+    // The positions: smartAxes' q0 and q1 of each span, then each quad's corners (quadPosition on a tile's part).
+    float bx = utaKeep(ox + 0.5f), by = utaKeep(oy + 0.5f), rkx = utaKeep(1.0f / kx), rky = utaKeep(1.0f / ky);
+    float xq[3][2], yq[3][2];
+    for (int32_t i = 0; k->nx > i; i++) {
+        float q0 = utaKeep(utaKeep((float) (ax0 + k->xr[i][0]) - bx) * rkx), q1 = utaKeep(utaKeep((float) (ax0 + k->xr[i][1]) - bx) * rkx);
+        xq[i][0] = k->xswap[i] ? q1 : q0;
+        xq[i][1] = k->xswap[i] ? q0 : q1;
+    }
+    for (int32_t j = 0; k->ny > j; j++) {
+        float q0 = utaKeep(utaKeep((float) (ay0 + k->yr[j][0]) - by) * rky), q1 = utaKeep(utaKeep((float) (ay0 + k->yr[j][1]) - by) * rky);
+        yq[j][0] = k->yswap[j] ? q1 : q0;
+        yq[j][1] = k->yswap[j] ? q0 : q1;
+    }
+    for (int32_t n = 0; k->n > n; n++) {
+        int32_t i = k->qi[n], j = k->qj[n];
+        float qx[4] = { xq[i][0], xq[i][1], xq[i][1], xq[i][0] }, qy[4] = { yq[j][0], yq[j][0], yq[j][1], yq[j][1] };
+        SmartQuad* q = &plan->q[n];
+        if (k->whole) {
+            memcpy(q->x, qx, sizeof(q->x));
+            memcpy(q->y, qy, sizeof(q->y));
+        } else {
+            const float* xs = k->xs[i];
+            const float* ys = k->ys[j];
+            utaQuadPosition(qx, qy, xs[0], ys[0], &q->x[0], &q->y[0]);
+            utaQuadPosition(qx, qy, xs[1], ys[0], &q->x[1], &q->y[1]);
+            utaQuadPosition(qx, qy, xs[1], ys[1], &q->x[2], &q->y[2]);
+            utaQuadPosition(qx, qy, xs[0], ys[1], &q->x[3], &q->y[3]);
+        }
+        q->u0 = k->uv[n][0];
+        q->v0 = k->uv[n][1];
+        q->u1 = k->uv[n][2];
+        q->v1 = k->uv[n][3];
+        q->c = k->cc[n];
+    }
+    plan->n = k->n;
+    plan->count = count;
+    plan->pixels = (uint32_t) (aw * ah);
+    plan->averaged = true;
+    return true;
+}
+
+// The plan's draw: what reserveBatch, smartTileEnd, smartEmitAveraged's notes and asgEnd's held path would leave.
+static inline __attribute__((always_inline)) void utaCommit(CtrRenderer* r, const UtaPlan* plan, CtrVertex* v) {
+    CtrHeldBatch* b = &r->addHold.batches[r->addHold.count - 1];
+    bool quads = b->quads;
+    r->vertexCount += plan->count;
+    r->vertexUsed += plan->count;
+    r->boundTargetDrawn = true;
+    r->clearedTarget = nullptr;
+    r->drawnSinceSplit = true;
+    r->surfaces[r->boundSurface].drawnSinceSplit = true;
+    r->surfaces[r->boundSurface].version = ++r->contentSerial;
+    if (0 <= r->spillBound) r->spillDirty = true;
+    r->vertexZ = 0.0f; // depthDisparity with one eye, at unit 0
+    float z = r->vertexZ;
+    const SmartQuad* q = plan->q;
+    for (int32_t i = 0; plan->n > i; i++, q++) {
+        setVertex(&v[0], q->x[0], q->y[0], z, q->u0, q->v0, q->c);
+        setVertex(&v[1], q->x[1], q->y[1], z, q->u1, q->v0, q->c);
+        setVertex(&v[2], q->x[2], q->y[2], z, q->u1, q->v1, q->c);
+        if (quads) {
+            setVertex(&v[3], q->x[3], q->y[3], z, q->u0, q->v1, q->c);
+            v += 4;
+        } else {
+            setVertex(&v[3], q->x[0], q->y[0], z, q->u0, q->v0, q->c);
+            setVertex(&v[4], q->x[2], q->y[2], z, q->u1, q->v1, q->c);
+            setVertex(&v[5], q->x[3], q->y[3], z, q->u0, q->v1, q->c);
+            v += 6;
+        }
+    }
+    int32_t before = r->smart.count;
+    UTA_STAMP(3);
+    smartNoteGate(r, plan->px, plan->py, 4);
+    UTA_STAMP(4);
+    if (plan->averaged) {
+        if (r->smart.count == before) r->smart.merged++;
+        r->smart.pixels += plan->pixels;
+    }
+    b->count += plan->count;
+    r->batchStart = r->vertexCount;
+    asgRun.endVertex = r->vertexCount;
+}
+
+// emitPageRegionVisible's fallback for a fine sprite smartEmitAveraged turns down (scaled, as Asgore's embers are),
+// worked out without changing anything, from gridSnapQuad's quad in plan->px/py (which smartNote notes): half a
+// surface pixel up and left, the colour premultiplied, then emitPageTiles' quad of the one tile it meets and emitQuad's
+// vertices, with regionTilePart's and quadPosition's arithmetic in the order emitPageTiles' compiled code does it
+// (reciprocals of the sizes, products rounded before each add). False where the full path would do anything else.
+// A copy: tests/test_utasgore_drift.py holds the source of what it follows, and a change there needs the UTA_SHADOW
+// check rerun.
+static UTA_LATE bool utaLinear(CtrRenderer* r, CtrPage* page, const TexturePageItem* tpag, CtrColor c, UtaPlan* plan) {
+    // gridActive would update the map; emitQuad leaves out a draw of alpha 0.
+    if (r->gridMap.surface != r->boundSurface || c.a == 0) return UTA_NO(20);
+    float px[4], py[4];
+    memcpy(px, plan->px, sizeof(px));
+    memcpy(py, plan->py, sizeof(py));
+    if (r->gridMap.on) {
+        float dx = utaKeep(r->smart.vertical ? 0.0f : -0.5f * r->gridMap.invKx), dy = utaKeep(r->gridMap.y ? -0.5f * r->gridMap.invKy : 0.0f);
+        for (int32_t i = 0; 4 > i; i++) {
+            px[i] = utaKeep(plan->px[i] + dx);
+            py[i] = utaKeep(plan->py[i] + dy);
+        }
+    }
+    uint32_t a = c.a;
+    CtrColor pc = { (uint8_t) ((c.r * a + 127u) / 255u), (uint8_t) ((c.g * a + 127u) / 255u), (uint8_t) ((c.b * a + 127u) / 255u), c.a };
+    // emitPageTiles. Tile sizes are powers of two, so dividing by them is exact however it is compiled.
+    uint32_t tw = (uint32_t) page->tileW, th = (uint32_t) page->tileH;
+    if (tw == 0 || th == 0 || (tw & (tw - 1)) != 0 || (th & (th - 1)) != 0) return UTA_NO(21);
+    float tileW = (float) tw, tileH = (float) th;
+    float sx0 = (float) tpag->sourceX, sy0 = (float) tpag->sourceY;
+    float sx1 = sx0 + (float) tpag->sourceWidth, sy1 = sy0 + (float) tpag->sourceHeight;
+    SmartQuad* q = &plan->q[0];
+    int32_t index = 0;
+    if (page->tilesX == 1 && page->tilesY == 1) {
+        q->u0 = sx0 / tileW, q->v0 = sy0 / tileH, q->u1 = sx1 / tileW, q->v1 = sy1 / tileH;
+        memcpy(q->x, px, sizeof(q->x));
+        memcpy(q->y, py, sizeof(q->y));
+    } else {
+        // One tile, and its part (regionTilePart): w and h are positive, so the bounds are sx0..sx1 and sy0..sy1.
+        float w = sx1 - sx0, h = sy1 - sy0;
+        int32_t tx = (int32_t) (sx0 / tileW), ty = (int32_t) (sy0 / tileH);
+        if (tx != (int32_t) (utaKeep(sx1 - 0.001f) / tileW) || ty != (int32_t) (utaKeep(sy1 - 0.001f) / tileH) || 0 > tx || 0 > ty ||
+            tx >= page->tilesX || ty >= page->tilesY) {
+            return UTA_NO(22);
+        }
+        // Whole numbers, exact in any order.
+        float ox = (float) tx * tileW, oy = (float) ty * tileH;
+        float cx0 = sx0 > ox ? sx0 : ox, cx1 = ox + tileW > sx1 ? sx1 : ox + tileW;
+        float cy0 = sy0 > oy ? sy0 : oy, cy1 = oy + tileH > sy1 ? sy1 : oy + tileH;
+        if (cx0 >= cx1 || cy0 >= cy1) return UTA_NO(23);
+        float rw = utaKeep(1.0f / w), rh = utaKeep(1.0f / h), rtw = utaKeep(1.0f / tileW), rth = utaKeep(1.0f / tileH);
+        float s0 = utaKeep((cx0 - sx0) * rw), s2 = utaKeep((cx1 - sx0) * rw);
+        float s1 = utaKeep((cy0 - sy0) * rh), s3 = utaKeep((cy1 - sy0) * rh);
+        float bx = sx0 - ox, by = sy0 - oy;
+        q->u0 = utaKeep(utaKeep(bx + utaKeep(w * s0)) * rtw);
+        q->u1 = utaKeep(utaKeep(bx + utaKeep(w * s2)) * rtw);
+        q->v0 = utaKeep(utaKeep(by + utaKeep(h * s1)) * rth);
+        q->v1 = utaKeep(utaKeep(by + utaKeep(h * s3)) * rth);
+        // quadPosition at (s0, s1), (s2, s1), (s2, s3), (s0, s3).
+        float dxt = utaKeep(px[1] - px[0]), dyt = utaKeep(py[1] - py[0]), dxb = utaKeep(px[2] - px[3]), dyb = utaKeep(py[2] - py[3]);
+        float tx0 = utaKeep(px[0] + utaKeep(s0 * dxt)), tx2 = utaKeep(px[0] + utaKeep(s2 * dxt));
+        float ty0 = utaKeep(py[0] + utaKeep(s0 * dyt)), ty2 = utaKeep(py[0] + utaKeep(s2 * dyt));
+        float bx0 = utaKeep(px[3] + utaKeep(s0 * dxb)), bx2 = utaKeep(px[3] + utaKeep(s2 * dxb));
+        float by0 = utaKeep(py[3] + utaKeep(s0 * dyb)), by2 = utaKeep(py[3] + utaKeep(s2 * dyb));
+        float ex0 = utaKeep(bx0 - tx0), ex2 = utaKeep(bx2 - tx2), ey0 = utaKeep(by0 - ty0), ey2 = utaKeep(by2 - ty2);
+        q->x[0] = utaKeep(tx0 + utaKeep(s1 * ex0)), q->y[0] = utaKeep(ty0 + utaKeep(s1 * ey0));
+        q->x[1] = utaKeep(tx2 + utaKeep(s1 * ex2)), q->y[1] = utaKeep(ty2 + utaKeep(s1 * ey2));
+        q->x[2] = utaKeep(tx2 + utaKeep(s3 * ex2)), q->y[2] = utaKeep(ty2 + utaKeep(s3 * ey2));
+        q->x[3] = utaKeep(tx0 + utaKeep(s3 * ex0)), q->y[3] = utaKeep(ty0 + utaKeep(s3 * ey0));
+        index = ty * page->tilesX + tx;
+    }
+    q->c = pc;
+    // ensureTiles(But) leaves a tile already used this frame (and recorded, while recording) as it was; palTileTex
+    // (no palette) draws the tile's own texture, which reserveBatch joins to the run's batch at unit 0, without padding.
+    CtrTile* tile = &page->tiles[index];
+    const CtrTextureCache* cache = &r->textures;
+    if (tile->lastUsedFrame != cache->frame || !tile->valid || (0 <= cache->recordRoom && tile->seenVisit != cache->recordVisit)) return UTA_NO(24);
+    if (CtrTextures_drawTex(tile) != r->batchTex) return UTA_NO(25);
+    const CtrHeldBatch* b = &r->addHold.batches[r->addHold.count - 1];
+    // emitQuad's reserveBatch tests the room for 6 vertices (makeVertexRoom) before quad indices cut that to 4.
+    uint32_t count = b->quads ? 4u : 6u;
+    if (r->vertexCount + 6u > r->vertexLimit) return UTA_NO(26);
+    plan->n = 1;
+    plan->count = count;
+    plan->pixels = 0;
+    plan->averaged = false;
+    return true;
+}
+
+#ifndef UTA_SHADOW
+#define UTA_SHADOW 0
+#endif
+#if UTA_SHADOW
+// Test builds: each planned draw is drawn the full way too, and what that left compared with the plan's.
+static CtrRenderer utaShadowR __attribute__((section(".bss.late.utasgore")));
+static CtrSurface utaShadowS __attribute__((section(".bss.late.utasgore")));
+static CtrVertex utaShadowV[54] __attribute__((section(".bss.late.utasgore")));
+#endif
+
+// ctrDrawSprite's draw of a sprite smart smoothing knows is fine, when it is nothing (out of view) or continues the held
+// run with the quads utaPlan works out: true when done. Before either answer it has stamped only the page's use (as
+// acquireTpagPage does first).
+static UTA_LATE bool utaFineDraw(CtrRenderer* r, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale,
+                                 float angleDeg, uint32_t color, float alpha) {
+    DataWin* dw = r->base.dataWin;
+    UTA_STAMP(0);
+    if (0 > tpagIndex || (uint32_t) tpagIndex >= r->originalTpagCount || dw->tpag.count <= (uint32_t) tpagIndex) return false;
+    uint8_t known = r->smart.itemState != nullptr ? r->smart.itemState[tpagIndex] : 0;
+    if ((known & (ITEM_KNOWN | ITEM_FINE | ITEM_CLEAN)) != (ITEM_KNOWN | ITEM_FINE | ITEM_CLEAN) || r->smart.itemInk == nullptr) return UTA_COUNT(0), false;
+    TexturePageItem* tpag = &dw->tpag.items[tpagIndex];
+    if (0 > tpag->texturePageId || r->textures.pageCount <= (uint32_t) tpag->texturePageId) return false;
+    CtrPage* page = &r->textures.pages[tpag->texturePageId];
+    if (!page->layoutKnown) return false;
+    if (!utaHeldSteady(r)) return UTA_COUNT(1), false;
+    if (recordingSurface(r) != nullptr) return UTA_COUNT(2), false;
+    page->lastUsedFrame = r->textures.frame;
+    // utaPlan and utaLinear both end on the same test of the item's tile (smartTileBegin's tile from the texel
+    // rectangle, emitPageTiles' from the source rectangle: one tile, at sourceX / tileW, sourceY / tileH), with nothing
+    // but their arithmetic and the plan cache before it. Made first, before the draw's transform, an item drawn from a
+    // texture other than the held batch's, or from a tile not drawn yet this frame, goes the full way without that
+    // work, utaFine's or the transform's (any draw may go the full way: it is what the plan copies; one out of view is
+    // nothing there too). On Old the refused draws' code shares the instruction cache with the full path's, so the
+    // less of it they run, the better (o2ds utasgore7). Only where that tile is surely in the page's grid; a draw over
+    // more tiles is refused by both anyway.
+    if (page->tileW > 0 && page->tileH > 0) {
+        int32_t tx = page->tilesX == 1 && page->tilesY == 1 ? 0 : (int32_t) ((float) tpag->sourceX / (float) page->tileW);
+        int32_t ty = page->tilesX == 1 && page->tilesY == 1 ? 0 : (int32_t) ((float) tpag->sourceY / (float) page->tileH);
+        if (0 <= tx && tx < page->tilesX && 0 <= ty && ty < page->tilesY) {
+            CtrTile* tile = &page->tiles[ty * page->tilesX + tx];
+            const CtrTextureCache* cache = &r->textures;
+            if (tile->lastUsedFrame != cache->frame || !tile->valid || (0 <= cache->recordRoom && tile->seenVisit != cache->recordVisit) ||
+                CtrTextures_drawTex(tile) != r->batchTex) {
+                return UTA_COUNT(4), UTA_NO(40);
+            }
+        }
+    }
+    float lx0 = (float) tpag->targetX - originX;
+    float ly0 = (float) tpag->targetY - originY;
+    float lx1 = lx0 + (float) tpag->targetWidth;
+    float ly1 = ly0 + (float) tpag->targetHeight;
+    Matrix4f transform;
+    setDrawTransform(&transform, x, y, xscale, yscale, angleDeg);
+    float px[4], py[4];
+    transformPoint(&transform, lx0, ly0, &px[0], &py[0]);
+    transformPoint(&transform, lx1, ly0, &px[1], &py[1]);
+    transformPoint(&transform, lx1, ly1, &px[2], &py[2]);
+    transformPoint(&transform, lx0, ly1, &px[3], &py[3]);
+    if (!utaFine(r, tpagIndex, tpag, px, py, alpha)) return UTA_COUNT(3), false;
+    UTA_STAMP(1);
+    if (quadOutsideView(r, px, py)) return UTA_COUNT(5), true;
+    UtaPlan plan;
+    bool turnedDown = false;
+    CtrColor c = utaColor(color, alpha);
+    if (!utaPlan(r, page, tpagIndex, tpag, px, py, c, &plan, &turnedDown) && (!turnedDown || !utaLinear(r, page, tpag, c, &plan))) {
+        return UTA_COUNT(4), false;
+    }
+    if (plan.averaged) UTA_COUNT(6);
+    else UTA_COUNT(7);
+    UTA_STAMP(2);
+#if UTA_SHADOW
+    // The plan's state on a copy, the full draw on the renderer, then the two compared.
+    memcpy(&utaShadowR, r, sizeof(utaShadowR));
+    utaShadowS = r->surfaces[r->boundSurface];
+    uint32_t from = r->vertexCount;
+    CtrSurface* surfaces = utaShadowR.surfaces;
+    utaShadowR.surfaces = (CtrSurface*) ((uintptr_t) &utaShadowS - (uintptr_t) r->boundSurface * sizeof(CtrSurface)); // [boundSurface] = utaShadowS
+    uint32_t endVertex = asgRun.endVertex;
+    utaCommit(&utaShadowR, &plan, utaShadowV);
+    uint32_t endPlanned = asgRun.endVertex;
+    asgRun.endVertex = endVertex;
+    utaShadowR.surfaces = surfaces;
+    ctrDrawSprite(&r->base, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+    utaShadowCount[0]++;
+    if (asgRun.endVertex != endPlanned && utaShadowCount[3]++ < 8) logInfo("[utashadow] run end differs: item %d\n", (int) tpagIndex);
+    if (memcmp(utaShadowV, &r->vertices[from], plan.count * sizeof(CtrVertex)) != 0 && utaShadowCount[1]++ < 8) {
+        logInfo("[utashadow] vertices differ: item %d at %d\n", (int) tpagIndex, (int) from);
+    }
+    const uint8_t* a = (const uint8_t*) &utaShadowR;
+    const uint8_t* b = (const uint8_t*) r;
+    for (uint32_t i = memcmp(a, b, sizeof(CtrRenderer)) != 0 ? 0 : sizeof(CtrRenderer); sizeof(CtrRenderer) > i; i++) {
+        if (a[i] != b[i]) {
+            if (utaShadowCount[2]++ < 16) logInfo("[utashadow] state differs: item %d at byte %u\n", (int) tpagIndex, (unsigned) i);
+            break;
+        }
+    }
+    if (memcmp(&utaShadowS, &r->surfaces[r->boundSurface], sizeof(utaShadowS)) != 0 && utaShadowCount[3]++ < 8) {
+        logInfo("[utashadow] surface differs: item %d\n", (int) tpagIndex);
+    }
+    return true;
+#else
+    utaCommit(r, &plan, &r->vertices[r->vertexCount]);
+    UTA_STAMP(5);
+    UTA_TALLY();
+    return true;
+#endif
+}
+
+// The renderer's draw of a fine sprite in a held run of a gated frame (utkDrawSprite's utaTakes said so).
+static UTA_LATE void utaFineSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale,
+                                   float yscale, float angleDeg, uint32_t color, float alpha) {
+    if (utaFineDraw((CtrRenderer*) renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha)) return;
+    ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+}
+#elif !defined(ENABLE_WAD17) && !defined(CTRPORT_RENDER_TIMING)
+// utkDrawSprite's builds with the forced split (ASG_FORCE_SPLIT, tests): the full path.
+static __attribute__((noinline, section(".text.late.utasgore"))) void utaFineSprite(Renderer* renderer, int32_t tpagIndex, float x, float y,
+                                                                                   float originX, float originY, float xscale, float yscale,
+                                                                                   float angleDeg, uint32_t color, float alpha) {
+    ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+}
+#endif
+
+// UNDERTALE's waving sprite rows in one call (utkill): late code only.
+#if defined(ENABLE_WAD16)
+#include "ctr_utkill_waver.inc"
+#endif
+
+#if defined(CTRPORT_GOG_COMPAT)
+
+#ifdef ENABLE_WAD16
+// GOG-only Smart equality: the verified GOG digest selects decoded RGBA; other data keeps main's packed equality.
+// Only the first-use classification scans call this; frame/draw paths keep their retained layout.
+GOGUT_SMART_LATE static uint32_t gogutSmartColour(uint32_t format, uint32_t v, bool clear) {
+    if (!ctrGogutSmartDecoded) {
+        if (format == CTR_TILE_RGBA8) return clear && (v & 255u) == 0 ? 0 : v;
+        if (format == CTR_TILE_RGBA5551) return clear && (v & 1u) == 0 ? 0 : v;
+        if (format == CTR_TILE_RGB565) return 0x10000u | (v & 0xFFFFu);
+        if (format == CTR_TILE_RGB8) return 0x1000000u | (v & 0xFFFFFFu);
+        return 0;
+    }
+    switch (format) {
+        case CTR_TILE_RGBA8: break;
+        case CTR_TILE_RGBA5551: {
+            uint32_t r = (v >> 11) & 31u, g = (v >> 6) & 31u, b = (v >> 1) & 31u;
+            v = ((r << 3 | r >> 2) << 24) | ((g << 3 | g >> 2) << 16) | ((b << 3 | b >> 2) << 8) | ((v & 1u) ? 255u : 0u);
+            break;
+        }
+        case CTR_TILE_RGB565: {
+            uint32_t r = (v >> 11) & 31u, g = (v >> 5) & 63u, b = v & 31u;
+            v = ((r << 3 | r >> 2) << 24) | ((g << 2 | g >> 4) << 16) | ((b << 3 | b >> 2) << 8) | 255u;
+            break;
+        }
+        case CTR_TILE_RGB8: v = (v << 8) | 255u; break;
+    }
+    return clear && (v & 255u) == 0 ? 0 : v;
+}
+
+GOGUT_SMART_LATE static bool gogutSmartStored(const CtrTile* tile, size_t i, bool clear, uint32_t* out) {
+    uint32_t v;
+    switch (tile->format) {
+        case CTR_TILE_RGBA8: v = ((const uint32_t*) tile->tex.data)[i]; break;
+        case CTR_TILE_RGBA5551:
+        case CTR_TILE_RGB565: v = ((const uint16_t*) tile->tex.data)[i]; break;
+        case CTR_TILE_RGB8: {
+            const uint8_t* p = (const uint8_t*) tile->tex.data + i * 3;
+            v = ((uint32_t) p[2] << 16) | ((uint32_t) p[1] << 8) | p[0];
+            break;
+        }
+        default: return false;
+    }
+    *out = gogutSmartColour(tile->format, v, clear);
+    return true;
+}
+
+GOGUT_SMART_LATE static bool gogutSmartTexel(CtrPage* page, int32_t x, int32_t y, uint32_t* out) {
+    uint32_t packed;
+    if (!smartTexel(page, x, y, &packed)) return false;
+    if (!ctrGogutSmartDecoded) {
+        *out = packed;
+        return true;
+    }
+    if (packed == 0) {
+        *out = 0;
+        return true;
+    }
+    // Tile dimensions are positive powers of two and classification coordinates are nonnegative.
+    // Reuse the packed texel; shifts locate its format without another pair of ARM11 software divides.
+    uint32_t tx = (uint32_t) x >> __builtin_ctz((uint32_t) page->tileW);
+    uint32_t ty = (uint32_t) y >> __builtin_ctz((uint32_t) page->tileH);
+    *out = gogutSmartColour(page->tiles[ty * (uint32_t) page->tilesX + tx].format, packed, true);
+    return true;
+}
+
+GOGUT_SMART_LATE static bool gogutSmartOneColour(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, uint32_t* colour) {
+    if (x0 + w > page->width || y0 + h > page->height) return false;
+    uint32_t c = *colour;
+    bool one = true;
+    for (int32_t y = y0; y0 + h > y && one; y++) {
+        int32_t ty = y / page->tileH;
+        uint32_t ly = (uint32_t) (y - ty * page->tileH);
+        for (int32_t x = x0; x0 + w > x && one;) {
+            int32_t tx = x / page->tileW, tileX = tx * page->tileW, end = minI(tileX + page->tileW, x0 + w);
+            const CtrTile* tile = &page->tiles[ty * page->tilesX + tx];
+            // Nothing stored, nothing sampled: emitPageTiles skips the tile.
+            if (tile->format == CTR_TILE_EMPTY) {
+                x = end;
+                continue;
+            }
+            if (!tile->valid) {
+                one = false;
+                break;
+            }
+            size_t row = smartF1Row(tile, ly);
+            for (; end > x; x++) {
+                uint32_t rgba;
+                if (!gogutSmartStored(tile, row + smartF1Col((uint32_t) (x - tileX)), false, &rgba)) {
+                    one = false;
+                    break;
+                }
+                uint32_t rgb;
+                if (ctrGogutSmartDecoded) rgb = rgba >> 8;
+                else if (tile->format == CTR_TILE_RGBA8) rgb = rgba >> 8;
+                else if (tile->format == CTR_TILE_RGBA5551) rgb = 0x1000000u | (rgba >> 1);
+                else {
+                    one = false;
+                    break;
+                }
+                if (c == 0xFFFFFFFFu) c = rgb;
+                else if (c != rgb) {
+                    one = false;
+                    break;
+                }
+            }
+        }
+    }
+    *colour = c;
+    return one;
+}
+
+GOGUT_SMART_LATE static bool gogutSmartTally(CtrPage* page, int32_t x0, int32_t y0, int32_t w, int32_t h, SmartTally* t) {
+    memset(t, 0, sizeof(*t));
+    if (2 > w || 2 > h || x0 + w > page->width || y0 + h > page->height) return true;
+    int32_t bw = (w + 1) / 2, bh = (h + 1) / 2;
+    int32_t stepX = (bw + SMART_SAMPLE_BLOCKS - 1) / SMART_SAMPLE_BLOCKS, stepY = (bh + SMART_SAMPLE_BLOCKS - 1) / SMART_SAMPLE_BLOCKS;
+    // One reader for each of a block's three rows.
+    SmartF1Reader rd[3] = {{nullptr, 0, 0, 0, 0, 0, 0}, {nullptr, 0, 0, 0, 0, 0, 0}, {nullptr, 0, 0, 0, 0, 0, 0}};
+    for (int32_t by = 0; bh > by; by += stepY) {
+        for (int32_t j = 0; 3 > j; j++) smartF1ReaderRow(&rd[j], y0 + minI(2 * by + j, h - 1));
+        for (int32_t bx = 0; bw > bx; bx += stepX) {
+            // The 3x3 texels from (2bx, 2by), the item's edge repeated past
+            // it, hold the block of every phase.
+            uint32_t n[9];
+            for (int32_t j = 0; 3 > j; j++) {
+                for (int32_t i = 0; 3 > i; i++) {
+                    if (!smartF1Read(page, &rd[j], x0 + minI(2 * bx + i, w - 1), &n[j * 3 + i])) return false;
+                }
+            }
+            for (int32_t p = 0; 4 > p; p++) {
+                const uint32_t* q = n + (p >> 1) * 3 + (p & 1);
+                if ((q[0] | q[1] | q[3] | q[4]) == 0) continue;
+                t->visible[p]++;
+                if (q[0] == q[1] && q[0] == q[3] && q[0] == q[4]) t->uniform[p]++;
+            }
+        }
+    }
+    return true;
+}
+
+#endif // ENABLE_WAD16: GOG decoders are absent from DELTARUNE.
+
+// Release UT font-loader slot: unchanged address/extent, an unconditional tail branch followed by
+// unreachable zero padding. check_gogut_layout.py proves the slot and its late replacement in each ELF.
+// Font-table loading runs at renderer/room initialization, not on the per-frame or per-draw paths.
+#if defined(ENABLE_WAD16) && defined(__3DS__) && defined(NDEBUG)
+__asm__(".pushsection .text.late.roomload,\"ax\",%progbits\n"
+        ".balign 4\n.global CtrRenderer_loadFontVerdicts\n"
+        ".type CtrRenderer_loadFontVerdicts,%function\n"
+        "CtrRenderer_loadFontVerdicts:\nb gogutLoadFontVerdicts\n.space 636\n"
+        ".size CtrRenderer_loadFontVerdicts,.-CtrRenderer_loadFontVerdicts\n.popsection");
+#endif
+
+// GOG-only cold initialization; no per-frame/per-draw caller. The build tool validates decoded content plus
+// sprite/frame identity before writing this optional trailer. Its exact CRC binds this qualified 49-entry
+// packet, and runtime sprite/frame -> item references are checked again before any cache entry is changed.
+// The verified full GOG data digest is required, not merely the font table's size/game-ID/timestamp key.
+// All entries have Steam's coarse verdict, so neither ink storage nor a second classification path is needed.
+#ifdef ENABLE_WAD16
+static uint32_t gogutItemCrc(const uint8_t* bytes, size_t length) GOGUT_SMART_LATE;
+static uint32_t gogutItemCrc(const uint8_t* bytes, size_t length) {
+    uint32_t crc = UINT32_MAX;
+    for (size_t i = 0; i < length; i++) {
+        crc ^= bytes[i];
+        for (unsigned bit = 0; bit < 8; bit++) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+    }
+    return ~crc;
+}
+
+static void gogutLoadItems(CtrRenderer* r, FILE* f) {
+    if (!ctrGogutSmartDecoded || !CtrPack_lossy() || r == nullptr || r->base.dataWin == nullptr) return;
+    uint8_t packet[257];
+    long start = ftell(f);
+    if (start < 0 || fread(packet, 1, sizeof(packet), f) != sizeof(packet) ||
+        fseek(f, 0, SEEK_END) != 0 || ftell(f) != start + (long) sizeof(packet)) return;
+    uint32_t magic, crc;
+    memcpy(&magic, packet, 4);
+    memcpy(&crc, packet + sizeof(packet) - 4, 4);
+    if (magic != 0x31495347u || packet[4] != 49 || packet[5] != 0 || packet[6] != ITEM_KNOWN || packet[7] != 0 ||
+        crc != 0x8b0d1702u || gogutItemCrc(packet, sizeof(packet) - 4) != crc) return;
+    DataWin* dw = r->base.dataWin;
+    if (dw->sprt.sprites == nullptr) return;
+    for (uint32_t i = 0; 49 > i; i++) {
+        const uint8_t* row = packet + 8 + i * 5;
+        uint32_t sprite = (uint32_t) row[0] | (uint32_t) row[1] << 8;
+        uint32_t frame = row[2], item = (uint32_t) row[3] | (uint32_t) row[4] << 8;
+        if (sprite >= dw->sprt.count || item >= r->originalTpagCount) return;
+        const Sprite* sp = &dw->sprt.sprites[sprite];
+        if (sp->tpagIndices == nullptr || frame >= sp->textureCount || sp->tpagIndices[frame] != (int32_t) item) return;
+    }
+    uint8_t* state = r->smart.itemState;
+    if (state == nullptr) state = calloc(r->originalTpagCount, 1);
+    if (state == nullptr) return;
+    for (uint32_t i = 0; 49 > i; i++) {
+        const uint8_t* row = packet + 8 + i * 5;
+        uint32_t item = (uint32_t) row[3] | (uint32_t) row[4] << 8;
+        state[item] = ITEM_KNOWN;
+    }
+    r->smart.itemState = state;
+    // These two content/frame identities cross mixed-format tiles on Steam, so symCopy
+    // leaves them plain there. GOG's atlas puts them in one format, enabling the mirrored
+    // half-width copy and changing 13 / 4 pixels from both stores' PC picture. The fully
+    // validated packet above binds their content and sprite/frame -> item mapping; no
+    // atlas coordinates select this verdict. Seed the existing cache, with no draw hook.
+    // A missing/invalid packet, exact mode, another store or OOM retains ordinary behaviour.
+    if (r->symState == nullptr) r->symState = calloc(r->originalTpagCount, sizeof(uint16_t));
+    if (r->symState == nullptr) return;
+    for (uint32_t i = 0; 49 > i; i++) {
+        const uint8_t* row = packet + 8 + i * 5;
+        uint32_t sprite = (uint32_t) row[0] | (uint32_t) row[1] << 8;
+        uint32_t item = (uint32_t) row[3] | (uint32_t) row[4] << 8;
+        if (row[2] == 0 && (sprite == 226 || sprite == 259)) r->symState[item] = SYM_STATE_PLAIN;
+    }
+}
+#endif
+#endif
+// ===[ Crisp small text on DELTARUNE New 3DS (sansfont round 3) ]===
+// The three tables UNDERTALE's z_smalltext.c reads (Smalltext_refs, Smalltext_layout, Smalltext_textDraws, above), for
+// z_smalltext_dr.c, in its own section after that file's code at the end of the late code area (late_reserve.ld).
+// Data only, placed before the #line below so that nothing after it changes line.
+#if defined(ENABLE_WAD17) && defined(CTRPORT_TARGET_N3DS)
+const void* const Smalltext_refs[1] __attribute__((aligned(4), section(".rodata.smalltext_dr_in_text"))) = { &ctrVtable };
+const uint32_t Smalltext_layout[3] __attribute__((aligned(4), section(".rodata.smalltext_dr_in_text"))) = {
+    __builtin_offsetof(CtrRenderer, projection),
+    __builtin_offsetof(CtrRenderer, viewport),
+    __builtin_offsetof(CtrRenderer, boundSurface),
+};
+const void* const Smalltext_textDraws[4] __attribute__((aligned(4), section(".rodata.smalltext_dr_in_text"))) = {
+    (const void*) e5xDrawText, (const void*) skipDrawText, (const void*) e5xDrawTextColor, (const void*) skipDrawTextColor,
+};
+#endif
+#line 23365
+// ===[ Turned sprites far outside the view (utflowey) ]===
+// Mettaton's opera (room_fire_operatest) makes an obj_cherrypetal every frame: no Draw event, a random image_angle
+// that turns every step, gravity toward the bottom right, and no Outside Room event or anything else that destroys it,
+// so the petals that have fallen out of the view stay until the room ends (Azahar census: 286 instances in the first
+// measured window, 855 by its end; the petals are game state and are all still drawn the game's way). Each one's
+// default draw reached utkEmit with a turn, which took the sine and cosine of its angle and four corners, and then
+// quadOutsideView's four corners in clip space, before dropping it (Azahar, the window's last 150 frames: 799 turned
+// draws a frame, 743 outside; per draw about 0.7 us for the corners, 0.95 us in quadOutsideView, 0.7 us besides).
+// utflOffView answers first, with no trigonometry, when it can prove two things.
+// 1. The quad utkEmit would make is not upright (corners 0 and 3 differ in x), so drawSymmetric's grid branch, whose
+//    tests begin with quadUpright, can't take it and utkOutside sends it to quadOutsideView. Corner i's x is
+//    m0 * lx + m4 * ly + x with m4 = -sinf(-angle * pi / 180) * yscale, so corners 0 and 3 differ by m4 * (ly1 - ly0)
+//    before rounding, and each is within a few ulps of a value no larger than
+//    m = |xscale| * max|lx| + |yscale| * max|ly| + |x| + |y|, however the compiler orders the sums (-ffast-math).
+//    With the angle at least 2 degrees from a multiple of 180 (|angle| under 65536, where the radians are off by
+//    under 0.02 degrees; a quotient off by one lands outside 2..178 and only refuses), |sinf| > 0.0345, and
+//    0.03 * |yscale| * |ly1 - ly0| > m / 65536 is more than a hundred ulps of m: the two can't round to the same float.
+// 2. quadOutsideView would drop the quad: every corner lies within max(|xscale|, |yscale|) * (max|lx| + max|ly|) of
+//    (x, y) on each axis, and the square of half-side reach (that, with a 1/1000 and 1-pixel margin for rounding)
+//    holds every corner at least a pixel inside its sides. Under a projection with no rotation or perspective (the
+//    bits utkOutside tests) a corner's clip x depends on its x alone, its clip y on its y alone, and w is the
+//    matrix's own; quadOutsideView's tests (its margin for both eyes included) are then monotone in x or y, so when
+//    the square's two sides fail one, every corner fails it by at least the matrix's scale times a pixel, which the
+//    checks below hold above a thousand ulps of anything in the sums. Under any other projection the square's four
+//    corners go to quadOutsideView itself: its tests are affine in the point, so the same holds.
+// utkEmit's steps before quadOutsideView are kept in order: the grid branch's tests up to gridActive (its map update
+// is the one thing they change), then a surface being recorded, which goes on as before. When it answers, utkEmit
+// returns false having stamped and changed nothing more than it would have, so the picture and everything the game
+// reads stay the same.
+#if !defined(ENABLE_WAD17) && !defined(CTRPORT_RENDER_TIMING)
+bool utflOffView(CtrRenderer* r, const UtkPlain* d, float x, float y) {
+    if (!r->gameProjection) return false;
+    float lx = maxF(fabsf(d->lx0), fabsf(d->lx1)), ly = maxF(fabsf(d->ly0), fabsf(d->ly1));
+    float ax = fabsf(d->xscale), ay = fabsf(d->yscale), a = fabsf(d->angleDeg);
+    float reach = maxF(ax, ay) * (lx + ly) * 1.001f + 1.0f;
+    // Each test fails for a NaN or an infinity, which go on as before (m and the comparisons below catch the scales).
+    if (!(reach - reach == 0.0f) || !(x - x == 0.0f) || !(y - y == 0.0f) || !(65536.0f > a)) return false;
+    float past = a - 180.0f * (float) (int32_t) (a * (1.0f / 180.0f));
+    if (2.0f > past || past > 178.0f) return false;
+    float m = ax * lx + ay * ly + fabsf(x) + fabsf(y);
+    if (!(0.03f * ay * fabsf(d->ly1 - d->ly0) > m * (1.0f / 65536.0f))) return false;
+    bool linear = r->filterOverride != 0 ? r->filterOverride == FILTER_LINEAR : r->base.texFilter;
+    if (r->grid.pick && r->gridHold == 0 && !linear) (void) gridActive(r);
+    if (recordingSurface(r) != nullptr) return false;
+    float x0 = x - reach, x1 = x + reach, y0 = y - reach, y1 = y + reach;
+    if (!(x0 - x0 == 0.0f) || !(x1 - x1 == 0.0f) || !(y0 - y0 == 0.0f) || !(y1 - y1 == 0.0f)) return false;
+    const C3D_Mtx* p = &r->projection;
+    if ((floatBits(p->r[0].y) | floatBits(p->r[1].x) | floatBits(p->r[3].x) | floatBits(p->r[3].y)) << 1 != 0) {
+        float px[4] = { x0, x1, x1, x0 };
+        float py[4] = { y0, y0, y1, y1 };
+        return quadOutsideView(r, px, py);
+    }
+    float w = p->r[3].w;
+    if (!(w > 0.0f)) return false;
+    float margin = 0.0f;
+    if (drawingBothEyes(r)) {
+        float eyeViewW = (float) (r->viewport.w / 2 > 0 ? r->viewport.w / 2 : 1);
+        margin = (2.0f * fabsf(depthDisparity(r)) + 2.0f) / eyeViewW;
+    }
+    float reachW = w * (1.0f + margin), sx = fabsf(p->r[0].x), sy = fabsf(p->r[1].y);
+    if (!(sx > (sx * (fabsf(x) + reach) + fabsf(p->r[0].w) + reachW) * (1.0f / 65536.0f)) ||
+        !(sy > (sy * (fabsf(y) + reach) + fabsf(p->r[1].w) + reachW) * (1.0f / 65536.0f))) {
+        return false;
+    }
+    float cx0 = p->r[0].x * x0 + p->r[0].w, cx1 = p->r[0].x * x1 + p->r[0].w;
+    float cy0 = p->r[1].y * y0 + p->r[1].w, cy1 = p->r[1].y * y1 + p->r[1].w;
+    return (cx0 > reachW && cx1 > reachW) || (-reachW > cx0 && -reachW > cx1) || (-w > cy0 && -w > cy1) || (cy0 > w && cy1 > w);
+}
+#endif
+
+// ===[ Turned runs' later draws (utflowey) ]===
+// runner.c's turned runs (utflTurnBatch): CtrUtk_plainAt's way but never steady or fast (a turned run's armed draw has
+// an angle, so utkRun.fast is off), with the instance's own angle in the run's UtkPlain. False: nothing done yet, the
+// draw goes the full way.
+#if !defined(ENABLE_WAD17) && !defined(CTRPORT_RENDER_TIMING)
+bool CtrUtk_turnedAt(Renderer* renderer, float x, float y, float angleDeg);
+__attribute__((noinline, section(".text.late.utflpk"))) bool CtrUtk_turnedAt(Renderer* renderer, float x, float y, float angleDeg) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    if (!utkPlainState(r)) return false;
+    TexturePageItem* tpag = utkRun.d.tpag;
+    // utkPage for a page whose layout is known: the same page, its use stamped.
+    if (0 > tpag->texturePageId || r->textures.pageCount <= (uint32_t) tpag->texturePageId) return false;
+    CtrPage* page = &r->textures.pages[tpag->texturePageId];
+    if (!page->layoutKnown) return false;
+    page->lastUsedFrame = r->textures.frame;
+    if (!utkCoarse(r, tpag, utkRun.d.tpagIndex, utkRun.alpha)) return false;
+    UtkPlain d = utkRun.d;
+    d.angleDeg = angleDeg;
+    return !utkEmit(r, &d, page, x, y);
+}
+#endif
+
+// ===[ Turned runs' pre-culled draws kept (utflowey, the opera's draw tail) ]===
+// In Mettaton's opera most of the turned run's 800 petals are outside the view, and each took CtrUtk_turnedAt's
+// checks, utkEmit's entry and the whole of utflOffView. utflOffView's answer depends on the petal's position and
+// angle and on what stays the same between two draws of one batch (utflTurnBatch) when neither drew anything: the
+// renderer's state and the run's UtkPlain, which the runner touches nothing of between the two (it sets the draw
+// depth, which only a second eye's margin reads, and the context, which only an armed dialogue redirect reads). So
+// after a draw of the batch that utflOffView dropped, the state it read is kept (utflCull) and each next draw of the
+// batch is first tested with its own values alone (utflCullOff), on the same square with room to spare: half a unit
+// more reach, the ulp test and the guard each a thousandth stricter (a few ulps of rounding is ten thousand times
+// less) and the angle a tenth of a degree inside its ends (its remainder is exact either way). A petal it answers is
+// one utflOffView drops too, whatever the rounding of the two under -ffast-math (the guard keeps a pixel above 65536
+// ulps of each sum, so the half unit is far above both roundings), and it is dropped the same way: nothing drawn or
+// stamped (the page's use and the grid map were stamped by the kept draw, this frame). Any other petal goes
+// CtrUtk_turnedAt's whole way as before, and ends the kept state unless utflCullOff, on the state read just before,
+// answers it too (then utflOffView dropped it and nothing changed); the first draw of a batch always goes the whole
+// way. Kept only when utflOffView took its axis-aligned test with no margin: no second eye, no armed dialogue
+// redirect (whose look-up notes each instance it is asked about). The runner asks CtrUtk_turnedKept first, before it
+// sets the draw context for CtrUtk_turnedFast (which nothing reads on the way to a kept answer).
+#if !defined(ENABLE_WAD17) && !defined(CTRPORT_RENDER_TIMING)
+static struct {
+    bool valid;
+    float reach, mBase, kq, w, sx, sy, p0x, p0w, p1y, p1w, a0w, a1w;
+} utflCull __attribute__((section(".bss.utfldraw_late")));
+
+static inline __attribute__((always_inline)) bool utflCullOff(float x, float y, float angleDeg) {
+    float a = fabsf(angleDeg), fx = fabsf(x), fy = fabsf(y), reach = utflCull.reach;
+    if (!(1e30f > fx) || !(1e30f > fy) || !(65536.0f > a)) return false;
+    float past = a - 180.0f * (float) (int32_t) (a * (1.0f / 180.0f));
+    if (!(past >= 2.1f) || !(177.9f >= past)) return false;
+    if (!(utflCull.kq > (utflCull.mBase + fx + fy) * (1.001f / 65536.0f))) return false;
+    float w = utflCull.w, sx = utflCull.sx, sy = utflCull.sy;
+    if (!(sx > (sx * (fx + reach) + utflCull.a0w + w) * (1.001f / 65536.0f)) ||
+        !(sy > (sy * (fy + reach) + utflCull.a1w + w) * (1.001f / 65536.0f))) {
+        return false;
+    }
+    float x0 = x - reach, x1 = x + reach, y0 = y - reach, y1 = y + reach;
+    float cx0 = utflCull.p0x * x0 + utflCull.p0w, cx1 = utflCull.p0x * x1 + utflCull.p0w;
+    float cy0 = utflCull.p1y * y0 + utflCull.p1w, cy1 = utflCull.p1y * y1 + utflCull.p1w;
+    return (cx0 > w && cx1 > w) || (-w > cx0 && -w > cx1) || (-w > cy0 && -w > cy1) || (cy0 > w && cy1 > w);
+}
+
+// What utflCullOff needs, read from the renderer and the run as utflOffView reads them; false when utflOffView would
+// not have taken its axis-aligned test with no margin, or the reach is beyond what the half unit covers.
+static inline __attribute__((always_inline)) bool utflCullKeep(CtrRenderer* r) {
+    const UtkPlain* d = &utkRun.d;
+    const C3D_Mtx* p = &r->projection;
+    if (!r->gameProjection || r->dlg.armed || drawingBothEyes(r) ||
+        (floatBits(p->r[0].y) | floatBits(p->r[1].x) | floatBits(p->r[3].x) | floatBits(p->r[3].y)) << 1 != 0 || !(p->r[3].w > 0.0f) ||
+        !(1e30f > p->r[3].w)) {
+        return false;
+    }
+    float lx = maxF(fabsf(d->lx0), fabsf(d->lx1)), ly = maxF(fabsf(d->ly0), fabsf(d->ly1));
+    float ax = fabsf(d->xscale), ay = fabsf(d->yscale);
+    float reach = maxF(ax, ay) * (lx + ly) * 1.001f + 1.0f;
+    if (!(65536.0f > reach)) return false;
+    utflCull.reach = reach + 0.5f;
+    utflCull.mBase = ax * lx + ay * ly;
+    utflCull.kq = 0.03f * ay * fabsf(d->ly1 - d->ly0);
+    utflCull.w = p->r[3].w;
+    utflCull.sx = fabsf(p->r[0].x);
+    utflCull.sy = fabsf(p->r[1].y);
+    utflCull.p0x = p->r[0].x;
+    utflCull.p0w = p->r[0].w;
+    utflCull.p1y = p->r[1].y;
+    utflCull.p1w = p->r[1].w;
+    utflCull.a0w = fabsf(p->r[0].w);
+    utflCull.a1w = fabsf(p->r[1].w);
+    return true;
+}
+
+// For utflTurnBatch's later draws, before anything else of the draw: true when the kept state answers it (dropped,
+// nothing else to do). Changes nothing.
+bool CtrUtk_turnedKept(float x, float y, float angleDeg);
+__attribute__((noinline, section(".text.utfldraw_late"))) bool CtrUtk_turnedKept(float x, float y, float angleDeg) {
+    return utflCull.valid && utflCullOff(x, y, angleDeg);
+}
+
+// CtrUtk_turnedAt for utflTurnBatch's draws that CtrUtk_turnedKept didn't answer (a batch's first draw among them),
+// keeping the state when utflOffView drops this one.
+bool CtrUtk_turnedFast(Renderer* renderer, float x, float y, float angleDeg);
+__attribute__((noinline, section(".text.utfldraw_late"))) bool CtrUtk_turnedFast(Renderer* renderer, float x, float y, float angleDeg) {
+    // Read before the draw, so that it holds only when utflOffView drops this one on the state it was read from.
+    bool off = utflCullKeep((CtrRenderer*) renderer) && utflCullOff(x, y, angleDeg);
+    utflCull.valid = false;
+    if (!CtrUtk_turnedAt(renderer, x, y, angleDeg)) return false;
+    utflCull.valid = off;
+    return true;
+}
+#endif
+#define UTPART_SHARE_UTK 1
+#include "ctr_renderer_parts.inc"
+
+// GPU-1: data only; the wrapper lives separately to preserve the inliner budget.
+#if defined(ENABLE_WAD17) && defined(CTRPORT_KNIGHTNEW_HISTORY)
+const uint32_t KnightHistory_layout[11] __attribute__((aligned(4), section(".rodata.knightnew_in_text"))) = {
+    __builtin_offsetof(CtrRenderer, surfaces), __builtin_offsetof(CtrRenderer, surfaceCount), sizeof(CtrSurface),
+    __builtin_offsetof(CtrSurface, used), __builtin_offsetof(CtrSurface, spilled), __builtin_offsetof(CtrSurface, windowed),
+    __builtin_offsetof(CtrSurface, shift), __builtin_offsetof(CtrSurface, nativeScale),
+    __builtin_offsetof(CtrSurface, width), __builtin_offsetof(CtrSurface, height), __builtin_offsetof(CtrSurface, tex),
+};
+_Static_assert(sizeof(((CtrSurface*) 0)->used) == 1 && sizeof(((CtrSurface*) 0)->spilled) == 1 &&
+               sizeof(((CtrSurface*) 0)->windowed) == 1 && sizeof(((CtrSurface*) 0)->nativeScale) == 1 &&
+               sizeof(((CtrSurface*) 0)->shift) == 4 && sizeof(((CtrSurface*) 0)->width) == 4 &&
+               sizeof(((CtrSurface*) 0)->height) == 4 && sizeof(((CtrRenderer*) 0)->surfaceCount) == 4,
+               "Knight history copy field sizes");
 #endif

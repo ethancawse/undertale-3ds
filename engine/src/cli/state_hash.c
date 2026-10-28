@@ -25,6 +25,25 @@
 
 #include <string.h>
 #include <stdlib.h>
+#ifdef CTRPORT_OFFDRAW
+// offdraw's diagnostic (platform/3ds/diag/ctr_offdraw.c): offdraw.txt's hashskip=<object> leaves that object's
+// instances out of the state hash and its sprite's drawSprite records out of the draw hash (hashskip=kill: only the
+// kill objects' instances past their kill line).
+bool CtrOffdraw_hashSkip(void* inst);
+bool CtrOffdraw_skipDraw(int32_t tpag, float x, float y, float xs, float ys);
+#define OFFDRAW_SKIP(inst) CtrOffdraw_hashSkip(inst)
+#define OFFDRAW_SKIP_DRAW(tpag, x, y, xs, ys) CtrOffdraw_skipDraw(tpag, x, y, xs, ys)
+static int32_t OFFDRAW_HASHED(Runner* runner, int32_t n) {
+    int32_t kept = 0;
+    for (int32_t i = 0; n > i; i++) kept += !OFFDRAW_SKIP(runner->instances[i]);
+    return kept;
+}
+#else
+#define OFFDRAW_SKIP(inst) false
+#define OFFDRAW_SKIP_DRAW(tpag, x, y, xs, ys) false
+#define OFFDRAW_HASHED(runner, n) (n)
+#endif
+#line 28
 
 static FILE* g_out = nullptr;
 static uint64_t g_drawHash = 0;
@@ -212,9 +231,9 @@ static uint64_t hashRunner(Runner* runner) {
     h = mix64(h, runner->random.index);
 
     int32_t n = (int32_t) arrlen(runner->instances);
-    h = mix64(h, (uint32_t) n);
+    h = mix64(h, (uint32_t) OFFDRAW_HASHED(runner, n));
     for (int32_t i = 0; n > i; i++) {
-        h = hashInstance(h, runner->instances[i]);
+        if (OFFDRAW_SKIP(runner->instances[i])) continue; h = hashInstance(h, runner->instances[i]);
         if (g_dump != nullptr) fprintf(g_dump, "inst %d obj %d -> %016llx\n", runner->instances[i]->instanceId, runner->instances[i]->objectIndex, (unsigned long long) h);
     }
 
@@ -278,7 +297,7 @@ static int32_t g_dhDepth = 0;
 #define DH_CALL(call) do { g_dhDepth++; call; g_dhDepth--; } while (0)
 
 static void w_drawSprite(Renderer* r, int32_t tpag, float x, float y, float ox, float oy, float xs, float ys, float a, uint32_t c, float al) {
-    DH_BEGIN(1); DH_I(tpag); DH_F(x); DH_F(y); DH_F(ox); DH_F(oy); DH_F(xs); DH_F(ys); DH_F(a); DH_I(c); DH_F(al); DH_END();
+    if (!OFFDRAW_SKIP_DRAW(tpag, x, y, xs, ys)) { DH_BEGIN(1); DH_I(tpag); DH_F(x); DH_F(y); DH_F(ox); DH_F(oy); DH_F(xs); DH_F(ys); DH_F(a); DH_I(c); DH_F(al); DH_END(); }
     DH_CALL(g_originalVtable->drawSprite(r, tpag, x, y, ox, oy, xs, ys, a, c, al));
 }
 
@@ -754,6 +773,6 @@ __attribute__((noinline, section(".text.late.utkill"))) bool StateHash_hashing(v
 __attribute__((noinline, section(".text.late.utkill"))) void StateHash_runDraw(int32_t tpag, float x, float y, float ox, float oy, float xs,
                                                                              float ys, float a, uint32_t c, float al) {
     if (g_originalVtable == nullptr) return;
-    DH_BEGIN(1); DH_I(tpag); DH_F(x); DH_F(y); DH_F(ox); DH_F(oy); DH_F(xs); DH_F(ys); DH_F(a); DH_I(c); DH_F(al); DH_END();
+    if (!OFFDRAW_SKIP_DRAW(tpag, x, y, xs, ys)) { DH_BEGIN(1); DH_I(tpag); DH_F(x); DH_F(y); DH_F(ox); DH_F(oy); DH_F(xs); DH_F(ys); DH_F(a); DH_I(c); DH_F(al); DH_END(); }
 }
 #endif

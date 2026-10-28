@@ -14,13 +14,16 @@
 // in one go only when it changed: drawing straight into the shown buffer (a clear to black, then slow glyph sampling)
 // was the flicker. With the game on the bottom screen the menu is on the top one and the game stays where it is.
 //
-// The main page in blocks with even gaps (screens; Smoothing, Exact colours, FPS counter;
-// Controls; Debug and Legal notices; Back to the game and Quit game at the bottom), and up and down pass over grey
+// The main page in blocks with even gaps (screens; Smoothing, Exact colours, FPS counter; Controls; Debug, Legal
+// notices and Credits; Back to the game and Quit game at the bottom), and up and down pass over grey
 // rows. UNDERTALE's Smoothing row is Recommended or Custom (left or right switch them, the Custom choices are kept; A on
 // Custom opens a page that sets Text, Bones, Numbers and Soul to Smooth or Crisp, with both previews of the row's part
 // from the build's menu data, z_smalltext.c); Off is gone from UNDERTALE's menu (a saved Off loads as Smart; --ini
 // smoothing=0, or the file's smoothing = 0 in a bench launch, still works for a test run, and the row then shows Off
 // until a press turns smoothing back on). DELTARUNE keeps Smart / Off.
+// Stats and log (other_screen 2: frame rate, timing, memory and the log on the screen without the game) is the Debug
+// page's first row (10-26, layout C); the main page's Debug row reads "Log on" while it is on. The setting's
+// values and meaning are unchanged (only its row moved), so settings.ini needs no new settings_version.
 //
 // Opening takes no extra frames: the menu opens on the frame SELECT is
 // pressed, page drawn and screen lit in that frame. Before, the open waited for SELECT's release (main.c's
@@ -115,6 +118,8 @@ bool CtrScreens_gameBelow(void);
 bool CtrLegal_shown(void);
 void CtrLegal_open(CtrMenu* menu);
 bool CtrLegal_update(CtrMenu* menu, u32 down);
+void CtrLegalui_open(CtrMenu* menu, bool credits); // the Legal notices and Credits pages (ctr_legal.c, legalui)
+void CtrLegalui_update(CtrMenu* menu, u32 down);
 
 // ===[ Strings ]===
 
@@ -122,7 +127,7 @@ OPT_STR(omArguiReadMode, "r");
 OPT_STR(omArguiAppendMode, "a");
 OPT_STR(omLblGame, "Game screen");
 OPT_STR(omLblDialogue, "Dialogue box");
-OPT_STR(omLblOther, "Other screen");
+OPT_STR(lblStats, "Stats and log");
 OPT_STR(omLblFps, "FPS counter");
 OPT_STR(omLblSmoothing, "Smoothing");
 OPT_STR(omLblExact, "Exact colours");
@@ -130,6 +135,7 @@ OPT_STR(omLblControls, "Controls");
 OPT_STR(lblDebug, "Debug");
 OPT_STR(omLblPerf, "Performance test");
 OPT_STR(omLblLegal, "Legal notices");
+OPT_STR(lblCredits, "Credits");
 OPT_STR(omLblResume, "Back to the game");
 OPT_STR(omLblQuit, "Quit game");
 OPT_STR(lblScreen, "Screen");
@@ -141,8 +147,6 @@ OPT_STR(omValTop, "< Top >");
 OPT_STR(omValBottom, "< Bottom >");
 OPT_STR(omValOff, "< Off >");
 OPT_STR(omValOn, "< On >");
-OPT_STR(omValBlank, "< Blank >");
-OPT_STR(omValStatsLog, "< Stats and log >");
 OPT_STR(omValSmall, "< Small >");
 OPT_STR(omValMedium, "< Medium >");
 OPT_STR(omValLarge, "< Large >");
@@ -155,6 +159,7 @@ OPT_STR(omValCustom, "< Custom >");
 OPT_STR(valDlgTop, "< Default (top) >");
 OPT_STR(valDlgBot, "< Bottom screen >");
 OPT_STR(valOpen, ">");
+OPT_STR(valLogOpen, "Log on  >");
 OPT_STR(valOffOpen, "Off  >");
 OPT_STR(valTopOpen, "Top  >");
 OPT_STR(valBotOpen, "Bottom  >");
@@ -164,9 +169,9 @@ OPT_STR(omHlpGameTop, "Play on the top screen.");
 OPT_STR(omHlpGameBot, "Play on the bottom screen.");
 OPT_STR(omHlpDlgTop, "Dialogue stays in the game.");
 OPT_STR(omHlpDlgBot, "Dialogue moves to the bottom screen.");
-OPT_STR(omHlpOtherOff, "Screen off.");
-OPT_STR(hlpOtherBlank, "Screen blank.");
-OPT_STR(omHlpOtherLog, "Frame rate and log.");
+OPT_STR(omHlpOtherOff, "Other screen off.");
+OPT_STR(hlpOtherBlank, "Other screen blank.");
+OPT_STR(omHlpOtherLog, "Frame rate and log on the other screen.");
 #ifndef ENABLE_WAD16
 OPT_STR(omHlpSmoothSmart, "Sharp art, smooth text.");
 #endif
@@ -176,6 +181,7 @@ OPT_STR(hlpFps, "Frame rate overlay. A for its options.");
 OPT_STR(omHlpControls, "A to change buttons.");
 OPT_STR(hlpDebug, "Tools for testing.");
 OPT_STR(hlpLegal, "Licence and source code.");
+OPT_STR(hlpCredits, "Who made the game and this port.");
 OPT_STR(hlpResume, "Close this menu.");
 OPT_STR(omHlpQuit, "Unsaved progress is lost.");
 OPT_STR(omHlpFpsOn, "Shows the frame rate.");
@@ -247,10 +253,11 @@ enum { OPT_PAGE_MAIN, OPT_PAGE_FPS, OPT_PAGE_DEBUG, OPT_PAGE_SMOOTH, OPT_PAGES }
 #else
 enum { OPT_PAGE_MAIN, OPT_PAGE_FPS, OPT_PAGE_DEBUG, OPT_PAGES };
 #endif
-enum { OPT_MAIN_GAME, OPT_MAIN_DIALOGUE, OPT_MAIN_OTHER, OPT_MAIN_SMOOTHING, OPT_MAIN_EXACT, OPT_MAIN_FPS,
-       OPT_MAIN_CONTROLS, OPT_MAIN_DEBUG, OPT_MAIN_LEGAL, OPT_MAIN_RESUME, OPT_MAIN_QUIT, OPT_MAIN_COUNT };
+enum { OPT_MAIN_GAME, OPT_MAIN_DIALOGUE, OPT_MAIN_SMOOTHING, OPT_MAIN_EXACT, OPT_MAIN_FPS,
+       OPT_MAIN_CONTROLS, OPT_MAIN_DEBUG, OPT_MAIN_LEGAL, OPT_MAIN_CREDITS, OPT_MAIN_RESUME, OPT_MAIN_QUIT,
+       OPT_MAIN_COUNT };
 enum { OPT_FPS_ON, OPT_FPS_SCREEN, OPT_FPS_SIZE, OPT_FPS_BACK, OPT_FPS_COUNT };
-enum { OPT_DEBUG_PERF, OPT_DEBUG_BACK, OPT_DEBUG_COUNT };
+enum { OPT_DEBUG_LOG, OPT_DEBUG_PERF, OPT_DEBUG_BACK, OPT_DEBUG_COUNT };
 #ifdef ENABLE_WAD16
 enum { OPT_SMOOTH_TEXT, OPT_SMOOTH_BONES, OPT_SMOOTH_NUMBERS, OPT_SMOOTH_SOUL, OPT_SMOOTH_BACK, OPT_SMOOTH_COUNT };
 #endif
@@ -258,18 +265,19 @@ enum { OPT_SMOOTH_TEXT, OPT_SMOOTH_BONES, OPT_SMOOTH_NUMBERS, OPT_SMOOTH_SOUL, O
 #define OPT_PAGE_BYTES (320u * 240u * 2u)
 #define OPT_TOP_SIDE (40u * 240u) // the top screen's left side bar, in pixels
 
-// Each row's y, per page (logical blocks, even gaps). Rows 12 px apart, blocks 8 px further; the main
-// page's Back to the game and Quit game sit at the bottom, Quit's lowest ink 6 px above the help line (y 214) as the
-// first row's top is 6 px below the frame.
+// Each row's y, per page (logical blocks, even gaps). Rows 14 px apart (the font's 12 px of ink, descenders included,
+// and 2 px clear, so no row's ink touches the next's), blocks 6 px further; the main page's Back to the game and Quit
+// game sit at the bottom, Quit's lowest ink 6 px above the help line (y 214) as the first row's top is 6 px below the
+// frame. Debug: Stats and log (a setting), Performance test (a tool), Back.
 #ifdef ENABLE_WAD16
 static const uint8_t optY[OPT_PAGES][OPT_MAIN_COUNT] OPT_RO = {
-    { 8, 20, 32, 52, 64, 76, 96, 116, 128, 184, 196 }, { 8, 28, 40, 60 }, { 8, 28 }, { 8, 20, 32, 44, 64 } };
+    { 8, 22, 42, 56, 70, 90, 110, 124, 138, 182, 196 }, { 8, 28, 42, 62 }, { 8, 28, 48 }, { 8, 22, 36, 50, 70 } };
 static const uint8_t optCounts[OPT_PAGES] OPT_RO = { OPT_MAIN_COUNT, OPT_FPS_COUNT, OPT_DEBUG_COUNT, OPT_SMOOTH_COUNT };
 // The main page's row each page goes back to.
 static const uint8_t optParent[OPT_PAGES] OPT_RO = { 0, OPT_MAIN_FPS, OPT_MAIN_DEBUG, OPT_MAIN_SMOOTHING };
 #else
 static const uint8_t optY[OPT_PAGES][OPT_MAIN_COUNT] OPT_RO = {
-    { 8, 20, 32, 52, 64, 76, 96, 116, 128, 184, 196 }, { 8, 28, 40, 60 }, { 8, 28 } };
+    { 8, 22, 42, 56, 70, 90, 110, 124, 138, 182, 196 }, { 8, 28, 42, 62 }, { 8, 28, 48 } };
 static const uint8_t optCounts[OPT_PAGES] OPT_RO = { OPT_MAIN_COUNT, OPT_FPS_COUNT, OPT_DEBUG_COUNT };
 // The main page's row each page goes back to.
 static const uint8_t optParent[OPT_PAGES] OPT_RO = { 0, OPT_MAIN_FPS, OPT_MAIN_DEBUG };
@@ -362,7 +370,7 @@ OPT_STATIC bool optClamp(CtrDisplaySettings* s) {
     return memcmp(&before, s, sizeof(before)) != 0;
 }
 
-#ifdef ENABLE_WAD17
+#if defined(ENABLE_WAD17) && !defined(CTRPORT_TARGET_N3DS) // DELTARUNE New: z_smalltext_dr.c's links, then crispart's
 #define CtrArgui_chainOverrideSmalltext CtrArgui_chainOverrideCrispart
 #define CtrArgui_chainSaveEditsSmalltext CtrArgui_chainSaveEditsCrispart
 #endif
@@ -415,7 +423,7 @@ OPT_CODE bool __wrap_CtrArgui_keepLit(u32 screen) {
 
 OPT_CODE void __wrap_CtrArgui_load(CtrDisplaySettings* settings, const char* path, CtrDisplayCaps caps) {
     // argui's menu entry points stay linked where they were (--gc-sections would drop them and move what follows).
-    __asm__ volatile("" : : "r"(__real_CtrArgui_menuOpen), "r"(__real_CtrArgui_menuUpdate), "r"(__real_CtrArgui_menuClose));
+    WAD17_ONLY(__asm__ volatile("" : : "r"(__real_CtrArgui_menuOpen), "r"(__real_CtrArgui_menuUpdate), "r"(__real_CtrArgui_menuClose));)
     __real_CtrArgui_load(settings, path, caps);
     opt.pref = 0;
     FILE* f = fopen(path, omArguiReadMode);
@@ -610,11 +618,6 @@ OPT_STATIC void optRowMain(const CtrMenu* menu, uint32_t i, OptRow* r) {
         r->dis = !top;
         r->value = r->dis ? omDisNeedsTop : (s->dialogueBottom ? valDlgBot : valDlgTop);
         r->help = r->dis ? omDisNeedsTop : (s->dialogueBottom ? omHlpDlgBot : omHlpDlgTop);
-    } else if (i == OPT_MAIN_OTHER) {
-        bool console = s->bottomMode == BOTTOM_MODE_CONSOLE;
-        r->label = omLblOther;
-        r->value = console ? omValStatsLog : (CtrScreens_sharedBacklight ? omValBlank : omValOff);
-        r->help = console ? omHlpOtherLog : (CtrScreens_sharedBacklight ? hlpOtherBlank : omHlpOtherOff);
     } else if (i == OPT_MAIN_SMOOTHING) {
         r->label = omLblSmoothing;
 #ifdef ENABLE_WAD16
@@ -644,11 +647,14 @@ OPT_STATIC void optRowMain(const CtrMenu* menu, uint32_t i, OptRow* r) {
         r->help = omHlpControls;
     } else if (i == OPT_MAIN_DEBUG) {
         r->label = lblDebug;
-        r->value = valOpen;
+        r->value = s->bottomMode == BOTTOM_MODE_CONSOLE ? valLogOpen : valOpen;
         r->help = hlpDebug;
     } else if (i == OPT_MAIN_LEGAL) {
         r->label = omLblLegal;
         r->help = hlpLegal;
+    } else if (i == OPT_MAIN_CREDITS) {
+        r->label = lblCredits;
+        r->help = hlpCredits;
     } else if (i == OPT_MAIN_RESUME) {
         r->label = omLblResume;
         r->help = hlpResume;
@@ -681,7 +687,15 @@ OPT_STATIC void optRowFps(uint32_t i, OptRow* r) {
     }
 }
 
-OPT_STATIC void optRowDebug(uint32_t i, OptRow* r) {
+// The Debug page: Stats and log On or Off (Off: the other screen's backlight off, or blank on the original 2DS).
+OPT_STATIC void optRowDebug(const CtrMenu* menu, uint32_t i, OptRow* r) {
+    if (i == OPT_DEBUG_LOG) {
+        bool console = menu->settings.bottomMode == BOTTOM_MODE_CONSOLE;
+        r->label = lblStats;
+        r->value = console ? omValOn : omValOff;
+        r->help = console ? omHlpOtherLog : (CtrScreens_sharedBacklight ? hlpOtherBlank : omHlpOtherOff);
+        return;
+    }
     r->label = i == OPT_DEBUG_PERF ? omLblPerf : lblBack;
     r->help = i == OPT_DEBUG_PERF ? omHlpPerf : hlpBack;
 }
@@ -741,7 +755,7 @@ OPT_STATIC void optRow(const CtrMenu* menu, uint32_t page, uint32_t i, OptRow* r
 #ifdef ENABLE_WAD16
     else if (page == OPT_PAGE_SMOOTH) optRowSmooth(i, r);
 #endif
-    else optRowDebug(i, r);
+    else optRowDebug(menu, i, r);
 }
 
 // The page, drawn off screen: argui's frame (border, the line above the help) and rows.
@@ -834,6 +848,12 @@ OPT_STATIC void optFlush(CtrMenu* menu) {
 
 // ===[ The menu ]===
 
+// The menu's sounds: the game's own cursor sound (argui's sndMove) for the open and each move, its choice sound
+// (sndSelect) for a change, a choice, back and the close; played through the audio's menu hold
+// (ctr_audio_system.c's CtrAudio_menuSound), so they sound while the game's sounds are held.
+void CtrAudio_menuSound(AudioSystem* audio, int32_t id);
+OPT_STATIC void optSound(bool selectSound);
+
 OPT_CODE void __wrap_CtrArgui_menuOpen(CtrMenu* menu, PrintConsole* console, const CtrDisplaySettings* settings, CtrDisplayCaps caps) {
     opt.menu = menu;
     opt.spareBase = nullptr;
@@ -879,6 +899,7 @@ OPT_CODE void __wrap_CtrArgui_menuOpen(CtrMenu* menu, PrintConsole* console, con
     opt.dirty = true;
     optLive();
     optFlush(menu);
+    optSound(false);
 #ifdef CTRPORT_PLAYER_SHOTS
     opt.sinceOpen = 0;
     uint64_t t1 = svcGetSystemTick();
@@ -900,6 +921,9 @@ OPT_STATIC void optLeaveTop(const CtrMenu* menu) {
         memset(fb, 0, 400u * 240u * 2u);
         GSPGPU_FlushDataCache(fb, 400u * 240u * 2u);
     }
+    // CtrPacer_shownFramebuffer turned double buffering on, and the counter's paint (gfxGetFramebuffer) would then go
+    // to the buffer off screen: the consoles' single buffer again, as screensConfigure leaves it.
+    gfxSetDoubleBuffering(GFX_TOP, false);
     CtrLog_endConsole();
     bool off = menu->settings.bottomMode != BOTTOM_MODE_CONSOLE && !CtrScreens_sharedBacklight && menu->caps.wide;
     if (off && !CtrScreens_topBacklightOff && R_SUCCEEDED(gspLcdInit())) {
@@ -930,8 +954,7 @@ OPT_CODE void __wrap_CtrArgui_menuClose(CtrMenu* menu) {
 }
 
 OPT_STATIC void optSound(bool selectSound) {
-    int32_t id = g.assetIds[selectSound];
-    if (id >= 0 && g.audio != nullptr) g.audio->vtable->playSound(g.audio, id, 100, false);
+    if (g.audio != nullptr) CtrAudio_menuSound(g.audio, g.assetIds[selectSound]);
 }
 
 // A page's row chosen or changed (dir -1, 1, or 0 for A).
@@ -951,6 +974,11 @@ OPT_STATIC CtrMenuAction optActivate(CtrMenu* menu, uint32_t i, int32_t dir) {
         return MENU_ACTION_CHANGED;
     }
     if (opt.page == OPT_PAGE_DEBUG) {
+        if (i == OPT_DEBUG_LOG) {
+            s->bottomMode = s->bottomMode == BOTTOM_MODE_CONSOLE ? BOTTOM_MODE_OFF : BOTTOM_MODE_CONSOLE;
+            menu->edited = true;
+            return MENU_ACTION_CHANGED;
+        }
         if (dir != 0) return MENU_ACTION_NONE;
         if (i == OPT_DEBUG_PERF) return MENU_ACTION_PERF_TEST;
         opt.page = OPT_PAGE_MAIN;
@@ -997,8 +1025,8 @@ OPT_STATIC CtrMenuAction optActivate(CtrMenu* menu, uint32_t i, int32_t dir) {
         CtrMenu_update(menu, KEY_A); // the screens' menu opens main's Controls page from its Controls row
         return MENU_ACTION_NONE;
     }
-    if (i == OPT_MAIN_LEGAL) {
-        if (dir == 0) CtrLegal_open(menu);
+    if (i == OPT_MAIN_LEGAL || i == OPT_MAIN_CREDITS) {
+        if (dir == 0) CtrLegalui_open(menu, i == OPT_MAIN_CREDITS);
         return MENU_ACTION_NONE;
     }
     if (i >= OPT_MAIN_RESUME) {
@@ -1009,8 +1037,7 @@ OPT_STATIC CtrMenuAction optActivate(CtrMenu* menu, uint32_t i, int32_t dir) {
     else if (i == OPT_MAIN_DIALOGUE) {
         if (CtrScreens_game != 0) return MENU_ACTION_NONE;
         s->dialogueBottom = !s->dialogueBottom;
-    } else if (i == OPT_MAIN_OTHER) s->bottomMode = s->bottomMode == BOTTOM_MODE_CONSOLE ? BOTTOM_MODE_OFF : BOTTOM_MODE_CONSOLE;
-    else if (i == OPT_MAIN_SMOOTHING) s->smoothing = s->smoothing == SMOOTHING_OFF ? SMOOTHING_SMART : SMOOTHING_OFF;
+    } else if (i == OPT_MAIN_SMOOTHING) s->smoothing = s->smoothing == SMOOTHING_OFF ? SMOOTHING_SMART : SMOOTHING_OFF;
     else {
         if (!CTR_PACK_EXACT_AVAILABLE) return MENU_ACTION_NONE;
         s->exactColours = !s->exactColours;
@@ -1024,7 +1051,7 @@ OPT_STATIC CtrMenuAction optKeys(CtrMenu* menu, u32 down) {
     if (folded & 0xFFu) optSound((folded & 0xC0u) == 0);
     opt.dirty = true;
     if (CtrLegal_shown()) {
-        CtrLegal_update(menu, down);
+        CtrLegalui_update(menu, down);
         return MENU_ACTION_NONE;
     }
     if (menu->page != MENU_PAGE_OPTIONS) {
@@ -1068,6 +1095,7 @@ OPT_CODE CtrMenuAction __wrap_CtrArgui_menuUpdate(CtrMenu* menu, u32 down) {
     bool wasTop = CtrOptmenu_onTop;
     if (wasTop) CtrScreens_otherOff = menu->settings.bottomMode != BOTTOM_MODE_CONSOLE;
     CtrMenuAction action = down != 0 ? optKeys(menu, down) : MENU_ACTION_NONE;
+    if (down == 0 && CtrLegal_shown()) CtrLegalui_update(menu, 0); // held keys and the credits' roll
     optLive(); // a move (Game screen) happens at this frame's yield; the next call places the menu again
     optFlush(menu);
     return action;
@@ -1206,9 +1234,9 @@ typedef struct {
 } OptStep;
 static const OptStep optSteps[] OPT_RO = {
     { 5, 2, 0x00 }, { 10, 1, 0x80 }, { 11, 2, 0x00 }, { 12, 2, 0x00 }, { 13, 1, 0x80 }, { 14, 2, 0x00 }, { 15, 2, 0x00 },
-    { 20, 1, 0x80 }, { 22, 1, 0x80 }, { 24, 1, 0x80 }, { 26, 1, 0x01 }, { 28, 2, 0x00 }, { 30, 1, 0x80 }, { 32, 2, 0x00 },
+    { 20, 1, 0x80 }, { 22, 1, 0x80 }, { 24, 1, 0x00 }, { 26, 1, 0x01 }, { 28, 2, 0x00 }, { 30, 1, 0x80 }, { 32, 2, 0x00 },
     { 34, 1, 0x40 }, { 36, 1, 0x01 }, { 38, 2, 0x00 }, { 40, 1, 0x80 }, { 42, 1, 0x80 }, { 44, 1, 0x10 }, { 46, 2, 0x00 },
-    { 48, 1, 0x02 }, { 50, 2, 0x00 }, { 52, 1, 0x40 }, { 54, 1, 0x40 }, { 56, 1, 0x40 }, { 58, 1, 0x40 }, { 60, 1, 0x40 },
+    { 48, 1, 0x02 }, { 50, 2, 0x00 }, { 52, 1, 0x40 }, { 54, 1, 0x40 }, { 56, 1, 0x40 }, { 58, 1, 0x40 }, { 60, 1, 0x00 },
     { 62, 1, 0x10 }, { 64, 2, 0x00 }, { 70, 2, 0x00 }, { 74, 1, 0x10 }, { 78, 2, 0x00 }, { 84, 2, 0x00 }, { 88, 1, 0x40 },
     { 90, 1, 0x40 }, { 92, 1, 0x40 }, { 94, 1, 0x40 }, { 96, 1, 0x01 }, { 98, 2, 0x00 }, { 100, 1, 0x02 }, { 104, 1, 0x04 },
     { 20, 3, 0x00 }, { 120, 3, 0x00 },
@@ -1304,3 +1332,9 @@ OPT_STATIC bool optPressParse(const char* line) {
     return false;
 }
 #endif
+
+// optText for the legal and credits pages (ctr_legal.c): the menu font's glyphs into the page being drawn.
+void CtrOptmenu_text(uint16_t* fb, int32_t x, int32_t y, const char* s, uint32_t col);
+OPT_CODE void CtrOptmenu_text(uint16_t* fb, int32_t x, int32_t y, const char* s, uint32_t col) {
+    optText(fb, x, y, s, col);
+}

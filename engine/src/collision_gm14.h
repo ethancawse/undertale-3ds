@@ -272,7 +272,7 @@ COLFLIP14_LATE COLFLIP14_FLAT bool Colflip14_scan(const ColflipScan* scan) {
 // Collision_scanPixelsLate's scan (collision.h's Colflip_callScan): GMS 1.4's, or DELTARUNE's unchanged.
 COLFLIP14_LATE bool Colflip14_scanPixels(const ColflipScan* scan) {
     if (Colflip_gm14) return Colflip14_scan(scan);
-    return Collision_compatScanPixels(scan);
+    WAD17_ONLY(return Collision_compatScanPixels(scan);) WAD17_NONE(return Colflip14_scan(scan);)
 }
 
 #endif /* COLLISION_GM14_DEFINE */

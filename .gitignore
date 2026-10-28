@@ -48,3 +48,5 @@ aot-*/
 /dump*/
 # texprep binaries: the release package carries them (pinned in tools/release/builder/texcache.py)
 tools/release/builder/bin/
+# azstub: built by tools/azstub/build.sh, never committed
+tools/azstub/*.exe

@@ -8,6 +8,6 @@ void __real_CtrChapters_unloadGame(Runner* runner);
 void __wrap_CtrChapters_unloadGame(Runner* runner);
 
 __attribute__((noinline, section(".text.late.chapterleak"))) void __wrap_CtrChapters_unloadGame(Runner* runner) {
-    if (runner != nullptr && runner->renderer != nullptr) CtrRenderer_releaseChapterTextures(runner->renderer);
+    WAD17_ONLY(if (runner != nullptr && runner->renderer != nullptr) CtrRenderer_releaseChapterTextures(runner->renderer);)
     __real_CtrChapters_unloadGame(runner);
 }

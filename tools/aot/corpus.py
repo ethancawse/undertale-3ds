@@ -2,7 +2,7 @@
 """Profile corpus for AOT selection (docs/aot.md, "Byte-budget selection").
 
 Runs YOUR game data in the desktop runner with the GML profiler and writes one profile per bench scene, per room and
-per encounter. tools/aot/select.py ranks code entries from them. Nothing here leaves your machine: the profiles name
+per encounter. tools/aot/aot_select.py ranks code entries from them. Nothing here leaves your machine: the profiles name
 the game's code entries and count their instructions, so keep them out of the repository like everything else
 derived from the game.
 

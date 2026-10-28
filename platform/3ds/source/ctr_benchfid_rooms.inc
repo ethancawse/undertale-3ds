@@ -56,7 +56,7 @@ static void __attribute__((optimize("Os"))) HIDDEN_LATE benchfidRoomsReport(void
     BenchWorkResult work = benchWorkResult(&benchRooms.routeWork);
     logInfo(roomsHeadroomFormat, benchRooms.id, benchWorkVerdict(&work), (unsigned long) work.frames,
             (unsigned long) benchRooms.hiddenExcluded, (unsigned long) benchRooms.workExcluded,
-            work.cpuMean, work.valid ? work.cpuTail : -1.0, work.gpuMean, work.valid ? work.gpuTail : -1.0);
+            work.cpuMean, work.valid ? work.cpuTail : -1.0, work.gpuMean, work.valid ? work.gpuTail : -1.0, benchRooms.routeWork.cpu[0], benchRooms.routeWork.gpu[0]);
     emit(f, roomsHeadroomResultFormat, benchRooms.id, benchWorkVerdict(&work), (unsigned long) work.frames,
             (unsigned long) benchRooms.hiddenExcluded, (unsigned long) benchRooms.workExcluded,
             work.cpuMean, work.valid ? work.cpuTail : -1.0, work.gpuMean, work.valid ? work.gpuTail : -1.0);
@@ -103,3 +103,125 @@ static void __attribute__((optimize("Os"))) HIDDEN_LATE benchfidRoomsReport(void
 
 #undef HIDDEN_LATE
 #undef HIDDEN_CONST
+
+// ===== Presentation v1 (utflames, 10-25), in sections of its own (late_reserve.ld, last in each list) so that
+// no late code or data already linked moves. benchfidRooms* above are unchanged; the bench calls these wrappers.
+#define SHOWN_LATE __attribute__((noinline, noclone, no_reorder, optimize("Os"), section(".text.benchshown_late")))
+#define SHOWN_CONST(name, value) static const char name[] __attribute__((section(".text.benchshown_late.constants"))) = value
+
+// How long each shown frame stayed on the game's screen, flip to flip in vblanks, from the pacer's flip totals. After
+// the room segment lines, one line per visit (its own line, so every room segment line stays byte for byte as it was):
+//     Bench: <id>: room presentation <visit> room=<room> shown_flips=N shown_3vb=N shown_max_vb=N shown_1%low=F
+//     room_presentation <id> visit=<visit> room=<room> ...                                   (benchmark.txt, [result])
+// The interval fields count when the main thread STARTED frames, so the pacer realigning its phase after a room's
+// first played frame (a 40-50 ms start interval while every frame still stays up 2 vblanks) reads as a slow frame
+// there, and only a late presentation reads as one here.
+//     shown_flips   flips counted in the visit (shown frames)
+//     shown_3vb     of them, frames that stayed up 3 or more vblanks (a dropped 30 fps frame)
+//     shown_max_vb  the longest a counted frame stayed up, in vblanks
+//     shown_1%low   1000 * k / (vblanks of the k longest * 16.714 ms), k = flips / 100 (at least 1); holds of 8+
+//                   vblanks count at their mean
+// Like hidden_ms, a hidden load is left out: the one hold that ends at the first flip after a room change (the frame
+// before it, kept on screen through the load and the new room's first played frame). Flips seen in a capture's
+// frame are left out as its interval is. The flips are read once a frame, so a flip lands in the visit current when
+// the bench next looks; that moves nothing but the hold, which is left out. A frame of the bench sees one flip, so
+// shown_max_vb is exact; with two 8+ holds in one look it is an upper bound.
+#define SHOWN_VBLANK_MS (1000.0 / 59.831)
+typedef struct __attribute__((packed, aligned(4))) {
+    uint16_t count[CTR_FLIP_BUCKETS]; // stayed up 1-7 vblanks, and 8 or more (saturating)
+    uint32_t longSum;                 // vblanks of the 8+ holds
+    uint32_t maxVb;
+} BenchShownVisit;
+static struct __attribute__((packed, aligned(4))) {
+    BenchShownVisit visits[64];
+    uint32_t lastCount[CTR_FLIP_BUCKETS];
+    uint32_t lastSum;
+    bool skipNext; // the next flip ends a hidden load's hold
+} benchfidShown __attribute__((section(".bss.benchshown_late")));
+SHOWN_CONST(shownFormat, "room=%s shown_flips=%lu shown_3vb=%lu shown_max_vb=%lu shown_1%%low=%.3f\n");
+SHOWN_CONST(shownLogPrefix, "Bench: %s: room presentation %lu %s");
+SHOWN_CONST(shownResultPrefix, "room_presentation %s visit=%lu %s");
+
+// Reads the flip totals; with collect, adds the flips since the last read to the current visit.
+static void SHOWN_LATE benchshownRead(bool collect) {
+    CtrFlipStats now;
+    CtrPacer_getFlipTotals(&now);
+    uint32_t d[CTR_FLIP_BUCKETS], flips = 0, shortSum = 0;
+    for (uint32_t i = 0; i < CTR_FLIP_BUCKETS; i++) {
+        d[i] = now.count[i] - benchfidShown.lastCount[i];
+        benchfidShown.lastCount[i] = now.count[i];
+        flips += d[i];
+        shortSum += d[i] * (i + 1);
+    }
+    const uint32_t L = CTR_FLIP_BUCKETS - 1;
+    uint32_t longSum = (uint32_t) now.sum - benchfidShown.lastSum - (shortSum - d[L] * CTR_FLIP_BUCKETS);
+    benchfidShown.lastSum = (uint32_t) now.sum;
+    if (!collect) return;
+    if (flips > 0) {
+        if (!CtrRenderer_screenshotTimingAffected(bench.session.renderer)) {
+            uint32_t top = CTR_FLIP_BUCKETS;
+            while (d[top - 1] == 0) top--;
+            if (benchfidShown.skipNext) {
+                // The hold that ends the load: the longest flip seen.
+                if (top == CTR_FLIP_BUCKETS) longSum -= longSum / d[L];
+                d[top - 1]--;
+                while (top > 0 && d[top - 1] == 0) top--;
+            }
+            BenchShownVisit* s = &benchfidShown.visits[benchRooms.count - 1];
+            for (uint32_t i = 0; i < CTR_FLIP_BUCKETS; i++) {
+                uint32_t c = s->count[i] + d[i];
+                s->count[i] = c > 65535u ? 65535u : (uint16_t) c;
+            }
+            if (top == CTR_FLIP_BUCKETS) {
+                s->longSum += longSum;
+                top = longSum - (d[L] - 1) * CTR_FLIP_BUCKETS;
+            }
+            if (top > s->maxVb) s->maxVb = top;
+        }
+        benchfidShown.skipNext = false; // a hold ending in a capture's frame went with the capture's flips
+    }
+    if (benchRooms.hiddenPending) benchfidShown.skipNext = true;
+}
+
+static void SHOWN_LATE benchshownRoomsOpen(void) {
+    memset(&benchfidShown, 0, sizeof(benchfidShown));
+    benchshownRead(false);
+    benchfidRoomsOpen();
+}
+
+static void SHOWN_LATE benchshownRoomsCollect(Runner* runner) {
+    if (bench.measureFrames > (int32_t) benchRooms.work && benchRooms.count > 0 && !benchRooms.overflow)
+        benchshownRead(true);
+    benchfidRoomsCollect(runner);
+}
+
+// After benchfidRoomsReport's lines, one presentation line per visit it reported. Cold finalization only.
+static void SHOWN_LATE benchshownRoomsReport(void) {
+    benchfidRoomsReport();
+    char path[256];
+    snprintf(path, sizeof(path), roomsPathFormat, bench.session.gameDir, roomsFileName);
+    FILE* f = fopen(path, roomsFileMode);
+    for (uint32_t i = 0; i < benchRooms.count; i++) {
+        const BenchShownVisit* s = &benchfidShown.visits[i];
+        uint32_t n = 0;
+        for (uint32_t j = 0; j < CTR_FLIP_BUCKETS; j++) n += s->count[j];
+        uint32_t k = n / 100 > 0 ? n / 100 : n > 0 ? 1 : 0, left = k;
+        double vb = 0.0;
+        for (int32_t j = CTR_FLIP_BUCKETS - 1; j >= 0 && left > 0; j--) {
+            uint32_t take = left < s->count[j] ? left : s->count[j];
+            if (take == 0) continue;
+            vb += j == CTR_FLIP_BUCKETS - 1 ? (double) s->longSum * take / s->count[j] : (double) take * (j + 1);
+            left -= take;
+        }
+        char row[192];
+        snprintf(row, sizeof(row), shownFormat, benchRooms.visits[i].room, (unsigned long) n,
+                (unsigned long) (n - s->count[0] - s->count[1]), (unsigned long) s->maxVb,
+                vb > 0.0 ? 1000.0 * k / (vb * SHOWN_VBLANK_MS) : 0.0);
+        logInfo(shownLogPrefix, benchRooms.id, (unsigned long) i + 1, row);
+        emit(f, shownResultPrefix, benchRooms.id, (unsigned long) i + 1, row);
+    }
+    if (f != nullptr) fclose(f);
+}
+
+#undef SHOWN_LATE
+#undef SHOWN_CONST

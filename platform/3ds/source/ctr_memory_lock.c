@@ -56,7 +56,7 @@ ALLOCATION_LATE(deferredRelief) static bool deferredRelief(void) {
             p = CtrMemory_##name##Once arguments; \
             inRetry = false; \
         } \
-        return p; \
+        HEAPPROF_NOTE_OTHER(#name, p, arguments); return p; \
     }
 
 ALLOC_ENTRY(linearAlloc, (size_t size), (size))

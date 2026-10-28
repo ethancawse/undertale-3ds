@@ -66,6 +66,18 @@ FONT_PARAMS = {
     'fnt_small': dict(unbold=True),
     # UNDERTALE's battle HUD (name, LV, HP numbers): a 4x5 pixel font stored at 3x, so one font pixel is 1.5 native px.
     'fnt_curs': dict(unbold=False, colmap='font', pixel=3),
+    # fnt_main (sansfont, playtest 10-26: the game-over refusal line sits at an odd 640 x, where Smooth blurs it): a font
+    # stored at 2x, so its even texels are the font itself, one native pixel each; PC's exact glyphs, no corrections.
+    'fnt_main': dict(unbold=False, colmap='font', pixel=2),
+    # Sans (smoothux, playtest 10-24: the 'fill' remake "looks really tall ... compared to the pc text"): PC's height
+    # (rowfit 'pc': caps and ascenders 5 native rows, x-height 4, as PC's 10 and 7 px at half size), with the
+    # corrections in PATCHES_PC applied by default, since the plain 2:1 split can't keep e's eye or a, s, n apart.
+    'fnt_comicsans': dict(unbold=True, rowfit='pc', patches=True),
+    # The ending credits' text (sansfont, playtest 10-26): PC's height like Sans, with PATCHES_MAINTEXT by default.
+    'fnt_maintext': dict(rowfit='pc', patches=True),
+    # DELTARUNE's enemy bubbles (sansfont round 3, approved 10-26: "all new fonts approved for crisp mode"): DotumChe,
+    # whose ink is UNDERTALE's fnt_plain's, with fnt_plain's parameters and corrections.
+    'fnt_dotumche': dict(unbold=True),
 }
 
 # Proposed minimal corrections to derived Sharp glyphs, for glyphs that still fail after the algorithm. Instructions
@@ -81,16 +93,157 @@ _STAR_FEET = [(1, 3, 1, 0), (0, 4, 1, 0), (2, 4, 1, 0), (0, 3, 0, 1), (2, 3, 0, 
 # feet onto the stem row gives a three-row star. The check passes '*' already; this is a look-only proposal.
 PATCHES = {
     'fnt_plain': {'W': _W_BAND, '*': _STAR_FEET},
+    'fnt_dotumche': {'W': _W_BAND, '*': _STAR_FEET},
 }
 # The same W correction for rowfit 'pc' (round 5), where the band sits a row lower (rows 3-4); its '*' already comes
 # out as the three-row star the `*` correction draws, so it has none.
 _W_BAND_PC = [(1, 3, 1, 0), (3, 3, 1, 0), (1, 4, 1, 0), (3, 4, 1, 0)]
-PATCHES_PC = {
-    'fnt_plain': {'W': _W_BAND_PC},
+# fnt_comicsans at PC height (smoothux, 10-24): at 3 columns by 4 rows the even 2:1 split turns e into a, n into H, s
+# into a blot and 1/3/4/5/9 into other digits. These corrections redraw them as our own small letters in the derived
+# glyph's own box (rows 3-7 caps and ascenders, 4-7 x-height, 8-9 descenders), widths and positions unchanged:
+# a/o/e/c/n/u apart by their corners and bars, one-column l, s as a 2x4 zigzag, digits with their own strokes.
+PATCHES_SANS = {
+    'a': [(2, 4, 0, 1), (1, 5, 1, 0), (0, 7, 1, 0)],
+    'b': [(1, 5, 1, 0)],
+    'c': [(2, 4, 0, 1), (1, 5, 1, 0), (2, 5, 1, 0), (2, 6, 1, 0), (0, 7, 1, 0), (2, 7, 0, 1)],
+    'd': [(2, 3, 0, 1), (3, 3, 1, 0), (1, 4, 0, 1), (3, 4, 1, 0), (0, 5, 0, 1), (1, 5, 1, 0), (3, 5, 1, 0),
+          (2, 6, 0, 1), (3, 6, 1, 0), (0, 7, 1, 0), (3, 7, 1, 0)],
+    'e': [(0, 5, 0, 1), (2, 6, 1, 0), (0, 7, 1, 0)],
+    'f': [(0, 5, 1, 0), (2, 5, 1, 0), (1, 8, 1, 0)],
+    'g': [(2, 4, 0, 1), (0, 5, 0, 1), (1, 5, 1, 0), (0, 7, 1, 0)],
+    'h': [(1, 5, 1, 0)],
+    'k': [(2, 5, 1, 0)],
+    'l': [(0, 7, 0, 1)],
+    'm': [(1, 4, 0, 1), (4, 4, 1, 0), (1, 5, 1, 0), (3, 5, 1, 0)],
+    'n': [(1, 4, 0, 1), (2, 4, 1, 0), (1, 5, 1, 0)],
+    'o': [(0, 5, 0, 1), (1, 5, 1, 0), (0, 7, 1, 0)],
+    'p': [(1, 5, 1, 0), (2, 7, 1, 0)],
+    'q': [(1, 5, 1, 0), (0, 7, 1, 0)],
+    'r': [(1, 4, 1, 0), (2, 5, 1, 0)],
+    's': [(0, 4, 0, 1), (1, 5, 1, 0)],
+    't': [(0, 5, 1, 0), (2, 5, 1, 0), (2, 7, 0, 1)],
+    'u': [(0, 7, 1, 0)],
+    'v': [(0, 5, 0, 1), (1, 5, 1, 0), (2, 5, 0, 1)],
+    'w': [(2, 4, 1, 0), (2, 5, 1, 0), (1, 6, 1, 0), (2, 6, 0, 1), (3, 6, 1, 0), (4, 6, 0, 1)],
+    'x': [(3, 5, 1, 0)],
+    'y': [(0, 5, 0, 1), (1, 5, 1, 0), (1, 6, 0, 1), (2, 6, 1, 0), (3, 6, 0, 1), (1, 7, 1, 0), (0, 9, 0, 1),
+          (1, 9, 1, 0)],
+    'z': [(0, 5, 1, 0), (1, 5, 1, 0)],
+    'A': [(1, 3, 0, 1), (2, 3, 0, 1), (3, 3, 1, 0), (0, 4, 0, 1), (2, 4, 1, 0), (3, 4, 0, 1), (0, 5, 0, 1),
+          (1, 6, 1, 0), (2, 6, 1, 0), (3, 6, 0, 1)],
+    'C': [(0, 4, 0, 1), (1, 4, 1, 0), (3, 4, 1, 0), (3, 6, 1, 0)],
+    'D': [(2, 3, 0, 1), (2, 4, 1, 0), (3, 4, 0, 1)],
+    'E': [(3, 5, 1, 0)],
+    'F': [(2, 5, 1, 0)],
+    'G': [(2, 5, 0, 1), (2, 6, 1, 0), (0, 7, 1, 0), (3, 7, 0, 1)],
+    'J': [(1, 8, 1, 0)],
+    'K': [(1, 4, 1, 0)],
+    'M': [(0, 3, 0, 1), (1, 3, 1, 0), (0, 4, 0, 1), (3, 4, 0, 1), (1, 5, 1, 0), (2, 5, 0, 1), (3, 5, 1, 0),
+          (4, 5, 0, 1), (0, 6, 0, 1), (1, 6, 1, 0), (2, 6, 1, 0), (2, 7, 1, 0)],
+    'Q': [(4, 3, 1, 0), (4, 4, 0, 1), (5, 4, 1, 0), (4, 5, 0, 1), (5, 5, 1, 0), (2, 6, 0, 1), (3, 6, 1, 0),
+          (4, 6, 0, 1), (5, 6, 1, 0), (4, 7, 1, 0), (2, 8, 1, 0), (5, 8, 1, 0), (5, 9, 1, 0)],
+    'R': [(1, 6, 1, 0), (2, 6, 0, 1)],
+    'S': [(3, 5, 1, 0), (0, 6, 1, 0)],
+    'W': [(2, 3, 1, 0), (4, 3, 0, 1), (5, 3, 1, 0), (2, 4, 1, 0), (4, 4, 0, 1), (5, 4, 1, 0), (1, 5, 1, 0),
+          (2, 5, 0, 1), (3, 5, 1, 0), (4, 5, 0, 1), (5, 5, 1, 0), (0, 6, 0, 1), (1, 6, 1, 0), (2, 6, 0, 1)],
+    'Z': [(0, 6, 0, 1), (1, 6, 1, 0)],
+    '1': [(0, 4, 1, 0)],
+    '3': [(0, 4, 1, 0), (0, 5, 1, 0), (0, 6, 1, 0)],
+    '4': [(3, 3, 1, 0), (2, 4, 0, 1), (3, 4, 1, 0), (1, 5, 1, 0), (3, 5, 1, 0), (2, 7, 0, 1), (3, 7, 1, 0)],
+    '5': [(1, 4, 1, 0), (2, 5, 1, 0), (0, 6, 1, 0)],
+    '9': [(1, 6, 1, 0), (2, 6, 0, 1)],
+    # Punctuation (sansfont, 10-26: the even split fills PC's gaps): '!' and ':' with their gaps, ';' one dot over its
+    # comma, '-' and '+' one row on row 5 (x-height's middle), '=' two bars about it, '*' as fnt_plain's approved star,
+    # and the braces as a stroke with a point (they had become a bar and a hook).
+    '!': [(0, 6, 1, 0)],
+    ':': [(0, 4, 1, 0), (0, 6, 1, 0)],
+    ';': [(1, 4, 1, 0)],
+    '-': [(0, 6, 1, 0), (1, 6, 1, 0)],
+    '=': [(0, 5, 1, 0), (1, 5, 1, 0), (0, 7, 1, 0), (1, 7, 1, 0)],
+    '+': [(0, 6, 1, 0), (2, 6, 1, 0), (1, 7, 1, 0)],
+    '*': [(0, 3, 1, 0), (2, 3, 1, 0), (0, 4, 0, 1), (2, 4, 0, 1)],
+    '{': [(0, 4, 1, 0), (1, 4, 0, 1), (0, 5, 1, 0), (1, 5, 0, 1), (0, 7, 1, 0), (1, 7, 0, 1), (0, 8, 1, 0),
+          (1, 8, 0, 1)],
+    '}': [(0, 3, 0, 1), (0, 4, 0, 1), (1, 4, 1, 0), (0, 5, 0, 1), (1, 5, 1, 0), (0, 7, 0, 1), (1, 7, 1, 0),
+          (0, 8, 0, 1), (1, 8, 1, 0)],
 }
 
-# Fonts outside UNDERTALE's release: Sans's PC-height remake (not approved, so it stays out
-# of the release and its key stays off) and DELTARUNE's fonts (analysis only). Their parameters and corrections
+# fnt_maintext at PC height (sansfont, playtest 10-26: the ending credits' small text is hard to read Smooth): caps
+# and digits 3x5 native px (rows 2-6), x-height 4 rows (3-6), one descender row (7), as PC's 9, 7 and 3 px at half
+# size. The even 2:1 split fills counters and drops the gaps a 2-px pixel font draws (c reads as o, e and s as
+# blots, m as "rr", 0 as 8), so these corrections redraw our own small letters in the derived glyph's box, positions
+# unchanged: round O/o/C/G/S, two-storey a, open c/e, notched B/D/P/R, digits with their own strokes. m, w, M and W
+# get a fifth column for their three stems (four read as n, u, H); carry keeps the next letter a pixel clear.
+PATCHES_MAINTEXT = {
+    'A': [(0, 2, 1, 0), (2, 2, 1, 0)],
+    'B': [(2, 2, 1, 0), (2, 6, 1, 0)],
+    'C': [(0, 2, 1, 0), (2, 3, 1, 0), (2, 5, 1, 0), (0, 6, 1, 0)],
+    'D': [(2, 2, 1, 0), (2, 6, 1, 0)],
+    'E': [(2, 4, 1, 0)],
+    'F': [(2, 4, 1, 0)],
+    'G': [(0, 2, 1, 0), (2, 3, 1, 0), (0, 6, 1, 0), (1, 6, 0, 1)],
+    'N': [(1, 4, 0, 1)],
+    'O': [(0, 2, 1, 0), (2, 2, 1, 0), (2, 6, 1, 0)],
+    'P': [(2, 2, 1, 0)],
+    'Q': [(0, 2, 1, 0), (2, 2, 1, 0)],
+    'R': [(2, 2, 1, 0)],
+    'S': [(0, 2, 1, 0), (2, 3, 1, 0), (1, 4, 0, 1), (2, 4, 1, 0), (0, 5, 1, 0), (2, 6, 1, 0)],
+    'W': [(3, 2, 1, 0), (4, 2, 0, 1), (2, 3, 1, 0), (3, 3, 1, 0), (4, 3, 0, 1), (3, 4, 1, 0), (4, 4, 0, 1),
+          (4, 5, 0, 1), (1, 6, 1, 0), (3, 6, 1, 0), (4, 6, 0, 1)],
+    'X': [(1, 3, 1, 0)],
+    '0': [(1, 4, 1, 0)],
+    '2': [(2, 2, 1, 0), (0, 3, 1, 0)],
+    '3': [(2, 2, 1, 0), (0, 3, 1, 0), (2, 4, 1, 0), (0, 5, 1, 0), (2, 6, 1, 0)],
+    '4': [(0, 2, 0, 1), (0, 3, 0, 1), (1, 3, 1, 0), (1, 4, 0, 1), (0, 5, 1, 0), (1, 5, 1, 0)],
+    '5': [(1, 4, 0, 1), (2, 4, 1, 0), (0, 5, 1, 0), (2, 6, 1, 0)],
+    '8': [(2, 6, 0, 1)],
+    '9': [(0, 4, 0, 1)],
+    'a': [(2, 3, 1, 0), (0, 6, 1, 0)],
+    'b': [(2, 3, 1, 0), (2, 6, 1, 0)],
+    'c': [(0, 3, 1, 0), (2, 4, 1, 0), (2, 5, 1, 0), (0, 6, 1, 0)],
+    'd': [(0, 3, 1, 0), (0, 6, 1, 0)],
+    'e': [(0, 3, 1, 0), (2, 3, 1, 0), (1, 4, 1, 0), (1, 5, 0, 1), (2, 5, 1, 0), (0, 6, 1, 0), (2, 6, 0, 1)],
+    'g': [(0, 3, 1, 0), (2, 7, 1, 0)],
+    'h': [(2, 3, 1, 0)],
+    'i': [(1, 1, 1, 0), (0, 3, 1, 0), (1, 3, 1, 0), (0, 4, 0, 1)],
+    'j': [(2, 1, 1, 0), (1, 3, 1, 0), (2, 3, 1, 0), (1, 4, 0, 1), (2, 7, 1, 0)],
+    'k': [(2, 4, 1, 0)],
+    'm': [(2, 3, 1, 0), (3, 4, 1, 0), (4, 4, 0, 1), (3, 5, 1, 0), (4, 5, 0, 1), (2, 6, 0, 1), (3, 6, 1, 0),
+          (4, 6, 0, 1)],
+    'n': [(2, 3, 1, 0)],
+    'o': [(0, 3, 1, 0), (2, 3, 1, 0), (2, 6, 1, 0)],
+    'p': [(2, 3, 1, 0)],
+    'q': [(0, 3, 1, 0)],
+    'r': [(1, 3, 1, 0), (1, 4, 0, 1), (2, 4, 1, 0)],
+    's': [(0, 3, 1, 0), (1, 4, 1, 0), (0, 5, 1, 0), (0, 6, 0, 1), (2, 6, 1, 0)],
+    'u': [(0, 6, 1, 0)],
+    'v': [(0, 5, 0, 1), (1, 5, 1, 0), (2, 5, 0, 1)],
+    'w': [(3, 3, 1, 0), (4, 3, 0, 1), (3, 4, 1, 0), (4, 4, 0, 1), (1, 5, 1, 0), (2, 5, 0, 1), (3, 5, 1, 0),
+          (4, 5, 0, 1), (0, 6, 1, 0)],
+    'x': [(1, 5, 1, 0)],
+    'y': [(2, 7, 1, 0)],
+    'M': [(3, 2, 1, 0), (4, 2, 0, 1), (2, 3, 1, 0), (4, 3, 0, 1), (2, 4, 0, 1), (3, 4, 1, 0), (4, 4, 0, 1),
+          (3, 5, 1, 0), (4, 5, 0, 1), (3, 6, 1, 0), (4, 6, 0, 1)],
+    '&': [(2, 2, 1, 0), (0, 3, 0, 1), (1, 3, 1, 0), (0, 4, 1, 0), (2, 4, 1, 0), (3, 4, 1, 0), (0, 6, 1, 0)],
+    '.': [(0, 5, 1, 0)],
+    ',': [(0, 5, 1, 0)],
+    ':': [(0, 3, 1, 0), (0, 4, 0, 1), (0, 5, 1, 0)],
+    ';': [(0, 3, 1, 0), (0, 4, 0, 1), (0, 5, 1, 0)],
+    '!': [(0, 1, 1, 0), (1, 1, 1, 0)],
+    '?': [(2, 2, 1, 0), (0, 3, 1, 0), (2, 4, 1, 0), (1, 5, 1, 0)],
+    '*': [(0, 3, 1, 0), (2, 3, 1, 0), (3, 3, 1, 0), (3, 4, 1, 0), (0, 5, 0, 1), (1, 5, 1, 0), (2, 5, 0, 1),
+          (3, 5, 1, 0)],
+}
+PATCHES_PC = {
+    'fnt_plain': {'W': _W_BAND_PC},
+    'fnt_dotumche': {'W': _W_BAND_PC},
+    'fnt_comicsans': PATCHES_SANS,
+    'fnt_maintext': PATCHES_MAINTEXT,
+}
+
+# Fonts outside the releases: DELTARUNE's other fonts (analysis only; Sans's PC-height remake moved here into the
+# release tables with its key's default flip, and DotumChe with DELTARUNE New's Crisp text, sansfont 10-26). Their
+# parameters and corrections
 # are in tools/analysis/stglyphs_extra.py, which the release export leaves out; a repository build packs them too (the
 # test keys can draw them), the builder only the fonts above.
 _EXTRA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'analysis', 'stglyphs_extra.py')
@@ -403,15 +556,19 @@ def distinct_pass(out, meta, src):
 
 
 def apply_patches(name, glyphs, table=None):
-    """Apply PATCHES[name] (or table[name]) to {ch: (bitmap, left)} in place. Returns the glyphs patched."""
+    """Apply PATCHES[name] (or table[name]) to {ch: (bitmap, left)} in place. Returns the glyphs patched. A correction
+    right of the glyph's last column (before 0) widens it with empty columns first (fnt_maintext's m and w: three
+    stems need five columns where the derivation gives four)."""
     done = []
     for c, ops in (PATCHES if table is None else table).get(name, {}).items():
         if ord(c) not in glyphs:
             continue
         g, left = glyphs[ord(c)]
-        if not all(0 <= y < len(g) and 0 <= x < width(g) and int(g[y][x]) == b for x, y, b, _ in ops):
+        if not all(0 <= y < len(g) and 0 <= x and (int(g[y][x]) == b if x < width(g) else b == 0)
+                   for x, y, b, _ in ops):
             continue
-        g = copy(g)
+        w = max([width(g)] + [x + 1 for x, _, _, _ in ops])
+        g = [list(r) + [False] * (w - len(r)) for r in g]
         for x, y, _, a in ops:
             g[y][x] = bool(a)
         glyphs[ord(c)] = (g, left)
@@ -934,15 +1091,18 @@ def _ceil(v):
     return i + 1 if v > i else i
 
 
-def derive(dw, name, target_adv, target_rows, ink_limit_px, **override):
+def derive(dw, name, target_adv, target_rows, ink_limit_px, like=None, **override):
+    """like: the font whose parameters and corrections apply (default name): DELTARUNE's fnt_main is UNDERTALE's
+    fnt_maintext by its bytes, so it takes that remake (stpack.DR_LIKE)."""
     font = dw.fonts()[name]
-    params = font_params(name, **override)
+    pname = like or name
+    params = font_params(pname, **override)
     if params['rowfit'] == 'uniform' and params['boldthin'] and params.get('rowphase') is None:
         # every phase of the even row split, for the whole font: the one whose glyphs are nearest what smoothing
         # shows (the sum of the glyphs' block_error), as each glyph's columns are chosen
         tries = []
         for phase in range(2):
-            d = derive(dw, name, target_adv, target_rows, ink_limit_px, **dict(override, rowphase=phase))
+            d = derive(dw, name, target_adv, target_rows, ink_limit_px, like=like, **dict(override, rowphase=phase))
             if d.get('error') is not None:
                 tries.append((d['error'], phase, d))
         if tries:
@@ -1057,7 +1217,7 @@ def derive(dw, name, target_adv, target_rows, ink_limit_px, **override):
         out[ch] = (T, int(round(left * sx)))
         meta[ch] = (bold_src[ch] if boldthin else a, rows, cg)
     redone = distinct_pass(out, meta, src) if params['distinct'] else {}
-    patched = apply_patches(name, out, PATCHES_PC if params['rowfit'] == 'pc' else None) if params['patches'] else []
+    patched = apply_patches(pname, out, PATCHES_PC if params['rowfit'] == 'pc' else None) if params['patches'] else []
     return dict(font=font, rows=rows, cell_h=cell_h, glyphs=out, adv=adv, src=src, params=params, patched=patched,
                 redone=redone, error=total_error if boldthin and params['colfit'] == 'uniform' else None)
 

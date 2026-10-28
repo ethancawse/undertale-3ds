@@ -518,8 +518,8 @@ static __attribute__((noreturn, noinline, section(".fatalflush"))) void outOfMem
     consoleSelect(&menuConsole);
     consoleClear();
     printf("\x1b[8;0H  \x1b[1;31mOut of memory\x1b[0m\n\n");
-    // The .3dsx gets about 62 MB in all on an Old 3DS, the CIA about 78.
-    if (72u * 1024u * 1024u > __ctru_heap_size + __ctru_linear_heap_size) {
+    // DELTARUNE's .3dsx gets about 62 MB in all on an Old 3DS, its CIA about 78; UNDERTALE fits 64 MB (no CIA hint).
+    if (CTR_OOM_CIA_HINT_BELOW > __ctru_heap_size + __ctru_linear_heap_size) {
         printf("  " CTRPORT_GAME_TITLE " needs more memory here than\n");
         printf("  a .3dsx gets on an Old 3DS.\n\n");
         printf("  Install the Old 3DS CIA, which gets\n");
@@ -1241,6 +1241,10 @@ startGame:
         CtrLinkFiles_note(STATE_HASH_OUT_PATH);
         logInfo("Hashing every frame's state into %s\n", STATE_HASH_OUT_PATH);
     }
+#ifdef CTRPORT_OFFDRAW
+    { extern void CtrOffdraw_init(Runner*, const char*); CtrOffdraw_init(runner, GAME_DIR "/offdraw.txt"); }
+#endif
+#line 1244
 
     // ===[ Main loop ]===
     CtrBootTrail_mark("the main loop");
@@ -1262,7 +1266,7 @@ startGame:
     int32_t lastRoomIndex = -1;
     uint32_t frameRate = 0;
 
-    while (aptMainLoop() && !runner->shouldExit && !CtrChapters_changeRequested(runner)) {
+    while (aptMainLoop() && !runner->shouldExit && !CtrChapters_changeRequested(runner)) { FW_MARK(0);
         if (CtrNotice_pending && !menu.open && !CtrBench_pickerOpen()) {
             setupNotices(renderer);
             ignoredButtons = hidKeysHeld();
@@ -1277,7 +1281,7 @@ startGame:
             launch.videoSuspendSeconds = 0;
         }
         // In lab mode, stops here for good when another thread crashed.
-        CtrLab_poll();
+        if (!FW_SKIP(8)) CtrLab_poll();
         // The game speed the game set with game_set_speed() or room_speed, else
         // the room's, as on the desktop runner.
         uint32_t roomSpeed = (uint32_t) (Runner_getEffectiveGameSpeed(runner) + 0.5);
@@ -1304,7 +1308,7 @@ startGame:
             if (probeFrames[i] != runner->frameCount && -probeFrames[i] != runner->frameCount) continue;
             mayskip = false;
             CtrRenderer_probeNextFrame(renderer, 0 > probeFrames[i]);
-        }
+        } FW_MARK(16);
         CtrRenderer_setFrameSkip(renderer, mayskip && (display.frameSkip == FRAME_SKIP_AUTO || frameSkipLevels(&display) != 0) ? display.frameSkipMax : 0);
         CtrRenderer_setFrameSkipLevels(renderer, frameSkipLevels(&display), frameSkipLevel(&display));
         CtrRenderer_setFrameSkipPolicy(renderer, display.frameSkipPolicy);
@@ -1314,8 +1318,8 @@ startGame:
         CtrRenderer_setHalfRate(renderer, display.frameSkip == FRAME_SKIP_HALF, mayskip && (runner->frameCount & 1) != 0);
 
         // Waits for the frame slot (vsync paced to the room speed).
-        CtrWatchdog_mark("wait for frame");
-        CtrRenderer_beginFrame(renderer);
+        CtrWatchdog_mark("wait for frame"); FW_MARK(1);
+        CtrRenderer_beginFrame(renderer); FW_MARK(2);
         bool frameSkipped = CtrRenderer_frameSkipped(renderer);
 
         // A test's screenshot taken after the wait belongs to this frame, not the one before (ctr_renderer.h).
@@ -1375,9 +1379,9 @@ startGame:
             // Saved as the next iteration begins, from what this one shows; that one closes the menu.
             if (autopauseLeft == 1) CtrRenderer_requestScreenshotSuffixed(renderer, "p");
             if (autopauseLeft == 0) CtrMenu_close(&menu);
-        }
+        } FW_MARK(19);
         // The game stays paused while a screen of the test is up (the scene list, loading a chapter, the results).
-        bool benchPaused = CtrBench_beginFrameTimed(down, runner->deltaTime / 1000.0) == BENCH_FRAME_PAUSE;
+        bool benchPaused = CtrBench_beginFrameTimed(down, runner->deltaTime / 1000.0) == BENCH_FRAME_PAUSE; FW_MARK(20);
         if (launch.exitAfter && CtrBench_takeFinished()) {
             logInfo("Remote: test done, leaving (--exit-after)\n");
             remoteQuit = true;
@@ -1407,7 +1411,7 @@ startGame:
         if (sliderUpAt > 0) {
             bool up = runner->frameCount >= sliderUpAt && (sliderDownAt == 0 || sliderDownAt > runner->frameCount);
             CtrRenderer_setSliderOverride(renderer, up ? 1.0f : 0.0f);
-        }
+        } FW_MARK(17);
         CtrRenderer_setDisplay(renderer, &display);
         CtrRenderer_yieldBottomScreen(renderer, bottomBorrowed);
         bool dialogueShown = CtrRenderer_dialogueShown(renderer);
@@ -1415,7 +1419,7 @@ startGame:
         bool statsShown = consoleShown && !bottomBorrowed; // the stats and log consoles
         if (dialogueWasShown && !dialogueShown && consoleShown) reclaimBottomForConsoles(bottomBorrowed);
         dialogueWasShown = dialogueShown;
-        CtrLog_setConsoleEnabled(statsShown);
+        CtrLog_setConsoleEnabled(statsShown); FW_MARK(18);
 
         ignoredButtons &= held;
         // During a test the scene script plays (bench_script.h), not the player.
@@ -1436,10 +1440,10 @@ startGame:
         }
         if (playback != nullptr && !benchRunning) InputRecording_processFrame(playback, runner->keyboard, inputFrame++);
 
-        uint64_t stepStart = nowNanos();
+        uint64_t stepStart = nowNanos(); FW_NOTE(runner); FW_MARK(3);
         CtrWatchdog_mark("step");
         Runner_step(runner);
-        double stepMs = msSince(stepStart);
+        double stepMs = msSince(stepStart); FW_MARK(4);
 
 #ifdef ENABLE_VM_GML_PROFILER
         // Diagnostic reports isolate Draw; Step and audio must not inflate the beam attribution.
@@ -1461,7 +1465,7 @@ startGame:
         if (parkedProfiler != nullptr) vm->profiler = parkedProfiler;
         runner->drawSkip.active = false;
         renderer->drawMuted = false;
-        double drawMs = msSince(drawStart);
+        double drawMs = msSince(drawStart); FW_MARK(5);
 
 #ifdef ENABLE_VM_GML_PROFILER
         if (launch.knightDiagnostic) {
@@ -1492,8 +1496,8 @@ startGame:
 
         float dt = roomSpeed > 0 ? 1.0f / (float) roomSpeed : 0.0f;
         if (dt > 0.1f) dt = 0.1f;
-        CtrWatchdog_mark("audio update");
-        runner->audioSystem->vtable->update(runner->audioSystem, dt);
+        CtrWatchdog_mark("audio update"); FW_MARK(6);
+        runner->audioSystem->vtable->update(runner->audioSystem, dt); FW_MARK(7);
 
         // A frame that called room_goto (or game_restart) ran no events after
         // the call, Draw included, so it shows the old room without the fade
@@ -1502,13 +1506,17 @@ startGame:
         // present it.
         bool roomChanging = runner->pendingRoom != -1;
         if (roomChanging) CtrRenderer_skipPresent(renderer);
+#ifdef CTRPORT_OFFDRAW
+        { extern void CtrOffdraw_frameEnd(Runner*); CtrOffdraw_frameEnd(runner); }
+#endif
+#line 1505
         if (stateHash) UTSW_STATEHASH(runner);
         CtrWatchdog_mark("room change");
         UTSW_ROOMCHANGE(runner);
 
-        CtrWatchdog_mark("present");
-        CtrRenderer_endFrame(renderer);
-        if (benchRunning) CtrBench_endFrameTimed(stepMs, drawMs, frameSkipped);
+        CtrWatchdog_mark("present"); FW_MARK(8);
+        CtrRenderer_endFrame(renderer); FW_MARK(9);
+        if (benchRunning) CtrBench_endFrameTimed(stepMs, drawMs, frameSkipped); FW_MARK(10);
         if (firstFramePending && !frameSkipped && !roomChanging) {
             firstFramePending = false;
             logInfo("Startup ready: load=%u room=%ld frame=%ld %.3f ms since load, %.3f ms since app entry%s\n",
@@ -1525,9 +1533,9 @@ startGame:
                         (unsigned) session.loadCount, name, (long) runner->currentRoomIndex, (long) runner->frameCount);
             }
         }
-        if (saveFailed) saveFailureWarning(!CtrBench_wantsBottomScreen());
+        if (saveFailed) saveFailureWarning(!CtrBench_wantsBottomScreen()); FW_MARK(11);
         // An open on another thread that failed may be waiting for the texture cache's files.
-        CtrOpenFiles_poll();
+        if (!FW_SKIP(4)) CtrOpenFiles_poll(); FW_MARK(12);
 
         if (runner->currentRoomIndex != lastRoomIndex) {
             lastRoomIndex = runner->currentRoomIndex;
@@ -1549,15 +1557,15 @@ startGame:
         drawMsSum += drawMs;
         if (stepMs > stepMsMax) stepMsMax = stepMs;
         if (drawMs > drawMsMax) drawMsMax = drawMs;
-        statsFrames++;
+        statsFrames++; FW_MARK(13);
 #ifdef CTRPORT_TYPED_FRAMELOG
         // typedaot prototype: every frame's step and draw time (10 us units), printed once a stats window, so A/B arms
         // can be compared over the same game frames even when the bench window (wall-clock based) covers different ones.
         if (ftCount < 128) { ftStep[ftCount] = (uint16_t) (stepMs * 100.0 > 65535.0 ? 65535 : stepMs * 100.0); ftDraw[ftCount] = (uint16_t) (drawMs * 100.0 > 65535.0 ? 65535 : drawMs * 100.0); if (ftCount == 0) ftFirst = runner->frameCount; ftCount++; }
 #endif
-        if (frameStart - statsWindowStart >= 1000000000ULL) {
+        if (!FW_SKIP(2) && frameStart - statsWindowStart >= 1000000000ULL) {
             double seconds = (double) (frameStart - statsWindowStart) / 1e9;
-            struct mallinfo mi = mallinfo();
+            extern struct mallinfo CtrStats_mallinfo(void); struct mallinfo mi = CtrStats_mallinfo(); // at this file's end
             CtrRenderStats rs = CtrRenderer_getStats(renderer);
             if (statsShown) {
                 // Printed by the log's writer thread, from the numbers as they are now.
@@ -1653,8 +1661,8 @@ startGame:
             stepMsSum = drawMsSum = stepMsMax = drawMsMax = 0.0;
             statsFrames = 0;
             CtrLog_flushSoon();
-        }
-        if (consoleShown) flushBottomScreen();
+        } FW_MARK(14);
+        if (consoleShown && !FW_SKIP(1)) flushBottomScreen(); FW_MARK(15);
     }
 
     CtrRenderer_endFlickerProbe(renderer);
@@ -2197,3 +2205,18 @@ BOOTLOG_LATE static void bootcapStart(void) {
     threadCreate(bootcapThread, nullptr, 16 * 1024, prio > 0x19 ? prio - 1 : prio, -2, true);
 }
 #endif
+
+// ===[ The stats block's heap figures (freewins) ]===
+// mallinfo walks the heap: about 0.1 ms on UNDERTALE and 0.4 ms on DELTARUNE (console rows, cheaplevers), once a
+// second. main's stats block reads its figures in the stats console's line (when statsShown, which main gave
+// CtrLog_setConsoleEnabled this frame) and in the [perf] line (every fifth stats window). This is called once per
+// stats window where main called mallinfo, so its count follows main's statsWindows. Other windows get the last
+// figures, which nothing reads, except when a page (the options menu, the screens) turned the console off during this
+// frame: then the stats line, which that page is about to cover, shows the last figures. Gameplay never reads them.
+__attribute__((section(".bss.freewins_late"))) static struct mallinfo statsHeap;
+__attribute__((section(".bss.freewins_late"))) static uint8_t statsHeapCalls; // main's statsWindows % 5
+__attribute__((noinline, section(".text.freewins_late"))) struct mallinfo CtrStats_mallinfo(void) {
+    if (++statsHeapCalls == 5) statsHeapCalls = 0;
+    if (statsHeapCalls == 0 || CtrLog_consoleEnabled()) statsHeap = mallinfo();
+    return statsHeap;
+}

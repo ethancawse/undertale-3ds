@@ -139,5 +139,19 @@ void CtrBench_handleRoomChange(Runner* runner);
 #else
 #define ROOMLOAD_TRACE_FRAME(runner, renderer, frameStart, stepMs, drawMs) ((void) 0)
 #endif
+// freewins (diagnostic builds only, build.sh ... freewins; source/z_freewins.c): main-loop segment timers and
+// off switches. Elsewhere FW_MARK and FW_NOTE are empty and FW_SKIP is 0, so main.c compiles to the release code.
+#ifdef CTRPORT_FREEWINS
+void FreeWins_mark(int point);
+void FreeWins_note(const void* runner);
+bool FreeWins_skip(unsigned bit);
+#define FW_MARK(point) FreeWins_mark(point)
+#define FW_NOTE(runner) FreeWins_note(runner)
+#define FW_SKIP(bit) FreeWins_skip(bit)
+#else
+#define FW_MARK(point) ((void) 0)
+#define FW_NOTE(runner) ((void) 0)
+#define FW_SKIP(bit) 0
+#endif
 
 #endif

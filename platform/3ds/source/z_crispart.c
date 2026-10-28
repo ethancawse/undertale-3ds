@@ -145,8 +145,8 @@ bool __real_CtrArgui_override(CtrDisplaySettings* settings, const char* line, Ct
 void __real_CtrArgui_saveEdits(const CtrDisplaySettings* before, const CtrDisplaySettings* after, const char* path, CtrDisplayCaps caps);
 bool CtrArgui_chainOverrideCrispart(CtrDisplaySettings* settings, const char* line, CtrDisplayCaps caps);
 void CtrArgui_chainSaveEditsCrispart(const CtrDisplaySettings* before, const CtrDisplaySettings* after, const char* path, CtrDisplayCaps caps);
-void __real_CtrRenderer_loadFontVerdicts(Renderer* renderer);
-void __wrap_CtrRenderer_loadFontVerdicts(Renderer* renderer);
+void CTR_FONTVERDICTS_CRISPART(Renderer* renderer);
+void CTR_FONTVERDICTS_AFTER_CRISPART(Renderer* renderer);
 
 static CA_TEXT int8_t caParse(const char* line) {
     int v;
@@ -477,8 +477,8 @@ static const CaHook caHookFunctions[] CA_CONST = {
 };
 
 // Startup/room-load hook: keys have been applied, renderer/TPAG parsed; off never changes the renderer's table.
-CA_TEXT void __wrap_CtrRenderer_loadFontVerdicts(Renderer* renderer) {
-    __real_CtrRenderer_loadFontVerdicts(renderer);
+CA_TEXT void CTR_FONTVERDICTS_CRISPART(Renderer* renderer) {
+    CTR_FONTVERDICTS_AFTER_CRISPART(renderer);
     if (renderer == nullptr || renderer->dataWin == nullptr) return;
     if (ca.owner == renderer) return; // remember off and unavailable decisions too; reset at chapter check
     ca.owner = renderer;

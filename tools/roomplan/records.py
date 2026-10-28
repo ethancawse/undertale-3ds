@@ -10,6 +10,7 @@ uses it only for that exact file. No names, pixels or code. Tile lines (P) are c
 to and summarised, never stored: tiles depend on the page layout, items don't.
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -22,6 +23,29 @@ import corpus  # noqa: E402
 FORMAT = 1
 # Rooms whose visits are told apart by battle group (UNDERTALE's one battle room).
 BATTLE_ROOMS = {'undertale': ('room_battle',)}
+
+
+def fingerprint(record):
+    """Source-content identity, independent of whitespace and dictionary insertion order."""
+    return hashlib.sha256(json.dumps(record, sort_keys=True, separators=(',', ':')).encode('ascii')).hexdigest()
+
+
+def require_store_parity(steam, gog):
+    """Reject a stale or incomplete atlas reprojection before accepting its coverage."""
+    if gog.get('source_record_sha256') != fingerprint(steam):
+        raise ValueError('GOG room record is not projected from the current Steam record')
+    keys = []
+    for record in (steam, gog):
+        rows = [(s['room'], s['sub']) for s in record['scenes']]
+        if len(set(rows)) != len(rows):
+            raise ValueError('Duplicate room/group scene')
+        keys.append(set(rows))
+    if keys[0] != keys[1]:
+        raise ValueError('Steam/GOG room scenes or battle groups differ')
+    for a, b in zip(sorted(steam['scenes'], key=lambda s: (s['room'], s['sub'])),
+                    sorted(gog['scenes'], key=lambda s: (s['room'], s['sub']))):
+        if (a['visits'], a['code']) != (b['visits'], b['code']):
+            raise ValueError('Steam/GOG visit or code coverage differs')
 
 
 def read_logs(paths, counts=None):

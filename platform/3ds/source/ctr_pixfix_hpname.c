@@ -36,7 +36,7 @@
 #include "ctr_renderer.h"
 #include "data_win.h"
 #include "renderer.h"
-
+#include "ctr_wrap_chain.h"
 #ifdef ENABLE_WAD17
 
 #define PIXFIX_TEXT __attribute__((noinline, section(".text.late.pixfix")))
@@ -66,7 +66,7 @@ static PIXFIX_TEXT void pixfixInitHook(Renderer* renderer, DataWin* dataWin) {
     }
 }
 
-uint32_t __real_CtrRenderer_getDisplayCaps(Renderer* renderer);
+uint32_t CTR_DISPLAYCAPS_AFTER_PIXFIX(Renderer* renderer);
 uint32_t __wrap_CtrRenderer_getDisplayCaps(Renderer* renderer);
 
 // CtrRenderer_create fills its static vtable again each time it runs; the hook goes back in whenever it isn't there.
@@ -76,7 +76,7 @@ PIXFIX_TEXT uint32_t __wrap_CtrRenderer_getDisplayCaps(Renderer* renderer) {
         pixfixInit = vtable->init;
         vtable->init = pixfixInitHook;
     }
-    return __real_CtrRenderer_getDisplayCaps(renderer);
+    return CTR_DISPLAYCAPS_AFTER_PIXFIX(renderer);
 }
 
 #endif // ENABLE_WAD17

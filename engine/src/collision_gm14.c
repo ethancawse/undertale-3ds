@@ -205,7 +205,7 @@ static inline __attribute__((always_inline)) BuiltinFunc colflip14Replace(VMCont
 // Called in place of Colflip_registerAll (VM_create): Colflip_registerAll, then, for GMS 1.4's data, these builtins
 // over collision_compat.c's.
 COLFLIP14_LATE void Colflip14_registerAll(VMContext* ctx) {
-    Colflip_registerAll(ctx);
+    WAD17_ONLY(Colflip_registerAll(ctx);) WAD17_NONE(VMBuiltins_registerAll(ctx);)
     // GameMaker: Studio 1.4's runner (UNDERTALE): bytecode 16 or older.
     Colflip_gm14 = ctx->dataWin != nullptr && 16 >= ctx->dataWin->gen8.wadVersion;
     if (!Colflip_gm14) return;
@@ -215,3 +215,19 @@ COLFLIP14_LATE void Colflip14_registerAll(VMContext* ctx) {
     colflip14Previous.collisionRectangle = colflip14Replace(ctx, colflip14NameCollisionRectangle, builtin_collision_rectangle_gm14);
     colflip14Previous.collisionRectangleList = colflip14Replace(ctx, colflip14NameCollisionRectangleList, builtin_collision_rectangle_list_gm14);
 }
+#if defined(__3DS__) && !defined(ENABLE_WAD17)
+// UNDERTALE's late-text reclaim (argcheck): collision_compat.c's code is not linked (UNDERTALE registers the
+// builtins itself above, and its scan is GMS 1.4's), so --gc-sections drops it. Its late constants and statics leave
+// with it; these take their exact places (platform/3ds/late_reserve.ld, KEEP), so no late rodata or bss moves and the
+// heap starts where it did. The constants keep their bytes: the five names, then the 18-byte switch table.
+__attribute__((used, aligned(4), section(".rodata.late.colflipgap"))) static const unsigned char colflipGapRodata[0x77] = {
+    'c', 'o', 'l', 'l', 'i', 's', 'i', 'o', 'n', '_', 'p', 'o', 'i', 'n', 't', 0,
+    'i', 'n', 's', 't', 'a', 'n', 'c', 'e', '_', 'p', 'o', 's', 'i', 't', 'i', 'o', 'n', 0, 0, 0,
+    'p', 'o', 's', 'i', 't', 'i', 'o', 'n', '_', 'm', 'e', 'e', 't', 'i', 'n', 'g', 0, 0, 0, 0,
+    'c', 'o', 'l', 'l', 'i', 's', 'i', 'o', 'n', '_', 'r', 'e', 'c', 't', 'a', 'n', 'g', 'l', 'e', 0,
+    'c', 'o', 'l', 'l', 'i', 's', 'i', 'o', 'n', '_', 'r', 'e', 'c', 't', 'a', 'n', 'g', 'l', 'e', '_', 'l', 'i', 's',
+    't', 0,
+    0x07, 0x00, 0x0c, 0x00, 0x11, 0x04, 0x04, 0x14, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x06, 0x03, 0x03, 0x12, 0x00,
+};
+__attribute__((used, aligned(8), section(".bss.late.colflipgap"))) static unsigned char colflipGapBss[0x1818];
+#endif

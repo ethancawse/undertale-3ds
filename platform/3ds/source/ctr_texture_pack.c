@@ -630,12 +630,31 @@ static void pathFor(char* buf, size_t bufSize, uint32_t pageId, const char* exte
     snprintf(buf, bufSize, "%s/page%03u.%s", cacheDir, (unsigned) pageId, extension);
 }
 
+#ifdef CTRPORT_RENDER_TIMING
+__thread char CtrPack_openSite;
+bool CtrPack_traceRoomLoad;
+
+int CtrPack_traceClose(FILE* f, char site, uint32_t pageId) {
+    uint64_t start = nowNanos();
+    int r = fclose(f);
+    logInfo("[fc] %c %d %.2f\n", site, (int) pageId, (double) (nowNanos() - start) / 1e6);
+    return r;
+}
+#endif
+
 FILE* CtrPack_openFile(uint32_t pageId, bool* busy) {
     char path[PACK_PATH_MAX + 16];
     pathFor(path, sizeof(path), pageId, "dtx");
     CtrOpenFiles_beginCacheOpen();
     errno = 0;
+#ifdef CTRPORT_RENDER_TIMING
+    uint64_t traceStart = nowNanos();
+#endif
     FILE* f = fopen(path, "rb");
+#ifdef CTRPORT_RENDER_TIMING
+    logInfo("[fo] %c %u %.2f%s\n", CtrPack_openSite != 0 ? CtrPack_openSite : '?', (unsigned) pageId,
+            (double) (nowNanos() - traceStart) / 1e6, f != nullptr ? "" : " failed");
+#endif
     if (busy != nullptr) *busy = f == nullptr && !CtrOpenFiles_missing(errno);
     CtrOpenFiles_endCacheOpen();
     // Unbuffered: newlib then reads straight into the caller's buffer with one
@@ -1417,6 +1436,7 @@ static void releasePage(CtrPackWorker* worker, size_t heapBytes, size_t workByte
 // Only the header and tile table are checked here; each tile is checked
 // against its checksum when it loads.
 static bool findExisting(CtrPackWorker* worker, uint32_t pageId, bool* busy) {
+    CTR_OPEN_SITE('W');
     FILE* f = CtrPack_openFile(pageId, busy);
     if (f == nullptr) return false;
     CtrPackResult result = { .pageId = pageId };
@@ -1899,7 +1919,7 @@ void CtrPackWorker_stop(CtrPackWorker* worker) {
 // The name the build gives the RomFS files of the data.win the cache serves (romfs:/fonts/<name>.dtfv, .dtst, .dtsm,
 // .dtsy): its folder's name without the "-3ds" that the per-game SD folders end in. The build names them after the
 // folder as it sees the data (undertale, deltarune, chapter2_windows); on the card the game's own folder is
-// sdmc:/3ds/undertale-3ds (or deltarune-3ds), and lab mode still runs from the old folder (z_sdmigrate.c).
+// sdmc:/3ds/undertale-3ds (or deltarune-3ds).
 // Every RomFS file named after the data.win takes its name from here. False when the path has no folder, or the name
 // doesn't fit size.
 bool CtrPack_romfsName(char* name, size_t size) __attribute__((noinline, section(".text.late.roomload")));
@@ -1964,3 +1984,85 @@ int32_t CtrPackWorker_utstallState(CtrPackWorker* worker, uint32_t pageId, uint3
     return state == PAGE_PENDING ? 0 : state == PAGE_CLAIMED ? 1 : waiting ? 3 : 2;
 }
 #endif
+
+// ===[ A finished worker gives back its data.win (utstall, item 8 step 1b') ]===
+
+// Late code, the --wrap of CtrPackWorker_poll (CMakeLists.txt), which the game thread calls every frame. Each worker
+// thread opens data.win for itself, and freeWorker closed those only when the worker was stopped, at the chapter's
+// end; the background worker is done in the first seconds of a chapter. Its handle then counted against the shared
+// open-file threshold (CtrOpenFiles_mayKeep) for the rest of the chapter, one file fewer for the game thread's cache
+// files. Once every thread has exited (threadJoin with no wait succeeds; endNanos, its last write, says when to ask),
+// nothing reads those files again, so they close here.
+#define UTSTALL8B_TEXT __attribute__((noinline, section(".text.utstall8b_late")))
+
+bool __real_CtrPackWorker_poll(CtrPackWorker* worker, CtrPackResult* out);
+
+// Global, not static: as a static function its use renumbered this file's switch tables (CSWTCH.*), a layout change.
+void CtrPackWorker_closeFinishedDataWins(CtrPackWorker* worker) UTSTALL8B_TEXT;
+void CtrPackWorker_closeFinishedDataWins(CtrPackWorker* worker) {
+    for (uint32_t i = 0; worker->threadCount > i; i++) {
+        WorkerThread* t = &worker->threads[i];
+        if (*(volatile uint64_t*) &t->endNanos == 0 || R_FAILED(threadJoin(t->thread, 0))) return;
+    }
+    for (uint32_t i = 0; WORKER_MAX_THREADS > i; i++) {
+        if (worker->threads[i].dataWin == nullptr) continue;
+        CTR_TRACE_CLOSE(worker->threads[i].dataWin, 'D', UINT32_MAX);
+        worker->threads[i].dataWin = nullptr;
+    }
+}
+
+UTSTALL8B_TEXT bool __wrap_CtrPackWorker_poll(CtrPackWorker* worker, CtrPackResult* out) {
+    bool got = __real_CtrPackWorker_poll(worker, out);
+    if (!got && worker->threads[0].dataWin != nullptr) CtrPackWorker_closeFinishedDataWins(worker);
+    return got;
+}
+
+// ===[ With the cache complete, the background worker stops checking page files one by one (utstall, step 1c) ]===
+
+// Late code: --wraps of CtrPack_isComplete (the pack screen's call at each chapter start) and
+// CtrPackWorker_setKeepPacked (the game thread's, when packed copies stop fitting in RAM). Until then the background
+// worker reads each page's cache file whole into RAM. After it, all it did with the pages left was open each file, read
+// its header and close it (findExisting): about 70 opens in a row at a DELTARUNE chapter start, sharing the SD card
+// with the hidden room loads. The complete marker already says every page file was written whole, for this data.win
+// and format, and each tile is checked against its checksum when it loads. So when the marker was there at the
+// chapter's start, the pages not looked at yet count as found, as findExisting would report them, without the opens.
+#define UTSTALL8C_TEXT __attribute__((noinline, section(".text.utstall8c_late")))
+
+bool __real_CtrPack_isComplete(const CtrPackKey* key, uint32_t pageCount);
+void __real_CtrPackWorker_setKeepPacked(CtrPackWorker* worker, bool keep);
+
+// The last answer CtrPack_isComplete gave, and what it was asked.
+static struct {
+    CtrPackKey key;
+    uint32_t pageCount;
+    bool complete;
+} markerSeen __attribute__((section(".bss.utstall8c_late")));
+
+bool __wrap_CtrPack_isComplete(const CtrPackKey* key, uint32_t pageCount) UTSTALL8C_TEXT;
+bool __wrap_CtrPack_isComplete(const CtrPackKey* key, uint32_t pageCount) {
+    bool complete = __real_CtrPack_isComplete(key, pageCount);
+    markerSeen.key = *key;
+    markerSeen.pageCount = pageCount;
+    markerSeen.complete = complete;
+    return complete;
+}
+
+// Global, not static (see CtrPackWorker_closeFinishedDataWins).
+void CtrPackWorker_trustCompleteMarker(CtrPackWorker* worker) UTSTALL8C_TEXT;
+void CtrPackWorker_trustCompleteMarker(CtrPackWorker* worker) {
+    if (!markerSeen.complete || markerSeen.pageCount != worker->pageCount || memcmp(&markerSeen.key, &worker->key, sizeof(worker->key)) != 0) return;
+    lockWorker(worker);
+    for (uint32_t i = 0; worker->pageCount > i; i++) {
+        if (worker->pageStates[i] != PAGE_PENDING) continue;
+        worker->pageStates[i] = PAGE_DONE;
+        worker->pagesLeft--;
+        worker->results[worker->resultCount++] = (CtrPackResult) { .pageId = i };
+    }
+    LightLock_Unlock(&worker->lock);
+}
+
+void __wrap_CtrPackWorker_setKeepPacked(CtrPackWorker* worker, bool keep) UTSTALL8C_TEXT;
+void __wrap_CtrPackWorker_setKeepPacked(CtrPackWorker* worker, bool keep) {
+    __real_CtrPackWorker_setKeepPacked(worker, keep);
+    if (!keep && !worker->foreground) CtrPackWorker_trustCompleteMarker(worker);
+}

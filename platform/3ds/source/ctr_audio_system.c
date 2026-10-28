@@ -2782,29 +2782,29 @@ static StreamEntry* streamEntryFor(CtrAudioSystem* ca, int32_t streamIndex) {
 }
 
 static void ctrSetSoundGain(AudioSystem* audio, int32_t soundOrInstance, float gain, uint32_t timeMs) {
-    CtrAudioSystem* ca = (CtrAudioSystem*) audio;
-    if (soundOrInstance >= AUDIO_STREAM_INDEX_BASE) {
-        StreamEntry* entry = streamEntryFor(ca, soundOrInstance);
-        if (entry != NULL) entry->initialGain = gain;
-        // Before GameMaker 2024.11 the gain of a playing create_stream sound
-        // could not be changed (same as the miniaudio backend).
-        if (!DataWin_isVersionAtLeast(audio->dw, 2024, 11, 0, 0)) return;
-    }
-    for (int i = 0; i < VOICE_COUNT; i++) {
-        if (voiceMatches(ca, i, soundOrInstance)) setVoiceGain(ca, i, gain, timeMs);
-    }
+    // A sound asset's gain multiplies each of its instances' own gains, as in
+    // GameMaker, instead of replacing them: credfixSetSoundGain, late code at
+    // the end of this file (credfix). This body is a jump there; the rest of
+    // its slot is padding that nothing reaches, so nothing after it moves.
+    // The line count is kept, so every later __LINE__ in the file is too.
+    void credfixSetSoundGain(AudioSystem* audio, int32_t soundOrInstance, float gain, uint32_t timeMs);
+    // Through credcapSetSoundGain, which caps what a voice plays at to 1, as GameMaker does (both games, measured
+    // on PC: pcref credfix-hell4 for UNDERTALE 1.08, credfix-drcap3 for DELTARUNE).
+    void credcapSetSoundGain(AudioSystem* audio, int32_t soundOrInstance, float gain, uint32_t timeMs);
+    // credcapSetSoundGain runs credfixSetSoundGain first; this slot keeps its line count.
+    credcapSetSoundGain(audio, soundOrInstance, gain, timeMs);
 }
 
 static float ctrGetSoundGain(AudioSystem* audio, int32_t soundOrInstance) {
-    CtrAudioSystem* ca = (CtrAudioSystem*) audio;
-    if (soundOrInstance >= AUDIO_STREAM_INDEX_BASE) {
-        StreamEntry* entry = streamEntryFor(ca, soundOrInstance);
-        return entry != NULL ? entry->initialGain : 0.0f;
-    }
-    for (int i = 0; i < VOICE_COUNT; i++) {
-        if (voiceMatches(ca, i, soundOrInstance)) return ca->voices[i].gain;
-    }
-    return 0.0f;
+    // An asset's own gain, or an instance's own gain apart from its asset's:
+    // credfixGetSoundGain, late code at the end of this file (credfix), as
+    // ctrSetSoundGain above.
+    float credfixGetSoundGain(AudioSystem* audio, int32_t soundOrInstance);
+    return credfixGetSoundGain(audio, soundOrInstance);
+    //
+    //
+    //
+    //
 }
 
 static void ctrSetSoundPitch(AudioSystem* audio, int32_t soundOrInstance, float pitch) {
@@ -3125,13 +3125,18 @@ void CtrAudioSystem_setDataWinPath(CtrAudioSystem* ca, const char* path) {
 //   the game paused stays paused afterwards. NDSP pauses a channel in place: the queued buffers stay queued and play
 //   on from the same sample, and the decode thread finds no free buffer (no decoding, no underrun: a paused stream
 //   never counts as one).
-// - No click: the master volume ramps to silence over a few DSP frames before the channels pause, and back up after.
+// - No click: the master volume steps down to silence before the channels pause, and back up after, one step per
+//   audio update (a game frame), so neither the open nor the close waits on the DSP on the game thread (smoothux
+//   menu1: the earlier 6 steps of a 5 ms sleep each held the menu's first frames 35 ms and the game's first frame
+//   after the close 30 ms).
 // - While held, the audio update runs with no elapsed time, so the game's fades, group fades and sound clocks hold
 //   too; an open video's clock holds with its sound (CtrVideo_menuPause).
 // - The release is deferred to the next audio update: Quit leaves the loop without one, so the music doesn't come
 //   back for the moment before the game exits; Resume and the Performance test's picker run one on their next frame.
 // - HOME and sleep don't use the suspend flag (NDSP saves and restores the channels and the master volume itself,
 //   and the video has its own mask bits), so they nest with this hold either way round.
+// - The menu's own sounds (CtrAudio_menuSound, from ctr_optmenu.c) start unpaused during the hold; the fade waits
+//   while the last one sounds (before this they started paused and all played at the close).
 #define MENUPAUSE_CODE __attribute__((noinline, section(".text.late.menupause")))
 #define MENUPAUSE_BSS __attribute__((section(".bss.late.menupause")))
 #define MENUPAUSE_RO __attribute__((section(".rodata.late.menupause")))
@@ -3143,10 +3148,15 @@ void __real_CtrMenu_close(void* menu);
 void __wrap_CtrLegal_close(void);
 void __wrap_CtrMenu_close(void* menu);
 
-static bool menuHeld MENUPAUSE_BSS;
+// 0 when not held; else 1 + the fade's step (MENUPAUSE_RAMP_FRAMES at full volume, 0 silent: the channels suspended).
+static uint8_t menuHeld MENUPAUSE_BSS;
 static bool menuReleasePending MENUPAUSE_BSS;
 static u64 menuHeldSince MENUPAUSE_BSS;
 static void (*menuRealUpdate)(AudioSystem* audio, float deltaTime) MENUPAUSE_BSS;
+// The menu's sounds (gamedir2): new code and state in its own late sections, at the end of the late
+// blocks (late_reserve.ld), named outside .text.late.* and .bss.late.* so the catch-alls leave them there.
+#define MENUSOUND_CODE __attribute__((noinline, section(".text_gamedir2_late")))
+static int32_t menuVoice __attribute__((section(".bss.gamedir2_late"))); // the instance of the menu's last sound
 // The vtable's functions, called through a pointer the compiler can't see through: a plain ca->base.vtable->suspend
 // call was speculatively devirtualized (ctrSuspend inlined behind a check), which changed where ctrSuspend's own copy
 // was emitted and moved every function after it in this object by 72 B.
@@ -3155,62 +3165,82 @@ static void (*menuRealUpdate)(AudioSystem* audio, float deltaTime) MENUPAUSE_BSS
 static const char menuHeldText[] MENUPAUSE_RO = "Audio: held for the options menu (%lu underruns so far)\n";
 static const char menuReleasedText[] MENUPAUSE_RO = "Audio: released after the options menu, held %.1f s (%lu underruns so far)\n";
 
-// About one NDSP audio frame (160 samples at 32728 Hz, 4.9 ms). A sleep, not ndspGetFrameCount: that function isn't
-// linked otherwise, and linking it moves every libctru function after it.
-MENUPAUSE_CODE static void menuWaitDspFrame(void) {
-    svcSleepThread(5000000LL);
-}
-
-// Steps the master volume between silence and applyMasterGain's value, one step per DSP frame.
-MENUPAUSE_CODE static void menuRampMaster(CtrAudioSystem* ca, bool down) {
+// The master volume at a step of the fade (applyMasterGain's value at MENUPAUSE_RAMP_FRAMES); the step kept in menuHeld.
+MENUPAUSE_CODE static void menuSetLevel(CtrAudioSystem* ca, int level) {
     float gain = ca->masterGain * ca->listenerGain;
     if (gain < 0.0f) gain = 0.0f;
-    for (int step = 1; step <= MENUPAUSE_RAMP_FRAMES; step++) {
-        float f = (float) step / (float) MENUPAUSE_RAMP_FRAMES;
-        ndspSetMasterVol(gain * (down ? 1.0f - f : f));
-        menuWaitDspFrame();
-    }
+    menuHeld = (uint8_t) (level + 1);
+    if (ca->ndspReady) ndspSetMasterVol(gain * (float) level / (float) MENUPAUSE_RAMP_FRAMES);
 }
 
-MENUPAUSE_CODE static void menuRelease(CtrAudioSystem* ca) {
-    menuHeld = false;
-    menuReleasePending = false;
-    ctrAudioSystemVtable.update = menuRealUpdate;
-    CtrVideo_menuPause(false);
-    MENUPAUSE_OPAQUE(ca->base.vtable->resume)(&ca->base);
-    if (ca->ndspReady) menuRampMaster(ca, false);
-    logInfo(menuReleasedText, TICKS_TO_MS(svcGetSystemTick() - menuHeldSince) / 1000.0, (unsigned long) CtrAudioSystem_underruns(ca));
-}
-
-// The audio update while held: no time passes; the first one after the menu closed releases the hold first.
+// The audio update while held. The menu closed: the channels back first, then a step up per update with the game's
+// time running; the hold ends at full volume. The menu open: a step down, the channels suspended once silent, and no
+// time passes. A close during the fade down, or an open during the fade up, turns the fade round where it is.
+// The menu's own sounds (menuSound) play at full volume: the fade, either way, waits while one sounds, and once the
+// game's sounds are silent and paused the master volume is back up for them.
 MENUPAUSE_CODE static void menuHeldUpdate(AudioSystem* audio, float deltaTime) {
     CtrAudioSystem* ca = (CtrAudioSystem*) audio;
-    if (menuReleasePending) {
-        menuRelease(ca);
-        MENUPAUSE_OPAQUE(ca->base.vtable->update)(audio, deltaTime);
+    int level = menuHeld - 1;
+    if (menuVoice != 0 && MENUPAUSE_OPAQUE(ca->base.vtable->isPlaying)(audio, menuVoice)) {
+        MENUPAUSE_OPAQUE(menuRealUpdate)(audio, 0.0f);
         return;
+    }
+    if (menuReleasePending) {
+        if (level == 0) {
+            if (ca->ndspReady) ndspSetMasterVol(0.0f);
+            CtrVideo_menuPause(false);
+            MENUPAUSE_OPAQUE(ca->base.vtable->resume)(&ca->base);
+            logInfo(menuReleasedText, TICKS_TO_MS(svcGetSystemTick() - menuHeldSince) / 1000.0, (unsigned long) CtrAudioSystem_underruns(ca));
+        }
+        level = ca->ndspReady ? level + 1 : MENUPAUSE_RAMP_FRAMES;
+        menuSetLevel(ca, level);
+        if (level >= MENUPAUSE_RAMP_FRAMES) {
+            menuHeld = 0;
+            menuReleasePending = false;
+            ctrAudioSystemVtable.update = menuRealUpdate;
+        }
+        MENUPAUSE_OPAQUE(menuRealUpdate)(audio, deltaTime);
+        return;
+    }
+    if (level > 0) {
+        level = ca->ndspReady ? level - 1 : 0;
+        menuSetLevel(ca, level);
+        if (level == 0) {
+            MENUPAUSE_OPAQUE(ca->base.vtable->suspend)(&ca->base);
+            menuSetLevel(ca, MENUPAUSE_RAMP_FRAMES);
+            menuHeld = 1;
+            CtrVideo_menuPause(true);
+            menuHeldSince = svcGetSystemTick();
+            logInfo(menuHeldText, (unsigned long) CtrAudioSystem_underruns(ca));
+        }
     }
     MENUPAUSE_OPAQUE(menuRealUpdate)(audio, 0.0f);
 }
 
+// The menu's open: the hold starts at full volume; its steps down follow at the audio updates.
 MENUPAUSE_CODE static void menuHold(void) {
     CtrAudioSystem* ca = gShutdownTarget;
     if (menuHeld) {
-        menuReleasePending = false; // opened again before the release ran
+        menuReleasePending = false; // opened again before the fade up ended: back down from where it is
         return;
     }
     if (ca == NULL || !ca->initialized) return;
-    if (ca->ndspReady) {
-        menuRampMaster(ca, true);
-        menuWaitDspFrame();
-    }
-    MENUPAUSE_OPAQUE(ca->base.vtable->suspend)(&ca->base);
-    CtrVideo_menuPause(true);
     menuRealUpdate = MENUPAUSE_OPAQUE(ctrAudioSystemVtable.update);
     ctrAudioSystemVtable.update = menuHeldUpdate;
-    menuHeld = true;
-    menuHeldSince = svcGetSystemTick();
-    logInfo(menuHeldText, (unsigned long) CtrAudioSystem_underruns(ca));
+    menuReleasePending = false;
+    menuHeld = MENUPAUSE_RAMP_FRAMES + 1;
+    __asm__ volatile("nop"); // one instruction: the section keeps main's size, so nothing linked after it moves
+}
+
+// A sound of the options menu (the game's own cursor and choice sounds), started unpaused while the hold has the
+// game's sounds paused.
+MENUSOUND_CODE void CtrAudio_menuSound(AudioSystem* audio, int32_t id) {
+    CtrAudioSystem* ca = gShutdownTarget;
+    if (ca == NULL || id < 0) return;
+    bool held = ca->suspended;
+    ca->suspended = false;
+    menuVoice = MENUPAUSE_OPAQUE(audio->vtable->playSound)(audio, id, 100, false);
+    ca->suspended = held;
 }
 
 MENUPAUSE_CODE void __wrap_CtrLegal_close(void) {
@@ -4705,5 +4735,542 @@ UTSFX_CODE int CtrAudioSystem_preloadSfx(int32_t soundIndex, uint32_t bytes, uin
         entry->data = NULL;
     }
     return -1;
+}
+#endif
+
+#ifdef CTRPORT_SPIKEREC
+// spikerec (z_spikerec.c, playtest builds only): the game thread's sound load time in this stats window so far
+// (logWindowStats clears it), read once a frame on the game thread.
+__attribute__((noinline, section(".text.spikerec_late"))) uint64_t CtrAudioSystem_spikeLoadTicks(AudioSystem* audio) {
+    return ((CtrAudioSystem*) audio)->windowLoadTicks;
+}
+#endif
+
+// ===[ Sound asset gain (credfix) ]===
+//
+// GameMaker keeps a gain for each sound asset apart from each playing instance's own gain, and plays an instance at
+// their product. Measured on PC (pcref, UNDERTALE 1.08): an asset's audio_sound_get_gain starts at its SOND volume and
+// a new instance's at 1; setting either one leaves the other's reading alone; and in the Mt. Ebott picture's fade object, which sets
+// its noise track's asset gain to 0.9 every step and its instance's to the flash's alpha, the captured mix's noise follows
+// the alpha (silent between flashes). Before this, an asset's gain replaced its instances' gains, so that noise played
+// at 0.9 all through the Mt. Ebott picture.
+//
+// The asset's gain is kept in its Sound's volume, which only playSoundImpl reads: a new instance starts at it, as at
+// 1 x the asset's gain. Each voice's own gain is kept here; a voice's gain (Voice.gain) is the product. Streams
+// (audio_create_stream) are as before. Late code (platform/3ds/late_reserve.ld) at the end of the file: nothing
+// before it moves; ctrSetSoundGain and ctrGetSoundGain jump here.
+#define CREDFIX_CODE __attribute__((noinline, section(".text.credfix_late")))
+#define CREDFIX_BSS __attribute__((section(".bss.credfix_late")))
+
+static float credfixVoiceGain[VOICE_COUNT] CREDFIX_BSS;
+static int32_t credfixVoiceId[VOICE_COUNT] CREDFIX_BSS;
+
+void credfixSetSoundGain(AudioSystem* audio, int32_t soundOrInstance, float gain, uint32_t timeMs);
+float credfixGetSoundGain(AudioSystem* audio, int32_t soundOrInstance);
+
+// Diagnostic (pcmhash builds, which compare builds' audio; never Release): logs the first time, per sound and kind, that
+// a gain plays or reads differently from before credfix (an asset's gain replacing its instances' gains), so a run of
+// the test scenes lists the scenes whose sound changed.
+#ifdef CTR_AUDIO_PCM_HASH
+static uint8_t credfixLogged[3][512];
+static void credfixNote(CtrAudioSystem* ca, int kind, int32_t sound, float before, float now) {
+    static const char* const what[3] = {"instance gain set", "asset gain set", "instance gain read"};
+    if (sound < 0 || sound >= 4096 || before == now || (credfixLogged[kind][sound >> 3] & (1u << (sound & 7)))) return;
+    credfixLogged[kind][sound >> 3] |= (uint8_t) (1u << (sound & 7));
+    logInfo("credfix gain: %s, sound %ld %s: %.3f before, %.3f now\n", what[kind], (long) sound,
+            ca->base.audioGroups[0]->sond.sounds[sound].name, (double) before, (double) now);
+}
+#define CREDFIX_NOTE(ca, kind, sound, before, now) credfixNote(ca, kind, sound, before, now)
+#else
+#define CREDFIX_NOTE(ca, kind, sound, before, now) ((void) 0)
+#endif
+
+// The asset a voice belongs to, or NULL for a stream's voice.
+static Sound* CREDFIX_CODE credfixAsset(CtrAudioSystem* ca, int32_t soundIndex) {
+    if (soundIndex < 0 || (uint32_t) soundIndex >= ca->soundCount) return NULL;
+    return &ca->base.audioGroups[0]->sond.sounds[soundIndex];
+}
+
+// A voice's own gain: 1 until the game sets it.
+static float CREDFIX_CODE credfixOwnGain(CtrAudioSystem* ca, int vi) {
+    return credfixVoiceId[vi] == ca->voices[vi].instanceId ? credfixVoiceGain[vi] : 1.0f;
+}
+
+void CREDFIX_CODE credfixSetSoundGain(AudioSystem* audio, int32_t soundOrInstance, float gain, uint32_t timeMs) {
+    CtrAudioSystem* ca = (CtrAudioSystem*) audio;
+    if (soundOrInstance >= AUDIO_STREAM_INDEX_BASE) {
+        StreamEntry* entry = streamEntryFor(ca, soundOrInstance);
+        if (entry != NULL) entry->initialGain = gain;
+        // Before GameMaker 2024.11 the gain of a playing create_stream sound
+        // could not be changed (same as the miniaudio backend).
+        if (!DataWin_isVersionAtLeast(audio->dw, 2024, 11, 0, 0)) return;
+        for (int i = 0; i < VOICE_COUNT; i++) {
+            if (voiceMatches(ca, i, soundOrInstance)) setVoiceGain(ca, i, gain, timeMs);
+        }
+        return;
+    }
+    if (isInstanceId(soundOrInstance)) {
+        for (int i = 0; i < VOICE_COUNT; i++) {
+            if (!voiceMatches(ca, i, soundOrInstance)) continue;
+            Sound* asset = credfixAsset(ca, ca->voices[i].soundIndex);
+            if (asset == NULL) {
+                setVoiceGain(ca, i, gain, timeMs);
+                continue;
+            }
+            credfixVoiceGain[i] = gain;
+            credfixVoiceId[i] = ca->voices[i].instanceId;
+            CREDFIX_NOTE(ca, 0, ca->voices[i].soundIndex, gain, gain * asset->volume);
+            setVoiceGain(ca, i, gain * asset->volume, timeMs);
+        }
+        return;
+    }
+    Sound* asset = credfixAsset(ca, soundOrInstance);
+    if (asset == NULL) return;
+    asset->volume = gain;
+    for (int i = 0; i < VOICE_COUNT; i++) {
+        if (!voiceMatches(ca, i, soundOrInstance)) continue;
+        CREDFIX_NOTE(ca, 1, soundOrInstance, gain, credfixOwnGain(ca, i) * gain);
+        setVoiceGain(ca, i, credfixOwnGain(ca, i) * gain, timeMs);
+    }
+}
+
+float CREDFIX_CODE credfixGetSoundGain(AudioSystem* audio, int32_t soundOrInstance) {
+    CtrAudioSystem* ca = (CtrAudioSystem*) audio;
+    if (soundOrInstance >= AUDIO_STREAM_INDEX_BASE) {
+        StreamEntry* entry = streamEntryFor(ca, soundOrInstance);
+        return entry != NULL ? entry->initialGain : 0.0f;
+    }
+    if (!isInstanceId(soundOrInstance)) {
+        const Sound* asset = credfixAsset(ca, soundOrInstance);
+        return asset != NULL ? asset->volume : 0.0f;
+    }
+    for (int i = 0; i < VOICE_COUNT; i++) {
+        if (!voiceMatches(ca, i, soundOrInstance)) continue;
+        const Sound* asset = credfixAsset(ca, ca->voices[i].soundIndex);
+        if (asset == NULL) return ca->voices[i].gain;
+        // Through a fade the voice's gain moves; its own share of it is the product over the asset's gain.
+        float own = asset->volume > 0.0f ? ca->voices[i].gain / asset->volume : credfixOwnGain(ca, i);
+        CREDFIX_NOTE(ca, 2, ca->voices[i].soundIndex, ca->voices[i].gain, own);
+        return own;
+    }
+    return 0.0f;
+}
+
+// UNDERTALE (GameMaker 1.4) plays a sound at gain 1 at most, however high its asset and instance gains go, and reads
+// the gains back as set. Measured on PC (pcref credfix-hell4, UNDERTALE 1.08): the friends scene (Flowey takes the
+// SOULs) raises its noise track's asset gain 0.005 a frame from 0.6 to 2.935, and audio_sound_get_gain reads 2.935; the
+// captured mix gets 4 dB louder until the gain reaches 1 (20 log 1/0.6 = 4.4 dB), then stays at -10.7 dBFS RMS,
+// unclipped. NDSP has no such cap, so the 3DS played that track at up to 2.9 times and clipped. So: credfixSetSoundGain,
+// then every voice it set above 1 set to 1 (the game's gains, kept by credfix, read back unchanged). UNDERTALE reads
+// only asset gains back (caster_get_volume on caster_load's asset indices), which this leaves as set. Late code after
+// the dodge front (platform/3ds/late_reserve.ld): nothing before it moves; ctrSetSoundGain's slot jumps here.
+// (This block keeps the line count it had with its UNDERTALE-only guards, so every later __LINE__ stays put.)
+// DELTARUNE's runner does the same (pcref credfix-drcap3, chapter 2, one fresh bell-sound strike per asset gain: peaks
+// 0.145 at gain 1, 0.077 at 0.5, 0.035 at 0.25, and 0.150, 0.149, 0.143 at 1.5, 2 and 4), so both games take it.
+void credcapSetSoundGain(AudioSystem* audio, int32_t soundOrInstance, float gain, uint32_t timeMs)
+    __attribute__((noinline, section(".text.credcap_late")));
+void credcapSetSoundGain(AudioSystem* audio, int32_t soundOrInstance, float gain, uint32_t timeMs) {
+    credfixSetSoundGain(audio, soundOrInstance, gain, timeMs);
+    CtrAudioSystem* ca = (CtrAudioSystem*) audio;
+    for (int i = 0; i < VOICE_COUNT; i++) {
+        if (ca->voices[i].fadeTarget > 1.0f && voiceMatches(ca, i, soundOrInstance)) setVoiceGain(ca, i, 1.0f, timeMs);
+    }
+}
+
+// ctrSetSoundGain's and ctrGetSoundGain's slots keep main's extent (0x144 and 0xd4 bytes on all four targets): the
+// padding after each jump, in a later subsection of the function's own section, is past its code and outside its
+// symbol, and nothing branches there (tools/analysis/check_credfix_slots.py). A top-level asm, so the functions' own
+// code is the same as without it.
+#define CREDFIX_SETGAIN_PAD "320" // 0x144 - the 4-byte jump
+#define CREDFIX_GETGAIN_PAD "208" // 0xd4 - the 4-byte jump
+#include "ctr_audio_system_credfix_layout.inc" // before the pads below: it must name every section first
+#if defined(__3DS__) && defined(NDEBUG)
+__asm__(".pushsection .text.ctrSetSoundGain, 1\n.space " CREDFIX_SETGAIN_PAD "\n.popsection");
+__asm__(".pushsection .text.ctrGetSoundGain, 1\n.space " CREDFIX_GETGAIN_PAD "\n.popsection");
+#endif
+
+// ===[ flowend: queued sound reads go between the pieces of a cache decode (late code, both games) ]===
+// The loader thread ran a whole-sound decode into the SFX cache to its end (runPrepDecode), and a sound read queued
+// meanwhile waited for all of it: Photoshop Flowey's mouth beam (its beam sound) queued behind the alarm's
+// 2.9-3.1 s decode on the Old models and was heard about a second late (row flowend-o3ds-1: the read finished 68 ms
+// after the decode). The loader's decode reads are wrapped (CMakeLists.txt, --wrap=CtrDecoder_read): on the loader
+// thread, each read asks for at most FLOWEND_DECODE_FRAMES frames (about 27 ms of decoding on the Old 3DS) and first
+// does one queued read, as loaderThreadMain does them (readRequest's work), through a descriptor opened for it and
+// closed after (a game change can swap the file behind a path; these reads are rare). runPrepDecode already loops
+// until it has every frame, and a decoder's output doesn't depend on how its reads are cut, so the cached sound is
+// the same. Other threads' reads pass straight through. Compiled for size: UNDERTALE Old's late text budget.
+#define FLOWEND_DECODE_FRAMES 2048u
+
+int32_t __real_CtrDecoder_read(CtrDecoder* dec, int16_t* out, uint32_t maxFrames);
+int32_t __wrap_CtrDecoder_read(CtrDecoder* dec, int16_t* out, uint32_t maxFrames);
+
+#ifdef ENABLE_WAD16
+// A cached looping sound's seam check (utaSeamSound) read every frame of the copy on the game thread at its first
+// looped play: 591 KB took 17.4 ms and 870 KB 25.9 ms of game-thread audio on the o2ds (argutflowey L5). For a
+// background decode the loader measures the same largest step per channel here, piece by piece as it decodes (the
+// samples are still in the data cache), in step with the job's slot. flowendSeamCollect gives the result to
+// utaSeamSound's table before the copy is installed. Synchronous loads keep the scan.
+void flowendSeamMeasure(CtrAudioSystem* ca, const int16_t* out, int32_t got);
+void flowendSeamCollect(CtrAudioSystem* ca);
+// Global, not static: GCC emits this object's static late functions before its global ones, so these two then sit
+// after flowendGuessNext and leave it at its old phase (its literal pool holds an 8-byte-aligned double).
+static uint32_t flowendSeamAt[PREP_SLOTS] __attribute__((section(".bss.flowend_seam")));
+static int32_t flowendSeamMax[PREP_SLOTS][2] __attribute__((section(".bss.flowend_seam")));
+
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) void flowendSeamMeasure(CtrAudioSystem* ca,
+                                                                                                      const int16_t* out, int32_t got) {
+    for (int k = 0; k < PREP_SLOTS; k++) {
+        PrepJob* job = &ca->preps[k];
+        const int16_t* x = (const int16_t*) job->pcm;
+        uint32_t ch = job->channels, i = (uint32_t) (out - x), end = i + (uint32_t) got * ch;
+        if (job->state != PREP_BUSY || x == NULL || ch - 1 > 1 || out < x || i >= job->frames * ch) continue;
+        int32_t* m = flowendSeamMax[k];
+        if (i == 0) m[0] = m[1] = 0, i = ch;
+        else if (i != flowendSeamAt[k]) got = -1; // not in order: no result for this copy
+        if (got < 0) end = 0;
+        for (; end > i; i++) { // samples, interleaved: channel i & (ch - 1)
+            int32_t d = abs((int32_t) x[i] - (int32_t) x[i - ch]);
+            if (d > m[i & (ch - 1)]) m[i & (ch - 1)] = d;
+        }
+        flowendSeamAt[k] = end;
+        return;
+    }
+}
+#endif
+
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) int32_t __wrap_CtrDecoder_read(CtrDecoder* dec,
+                                                                                                       int16_t* out, uint32_t maxFrames) {
+    CtrAudioSystem* ca = gShutdownTarget;
+    if (ca != NULL && ca->loader != NULL && threadGetCurrent() == ca->loader) {
+        if (maxFrames > FLOWEND_DECODE_FRAMES) maxFrames = FLOWEND_DECODE_FRAMES;
+        LoadRequest* req = NULL;
+        LightLock_Lock(&ca->loadLock);
+        for (int i = 0; i < LOAD_SLOTS && req == NULL; i++) {
+            if (ca->loads[i].state == LOAD_QUEUED) {
+                req = &ca->loads[i];
+                req->state = LOAD_BUSY;
+            }
+        }
+        LightLock_Unlock(&ca->loadLock);
+        if (req != NULL) { // one read per piece: the next waits at most a piece
+            u64 start = svcGetSystemTick();
+            uint32_t total = req->size + req->header, size = req->size;
+            uint8_t* data = (uint8_t*) malloc(total + 1);
+            int fd = open(req->path, O_RDONLY);
+            off_t at = (off_t) (req->offset - req->header);
+            bool ok = data != NULL && fd >= 0 && lseek(fd, at, SEEK_SET) == at && read(fd, data, total) == (ssize_t) total;
+            if (fd >= 0) close(fd);
+            if (ok && req->header > 0) {
+                uint32_t exact;
+                memcpy(&exact, data, sizeof(exact));
+                if (exact <= size) size = exact;
+                memmove(data, data + req->header, size);
+            }
+            if (!ok) { // the game thread then loads it directly (collectLoads)
+                free(data);
+                data = NULL;
+            }
+            LightLock_Lock(&ca->loadLock);
+            req->data = data;
+            req->dataSize = size;
+            req->readTicks = svcGetSystemTick() - start;
+            req->state = data != NULL ? LOAD_DONE : LOAD_FAILED;
+            LightLock_Unlock(&ca->loadLock);
+        }
+#ifdef ENABLE_WAD16
+        int32_t got = __real_CtrDecoder_read(dec, out, maxFrames);
+        flowendSeamMeasure(ca, out, got);
+        return got;
+#endif
+    }
+    return __real_CtrDecoder_read(dec, out, maxFrames);
+}
+
+#ifdef ENABLE_WAD16
+#include "ctr_wrap_chain.h" // shedSfx: flowend -> utflowey2 (UNDERTALE Old) -> real
+// ===[ flowend: the room's planned sounds stay out of the texture cache's shedding (late code, UNDERTALE only) ]===
+// The sound plan copies a scene's sounds at the room change (z_utsfx.c), but keepLinearFloor's shedSfx then took the
+// largest cheap-to-reload sound first, so a planned sound played once and then left idle for a while was the first
+// to go: Photoshop Flowey's mouth beam (328 KB) was shed 37 ms before its finale play and read again at play time
+// (Azahar Old run wf3, +604 s). The room's planned sounds (what z_utsfx.c asks for after CtrAudioSystem_beginSfxPlan,
+// at most FLOWEND_KEEP) count as just played during a shed, as a sound played in the last SFX_SHED_RECENT_MS does:
+// other sounds and idle tiles go first. Wrapped (CMakeLists.txt), so ctr_textures.c and z_utsfx.c keep their code.
+// They also go last when a sound's buffer finds no linear block (evictSfx's forced pass, least recently used first):
+// at the 3DS's own memory (Azahar memcap 59184, run wfB) the beam went there when the glockenspiel music's decode came in at
+// +598 s, as the plan's copies start at lastUse 0 and a play sets the next use count. Each audio update (the sfx
+// worker's vtable layer, usw.outer.update) puts the kept sounds' lastUse at the top; a play resets it while that sound
+// plays (sfxInUse keeps it then), and the next room's plan gives the last room's back.
+#define FLOWEND_KEEP 8
+#define FLOWEND_KEPT_USE 0xFFFFFFFFu
+static int16_t flowendKeep[FLOWEND_KEEP] __attribute__((section(".bss.flowend_late")));
+static uint32_t flowendKeepCount __attribute__((section(".bss.flowend_late")));
+
+void __real_CtrAudioSystem_beginSfxPlan(void);
+int __real_CtrAudioSystem_preloadSfx(int32_t soundIndex, uint32_t bytes, uint32_t floorBytes);
+int __real_CtrAudioSystem_queueSfx(int32_t soundIndex, uint32_t kib, uint32_t floorBytes);
+uint32_t __real_CtrAudioSystem_shedSfx(uint32_t bytes);
+void __wrap_CtrAudioSystem_beginSfxPlan(void);
+int __wrap_CtrAudioSystem_preloadSfx(int32_t soundIndex, uint32_t bytes, uint32_t floorBytes);
+int __wrap_CtrAudioSystem_queueSfx(int32_t soundIndex, uint32_t kib, uint32_t floorBytes);
+uint32_t __wrap_CtrAudioSystem_shedSfx(uint32_t bytes);
+
+// The kept sounds that are in the cache: lastUse at the top (back = false: the last room's back to the bottom).
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static void flowendRaiseKept(bool back) {
+    CtrAudioSystem* ca = gShutdownTarget;
+    if (ca == NULL) return;
+    for (uint32_t i = 0; flowendKeepCount > i; i++) {
+        CachedSfx* c = &ca->sfxCache[(uint16_t) flowendKeep[i]];
+        if (c->pcm != NULL && (!back || c->lastUse == FLOWEND_KEPT_USE)) c->lastUse = back ? 0 : FLOWEND_KEPT_USE;
+    }
+}
+
+// Each audio update, before collectPreps installs a finished background decode: its seam verdict, from the loader's
+// measure, goes into a free or stale entry of utaSeamSound's table (never over a live one), keyed as utaSeamSound
+// keys it (sound, copy, frames, format), so the first looped play finds it and reads nothing. Same verdict; the
+// "loop seam" log line is left out (late text). A stale entry (its copy left the cache) can only match its own sound
+// decoded again, the same samples.
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) void flowendSeamCollect(CtrAudioSystem* ca) {
+    if (ca == NULL) return;
+    for (int k = 0; k < PREP_SLOTS; k++) {
+        PrepJob* job = &ca->preps[k];
+        const int16_t* x = (const int16_t*) job->pcm;
+        uint32_t n = job->frames, ch = job->channels;
+        // The loader's writes are seen once its PREP_DONE is (written under loadLock).
+        if (__atomic_load_n(&job->state, __ATOMIC_ACQUIRE) != PREP_DONE || !job->ok || x == NULL || flowendSeamAt[k] != n * ch ||
+            4 * UTA_TAIL_MAX > n) {
+            continue;
+        }
+        flowendSeamAt[k] = 0;
+        UtaSeamSound* e = NULL;
+        for (UtaSeamSound* t = utaSeamSounds; t < utaSeamSounds + UTA_SEAM_SOUNDS; t++) {
+            if (t->pcm == NULL || ca->sfxCache[t->sound].pcm != t->pcm) e = t;
+        }
+        if (e == NULL) continue;
+        e->sound = job->soundIndex;
+        e->pcm = (const uint8_t*) x;
+        e->frames = n;
+        e->format = ch == 2 ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16;
+        for (uint32_t c = 0; c < 2; c++) {
+            int32_t step = ch > c ? abs((int32_t) x[c] - (int32_t) x[(n - 1) * ch + c]) : 0;
+            e->trigger[c] = step > 0 && step >= UTA_SEAM_RATIO * flowendSeamMax[k][c];
+        }
+    }
+}
+
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static void flowendUpdate(AudioSystem* audio, float deltaTime) {
+    flowendRaiseKept(false);
+    flowendSeamCollect(gShutdownTarget);
+    usUpdate(audio, deltaTime);
+}
+
+// After the plan's calls: the worker's layer (set up at its first queued copy) runs flowendUpdate.
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static void flowendLayer(void) {
+    flowendRaiseKept(false);
+    if (usw.wrapped != NULL && usw.wrapped == gShutdownTarget && usw.outer.update == usUpdate) usw.outer.update = flowendUpdate;
+}
+
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) void __wrap_CtrAudioSystem_beginSfxPlan(void) {
+    flowendRaiseKept(true);
+    flowendKeepCount = 0;
+    __real_CtrAudioSystem_beginSfxPlan();
+}
+
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static void flowendKeepSound(int32_t soundIndex) {
+    CtrAudioSystem* ca = gShutdownTarget;
+    if (ca != NULL && 0 <= soundIndex && ca->soundCount > (uint32_t) soundIndex && FLOWEND_KEEP > flowendKeepCount) {
+        flowendKeep[flowendKeepCount++] = (int16_t) soundIndex;
+    }
+}
+
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) int __wrap_CtrAudioSystem_preloadSfx(int32_t soundIndex, uint32_t bytes,
+                                                                                                           uint32_t floorBytes) {
+    flowendKeepSound(soundIndex);
+    int got = __real_CtrAudioSystem_preloadSfx(soundIndex, bytes, floorBytes);
+    flowendLayer();
+    return got;
+}
+
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) int __wrap_CtrAudioSystem_queueSfx(int32_t soundIndex, uint32_t kib,
+                                                                                                         uint32_t floorBytes) {
+    // A sound preloadSfx couldn't copy in the frame is queued next: it is already in the list.
+    if (flowendKeepCount == 0 || flowendKeep[flowendKeepCount - 1] != soundIndex) flowendKeepSound(soundIndex);
+    int got = __real_CtrAudioSystem_queueSfx(soundIndex, kib, floorBytes);
+    flowendLayer();
+    return got;
+}
+
+// keepLinearFloor's call, on the game thread (as every play is): the kept sounds' play times read as now for the
+// shed, then go back.
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) uint32_t __wrap_CtrAudioSystem_shedSfx(uint32_t bytes) {
+    CtrAudioSystem* ca = gShutdownTarget;
+    uint32_t n = ca != NULL ? flowendKeepCount : 0;
+    u64 played[FLOWEND_KEEP];
+    u64 now = svcGetSystemTick();
+    for (uint32_t i = 0; n > i; i++) {
+        CachedSfx* c = &ca->sfxCache[(uint16_t) flowendKeep[i]];
+        played[i] = c->lastPlayTick;
+        c->lastPlayTick = now;
+    }
+    uint32_t shed = CTR_SHEDSFX_AFTER_FLOWEND(bytes);
+    for (uint32_t i = n; i-- > 0;) ca->sfxCache[(uint16_t) flowendKeep[i]].lastPlayTick = played[i];
+    return shed;
+}
+#endif
+
+#ifdef CTRPORT_HAVE_TREMOR
+// ===[ flowend: the next created stream opened ahead of its play (late code, both games) ]===
+// A stream's open (CtrDecoder_openFile: the file, then Tremor's headers and seekable scan) takes 110-240 ms on the Old
+// models, and the music starts that much after its cue: Photoshop Flowey's finale_3 (the heavy drums) came in 192 ms
+// after finale_2 stopped (row flowend-o3ds-1). A game creates the parts of a piece of music together and plays them in
+// that order (audio_create_stream takes the lowest free slot, so later creations have higher slots), so when the opener
+// thread opens a created stream, the active created stream in the next higher slot is the likely next one. UNDERTALE
+// plays its music as sounds with their own files (no created streams), named in order: a <name>_1, its loop
+// <name>_1_l, <name>_2, <name>_3 (and the fight's other numbered music), so for any other file the guess
+// is the name with its last number one higher, keeping what follows the number if that file is there, else without it
+// (<name>_1_l -> <name>_2; nothing there, no guess). Once the
+// opener has had nothing to open for FLOWEND_AHEAD_IDLE_MS and no stream is waiting, it opens that one into a spare
+// decoder (at its "waiting" note: CtrWatchdog_note is wrapped), and the play that asks for that path takes it as it is,
+// as if just opened: the same file, the same Tremor state, nothing read since. One spare at a time; a new guess closes
+// an unused one only after FLOWEND_AHEAD_KEEP_MS, and the guess itself also waits for the quiet second (its SD lookups
+// must not delay a cue). Only Ogg Vorbis files are kept. Wrapped (CMakeLists.txt), so openStream and the opener keep their
+// code; other threads' opens pass straight through.
+#define FLOWEND_AHEAD_IDLE_MS 1000.0
+#define FLOWEND_AHEAD_PATH 256
+#define FLOWEND_INITSET 4 // Tremor's ready_state once the decoder is set up: then vf.vb.vd points into vf
+#define FLOWEND_AHEAD_KEEP_MS 120000.0 // an unused spare outlives other opens this long (part1 -> alarm, 6s_1, saved -> part2)
+
+static CtrDecoder flowendAhead __attribute__((section(".bss.flowend_late")));
+static char flowendAheadPath[FLOWEND_AHEAD_PATH] __attribute__((section(".bss.flowend_late")));
+static char flowendLastPath[FLOWEND_AHEAD_PATH] __attribute__((section(".bss.flowend_late"))); // last opened, to guess from
+static u64 flowendAheadTick __attribute__((section(".bss.flowend_late")));
+static uint8_t flowendGuessDue __attribute__((section(".bss.flowend_late")));
+static CtrAudioSystem* flowendAheadOwner __attribute__((section(".bss.flowend_late")));
+static u64 flowendLastOpen __attribute__((section(".bss.flowend_late")));
+static uint32_t flowendCtxSig __attribute__((section(".bss.flowend_late")));
+static uint8_t flowendAheadState __attribute__((section(".bss.flowend_late"))); // 0 none, 1 path wanted, 2 open
+static const char flowendWaiting[] __attribute__((section(".rodata.flowend_in_text"))) = "waiting for a stream to open";
+static const char flowendAheadLog[] __attribute__((section(".rodata.flowend_in_text"))) = "Audio: opened '%s' ahead in %.1f ms\n";
+static const char flowendNextName[] __attribute__((section(".rodata.flowend_in_text"))) = "%.*s%lu%s";
+
+bool __real_CtrDecoder_openFile(CtrDecoder* dec, const char* path);
+bool __wrap_CtrDecoder_openFile(CtrDecoder* dec, const char* path);
+void __real_CtrWatchdog_note(const char* state);
+void __wrap_CtrWatchdog_note(const char* state);
+uint32_t CtrTextures_flowendLoads(void); // ctr_textures.c's end: tile loads so far
+
+// Opener thread: the spare goes (it was another audio system's, or a new guess replaces it).
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static void flowendDropAhead(void) {
+    if (flowendAheadState == 2) CtrDecoder_close(&flowendAhead);
+    flowendAheadState = 0;
+}
+
+// Opener thread, at the quiet second after opening path: the next created stream's path, if path is a created
+// stream's. The main thread owns the entries; a path read here is copied at once and only ever opened (a stale one
+// fails to open or is not asked for).
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static void flowendGuessNext(CtrAudioSystem* ca, const char* path) {
+    // An unused spare stays a while: the next part often follows other music (part1, alarm, 6s_1, saved, part2).
+    if (flowendAheadState == 2 && FLOWEND_AHEAD_KEEP_MS > TICKS_TO_MS(svcGetSystemTick() - flowendAheadTick)) return;
+    int i = 0;
+    while (MAX_STREAM_ENTRIES > i && !(ca->streamEntries[i].active && ca->streamEntries[i].path != NULL && strcmp(ca->streamEntries[i].path, path) == 0)) i++;
+    for (i++; MAX_STREAM_ENTRIES > i; i++) {
+        const char* next = ca->streamEntries[i].path;
+        if (!ca->streamEntries[i].active || next == NULL || strcmp(next, path) == 0) continue;
+        size_t n = strnlen(next, FLOWEND_AHEAD_PATH);
+        if (n >= FLOWEND_AHEAD_PATH || (flowendAheadState != 0 && strcmp(flowendAheadPath, next) == 0)) return;
+        flowendDropAhead();
+        memcpy(flowendAheadPath, next, n + 1);
+        flowendAheadState = 1;
+        return;
+    }
+    // Not a created stream (or the last one): the next number. Only the file name's digits count.
+    const char* base = strrchr(path, '/');
+    base = base != NULL ? base + 1 : path;
+    const char* dot = strrchr(base, '.');
+    if (dot == NULL) dot = base + strlen(base);
+    const char* end = dot;
+    while (end > base && (end[-1] < '0' || end[-1] > '9')) end--;
+    const char* start = end;
+    while (start > base && start[-1] >= '0' && start[-1] <= '9') start--;
+    if (start == end || end - start > 6) return;
+    char guess[FLOWEND_AHEAD_PATH];
+    unsigned long number = strtoul(start, NULL, 10) + 1;
+    int n = snprintf(guess, sizeof(guess), flowendNextName, (int) (start - path), path, number, end);
+    if (n <= 0 || n >= FLOWEND_AHEAD_PATH) return;
+    if (end != dot && access(guess, F_OK) != 0) {
+        n = snprintf(guess, sizeof(guess), flowendNextName, (int) (start - path), path, number, dot);
+        if (n <= 0 || n >= FLOWEND_AHEAD_PATH) return;
+    }
+    if (access(guess, F_OK) != 0 || (flowendAheadState != 0 && strcmp(flowendAheadPath, guess) == 0)) return;
+    flowendDropAhead();
+    memcpy(flowendAheadPath, guess, (size_t) n + 1);
+    flowendAheadState = 1;
+}
+
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) bool __wrap_CtrDecoder_openFile(CtrDecoder* dec, const char* path) {
+    CtrAudioSystem* ca = gShutdownTarget;
+    if (ca == NULL || ca->opener == NULL || threadGetCurrent() != ca->opener) return __real_CtrDecoder_openFile(dec, path);
+    if (flowendAheadOwner != ca) flowendDropAhead();
+    flowendAheadOwner = ca;
+    flowendLastOpen = svcGetSystemTick();
+    bool ok = true;
+    if (flowendAheadState == 2 && strcmp(flowendAheadPath, path) == 0) {
+        memcpy(dec, &flowendAhead, sizeof(*dec));
+        dec->vf.datasource = dec; // Tremor's callbacks get the decoder
+        if (dec->vf.ready_state >= FLOWEND_INITSET) dec->vf.vb.vd = &dec->vf.vd;
+        flowendAheadState = 0;
+    } else {
+        ok = __real_CtrDecoder_openFile(dec, path);
+    }
+    // The guess (its SD lookups cost 20-45 ms) waits for the quiet second with the open ahead, off the cue's path.
+    size_t n = strnlen(path, FLOWEND_AHEAD_PATH);
+    if (ok && FLOWEND_AHEAD_PATH > n) {
+        memcpy(flowendLastPath, path, n + 1);
+        flowendGuessDue = 1;
+    }
+    return ok;
+}
+
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) void __wrap_CtrWatchdog_note(const char* state) {
+    __real_CtrWatchdog_note(state);
+    CtrAudioSystem* ca = gShutdownTarget;
+    if (ca == NULL || ca->opener == NULL || threadGetCurrent() != ca->opener || strcmp(state, flowendWaiting) != 0) return;
+    // Any stream context changing (a state or a path: short streamed sounds such as a flame loop open from memory,
+    // not through CtrDecoder_openFile) counts as the opener being busy: the spare waits for a quiet second, so it
+    // never holds up a sound that is about to open (Azahar run wfC lost a flameloop play to a 96 ms open ahead).
+    // A tile load counts too: the game thread's tile reads and this open share the card.
+    uint32_t sig = CtrTextures_flowendLoads();
+    for (int i = 0; STREAM_CONTEXTS > i; i++) sig = sig * 33u + (uint32_t) ca->streams[i].state + (uint32_t) (uintptr_t) ca->streams[i].path;
+    u64 t0 = svcGetSystemTick();
+    if (sig != flowendCtxSig) {
+        flowendCtxSig = sig;
+        flowendLastOpen = t0;
+    }
+    if ((flowendAheadState != 1 && !flowendGuessDue) || flowendAheadOwner != ca || ca->openerQuit || FLOWEND_AHEAD_IDLE_MS > TICKS_TO_MS(t0 - flowendLastOpen)) return;
+    for (int i = 0; STREAM_CONTEXTS > i; i++) {
+        if (ca->streams[i].state == CTX_OPEN_REQUESTED) return;
+    }
+    if (flowendGuessDue) {
+        flowendGuessDue = 0;
+        flowendGuessNext(ca, flowendLastPath);
+        if (flowendAheadState != 1) return;
+    }
+    bool ok = __real_CtrDecoder_openFile(&flowendAhead, flowendAheadPath);
+    if (ok && flowendAhead.kind != CTR_DECODER_VORBIS) {
+        CtrDecoder_close(&flowendAhead);
+        ok = false;
+    }
+    flowendAheadState = ok ? 2 : 0;
+    flowendAheadTick = svcGetSystemTick();
+    if (ok) postMessage(ca, flowendAheadLog, flowendAheadPath, TICKS_TO_MS(svcGetSystemTick() - t0));
+}
+#endif
+
+// stallfix (rev 3, ctr_benchheld.inc): the game thread's sound load time in this stats window so far (logWindowStats
+// clears it), read once a measured bench frame on the game thread, for the bench's held-frame lines. Late code at the
+// end of the file (platform/3ds/late_reserve.ld, .text.stallfix_late). Not in DELTARUNE Old builds (CTRPORT_BENCH_HELD).
+#ifdef CTRPORT_BENCH_HELD
+uint64_t CtrAudioSystem_heldLoadTicks(AudioSystem* audio);
+__attribute__((noinline, section(".text.stallfix_late"))) uint64_t CtrAudioSystem_heldLoadTicks(AudioSystem* audio) {
+    return ((CtrAudioSystem*) audio)->windowLoadTicks;
 }
 #endif

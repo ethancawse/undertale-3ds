@@ -66,7 +66,8 @@ __asm__(
     LAYERFIX_INPUT(".text.Runner_scrollBackgrounds", 4)
     LAYERFIX_INPUT(".text.Runner_loadDrawSkip", 4)
     LAYERFIX_INPUT(".text.Runner_visibleWorldRect", 4)
-    LAYERFIX_INPUT(".text.legacyTileVisible", 4)
+    // tilerun: legacyTileVisible moved to late text (.text.late.tilerun); its 312 B stay.
+    LAYERFIX_SLOT(".text.legacyTileVisible", 4, 312)
     LAYERFIX_INPUT(".text.Runner_tileAnimFrame", 8)
     LAYERFIX_INPUT(".text.Runner_tileAnimIndex", 4)
     LAYERFIX_INPUT(".text.Runner_drawTileLayer", 4)
@@ -128,9 +129,9 @@ __asm__(
     // Regenerate from fresh objects; the full linked gate checks named tables.
     ".pushsection .rodata,\"a\",%progbits\n.balign 4\n.space 4\n.popsection\n"
     // Regenerate with tools/analysis/prepare_layerfix_slots.py after ANY drawRoom edit.
-    // The outlined instance loop leaves 196 B at the end of drawRoom's slot.
+    // The outlined instance loop leaves 148 B at the end of drawRoom's slot.
     // Subsection 1 follows GCC's subsection-0 body; it never executes.
-    ".pushsection .text.drawRoom,\"ax\",%progbits\n.subsection 1\n.space 196\n.popsection\n"
+    ".pushsection .text.drawRoom,\"ax\",%progbits\n.subsection 1\n.space 148\n.popsection\n"
 );
 #undef LAYERFIX_INPUT
 #undef LAYERFIX_SLOT

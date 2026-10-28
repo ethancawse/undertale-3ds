@@ -5772,3 +5772,30 @@ void VM_runEventBound(VMContext* ctx, VMEventRun* run, Instance* instance) {
 #endif
 }
 #endif /* ENABLE_WAD16 */
+
+// dodgefront (credfix, UNDERTALE Old 3DS only, CMakeLists.txt defines CTRPORT_DODGEFRONT here): binds a hand
+// front (platform/3ds/source/z_dodgefront.c, which pins the entry's bytecode itself) to a code entry that has no
+// generated function bound yet, so aotDispatch runs it as it runs generated code: with ip at the entry's start, the
+// interpreter its fallback. Only into the context bound now, and only while generated code is on (not BS_AOT=0) and not in tracing or
+// stress builds, which test the interpreter and the generated code. Returns whether fn is bound to the entry. Late text,
+// so nothing in this file moves; it touches only aotDispatch's binding array.
+#if defined(CTRPORT_DODGEFRONT) && defined(VM_AOT_ENABLED) && defined(__3DS__)
+bool VM_aotBindFront(VMContext* ctx, int32_t codeIndex, AotFn fn) __attribute__((noinline, optimize("Os"), section(".text.dodgefront_late")));
+bool VM_aotBindFront(VMContext* ctx, int32_t codeIndex, AotFn fn) {
+#if defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS)
+    (void) ctx;
+    (void) codeIndex;
+    (void) fn;
+    return false;
+#else
+    if (aotEnabled != 1 || aotBoundCtx != ctx || aotBound == nullptr || 0 > codeIndex || (uint32_t) codeIndex >= aotBoundCount)
+        return false;
+    // A generated function bound already stays; an entry not looked up yet (AOT_UNBOUND) takes the front even if the
+    // table had one for it, which is only slower or faster, never different (the front pins the entry's bytecode).
+    AotFn now = aotBound[codeIndex];
+    if (now != fn && now != AOT_UNBOUND && now != nullptr) return false;
+    aotBound[codeIndex] = fn;
+    return true;
+#endif
+}
+#endif

@@ -18,6 +18,8 @@ SCOPED = ()
 
 
 def route(text):
+    import flowervramg_palette_retry
+    text = flowervramg_palette_retry.retain(text)
     counts = {}
     for name in ENTRIES:
         if name in INTERNAL:

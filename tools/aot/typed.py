@@ -1083,11 +1083,17 @@ class Gen:
             self.deopt(a, before, "%s == nullptr" % fv)
         memo = kind == "pure" and result == "R" and all(v.inv for v in args) and not (set(reads) & r.state_written)
         block = []
-        if argc:
+        scalar_part = (NUMERIC_SPRITE_LOOPS and em.dw.wad == 16
+                       and name == 'draw_sprite_part' and argc == 8
+                       and all(v.num() for v in args))
+        if argc and not scalar_part:
             block.append("RValue a_[%d] = { %s };" % (argc, ", ".join(as_rv(v) for v in args)))
         block.append("ctx->ip = 0x%X;" % ((self.inl[0] if self.inl is not None else a) + 8))
         call = "%s(ctx, %s, %d)" % (fv, "a_" if argc else "nullptr", argc)
         free = ["if (a_[%d].ownsReference) RValue_free(&a_[%d]);" % (i, i) for i, v in enumerate(args) if v.k == "v" and v.t is None]
+        if scalar_part:
+            call = "Utold_scalarPart(ctx, %s)" % ", ".join(as_num(v) for v in args)
+            free = []
         n = self.tmp()
         if result == "R":
             # RValue_makeReal, pushed typed Variable (stackPushTyped): a real scalar
@@ -1462,6 +1468,8 @@ def function_text(r, code_name):
         out.append("    const BuiltinFunc fb%d = (BuiltinFunc) ctx->funcCallCache[%d].builtin;   /* %s */" % (idx, idx, r.builtins[idx]))
         if not r.memory:
             out.append("    if (fb%d == nullptr) TYPED_FAIL();" % idx)
+        if NUMERIC_SPRITE_LOOPS and r.em.dw.wad == 16 and r.builtins[idx] == 'draw_sprite_part':
+            out.append("    if (!Utold_scalarPartIsBuiltin(fb%d)) TYPED_FAIL();" % idx)
     for idx in sorted(r.scripts):   # where aotCallScript would call the script inlined: see Gen.inline
         if not r.memory:
             out.append("    if (%s) TYPED_FAIL();   /* %s */"

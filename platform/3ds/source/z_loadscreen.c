@@ -696,7 +696,7 @@ extern const char ctrSdLegacyDir[];
 int CtrSdMigrate_run(const char* legacyParent, int mode);
 
 LS_CODE bool __wrap_C3D_Init(size_t cmdBufSize) {
-    // The SD folder move (z_sdmigrate.c) first: the first load reads settings.ini from the moved folder (lsDecide).
+    // The retired SD folder move (z_sdmigrate.c): a stub since 2026-10-27, kept so this code does not move.
     CtrSdMigrate_run(ctrSdLegacyDir, 0777);
     bool ok = __real_C3D_Init(cmdBufSize);
     lsLoads = 1;
@@ -1370,3 +1370,77 @@ PS_CODE static void lsPackRun(const DataWin* dataWin) {
     }
     logInfo(psLogScreen, line ? psWithLine : psWithoutLine, (unsigned) (ls.pictures - pictures));
 }
+
+// DR chapter preflight deliberately bypasses the digest-consumer wrap chain. Cached receipts cause no
+// callback and no setup screen. For a real hash, reuse the packscreen line and renderer, without changing
+// the active room/crisp/sound digest. One sixth of the bar per launcher/chapter; missing or unselected
+// slots are skipped. Within a slot, only completed 64 KiB reads advance it (last read clamped to size).
+#if LS_DELTARUNE
+#define BH_CODE __attribute__((noinline, section(".text.late.builderxhash")))
+#define BH_DATA __attribute__((section(".data.late.builderxhash")))
+// Aliases keep the old static call graph/order intact, just as the dog drawer's assembly call does.
+__asm__(".global BxHash_pause\n.set BxHash_pause, lsPause\n"
+        ".global BxHash_present\n.set BxHash_present, psPresent\n"
+        ".global BxHash_dogKey\n.set BxHash_dogKey, psDogKey\n"
+        ".global BxHash_findLine\n.set BxHash_findLine, psFindLine\n");
+void BxHash_pause(bool paused);
+void BxHash_present(int32_t fillW, int32_t frame);
+int32_t BxHash_dogKey(uint32_t ms);
+void BxHash_findLine(const uint8_t* art, uint32_t size);
+
+static struct {
+    const char* path;
+    void (*progress)(void);
+    uint64_t size, read;
+    uint32_t slot, bar;
+    int32_t fill;
+    bool active;
+} bh BH_DATA;
+
+BH_CODE static void bhProgress(void) {
+    if (bh.progress != nullptr) bh.progress();
+    if (!ls.running) return;
+    if (!bh.active) {
+        struct stat st;
+        if (stat(bh.path, &st) != 0 || st.st_size <= 0) return;
+        bh.size = (uint64_t) st.st_size;
+        BxHash_pause(true);
+        LightLock_Lock(&ls.lock);
+        BxHash_findLine(ls.art, ls.artSize);
+        ls.gen++;
+        LightLock_Unlock(&ls.lock);
+        bh.fill = -1;
+        bh.active = true;
+    }
+    bh.read += 65536u;
+    if (bh.read > bh.size) bh.read = bh.size;
+    bh.bar = (uint32_t) ((bh.slot * 1000u + bh.read * 1000u / bh.size) * LS_CAP / 6000u);
+    LightLock_Lock(&ls.lock);
+    if (bh.bar < ls.shown) bh.bar = ls.shown;
+    ls.shown = bh.bar;
+    int32_t fill = (int32_t) ((uint32_t) ls.fillMax * bh.bar / 1000u);
+    // Painting only a new filled pixel bounds setup overhead; cached checks never pause/draw/stat here.
+    if (fill != bh.fill) BxHash_present(fill, BxHash_dogKey(lsMs(ls.loadStart, svcGetSystemTick())));
+    LightLock_Unlock(&ls.lock);
+    bh.fill = fill;
+}
+
+CtrDataVersionResult BxChapterHash_check(const char*, const char*, const char*, const char*,
+                                      void (*)(void), bool*, char[65]);
+BH_CODE CtrDataVersionResult BxChapterHash_check(const char* path, const char* game, const char* part,
+        const char* cachePath, void (*progress)(void), bool* cached, char digest[65]) {
+    bh.path = path;
+    bh.progress = progress;
+    bh.slot = part[0] == 'c' ? (uint32_t) (part[7] - '0') : 0;
+    bh.read = 0;
+    bh.active = false;
+    CtrDataVersionResult result = BxCold_check(path, game, part, cachePath, bhProgress, cached, digest);
+    if (bh.active) {
+        LightLock_Lock(&ls.lock);
+        psLine = nullptr;
+        LightLock_Unlock(&ls.lock);
+        BxHash_pause(false);
+    }
+    return result;
+}
+#endif

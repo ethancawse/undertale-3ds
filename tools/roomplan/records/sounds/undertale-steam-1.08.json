@@ -8,7 +8,7 @@
   "data_size": 62921978,
   "room_count": 336,
   "sound_count": 443,
-  "sources": ["utsfx boss1: Azahar New, recorder a8b0f752f-era rec1 (410103bf), seed 5, bosscov_scenes.txt, the roomplan boss2b word list (188 scenes)", "utsfx smoke1: sans"],
+  "sources": ["utsfx boss1: Azahar New, recorder a8b0f752f-era rec1 (410103bf), seed 5, bosscov_scenes.txt, the roomplan boss2b word list (188 scenes)", "utsfx smoke1: sans", "flowend laser: Photoshop Flowey whole fight (scratch bench recipe bench_fe.txt, seed 5), Azahar New, recorder ffREC4 (utflowey2 P4 era), room 294: the mouth beam only"],
   "scenes": [
     {"room":0,"sub":-1,"visits":189,"sounds":[]},
     {"room":1,"sub":-1,"visits":190,"sounds":[[3,214],[5,95]]},
@@ -27,7 +27,7 @@
     {"room":291,"sub":-1,"visits":1,"sounds":[[-1,214],[1,97],[199,382]]},
     {"room":292,"sub":-1,"visits":1,"sounds":[]},
     {"room":293,"sub":-1,"visits":1,"sounds":[]},
-    {"room":294,"sub":-1,"visits":1,"sounds":[[0,352],[634,353],[834,356]]},
+    {"room":294,"sub":-1,"visits":1,"sounds":[[0,352],[634,353],[834,356],[974,181]]},
     {"room":306,"sub":1,"visits":1,"sounds":[[-1,235],[0,95],[6,112],[18,44],[38,51],[48,43],[68,92],[71,96]]},
     {"room":306,"sub":13,"visits":1,"sounds":[[-1,235],[0,95],[6,112],[18,44],[38,51],[72,96],[183,53],[278,92]]},
     {"room":306,"sub":15,"visits":1,"sounds":[[-1,235],[0,95],[6,112],[18,44],[38,51],[72,96],[187,53],[278,92]]},

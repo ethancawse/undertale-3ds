@@ -78,3 +78,7 @@ bool __wrap_CtrTextures_addMirror(CtrTextureCache* cache, CtrTile* tile, void* v
     vramTouch(vram, tile->tex.size);
     return __real_CtrTextures_addMirror(cache, tile, vram);
 }
+
+// climbnoise: the tower textures' Azahar test (vine_new_retain.inc, cnTowerFree) reads the same cached flag through
+// this alias of vramTouchOn, so this file's code and statics stay as they were.
+__asm__(".globl CtrVramTouch_emulator\n.type CtrVramTouch_emulator, %function\n.set CtrVramTouch_emulator, vramTouchOn\n");

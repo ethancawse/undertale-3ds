@@ -52,8 +52,8 @@
     },
     {
       "member": "platform/3ds/source/ctr_pixfix_press.c",
-      "sha256": "62c5249a4f01b716e3852ff596a6614824da2fc0cd19246d9f5c7189c07dc3c3",
-      "bytes": 9030,
+      "sha256": "08868fcc0baeb4a31c2962ca041039f767e04aa239e7a2e6725b07436893bec8",
+      "bytes": 9328,
       "glyph_rows_sha256": "18b5b8bfb01ce5c56672c567a1bbb8ba8f833dd92b32faab1706ff6275ca07e7",
       "approved_by": "Ethan",
       "approval_date": "2026-10-22",

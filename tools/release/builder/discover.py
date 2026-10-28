@@ -91,8 +91,10 @@ def find_copies(game_key, probes: Probes | None = None):
         if key in seen:
             continue
         seen.add(key)
-        info = os.path.isfile(os.path.join(d, "goggame-%s.info" % game.gog_product))
-        out.append(Copy("GOG" if info else "folder", d, "GOG" if info else "unknown"))
+        _info, recorded = vg.gog_record(game, d, probes.gog_records, probes.platform)
+        layout = vg.layout_for(game, d)
+        out.append(Copy("GOG" if recorded else "folder", d, "GOG" if recorded else "unknown",
+                        platform=layout.name if layout else ""))
     return out
 
 
@@ -124,17 +126,16 @@ def verify_copy(game_key, folder, probes: Probes | None = None, allow_list=None,
                   gog_records=probes.gog_records, platform=probes.platform,
                   allow_list=vg.ALLOW_LIST if allow_list is None else allow_list,
                   macos_allow_list=vg.MACOS_ALLOW_LIST if macos_allow_list is None else macos_allow_list)
-    if r.store == 'gog':
-        return Verdict(False, r, False,
-                       'This builder supports the Windows Steam release. GOG support will follow when verified digests are available.',
-                       game.store_links)
     if not r.accepted:
         message = r.message
         # Native files the builder doesn't know (Linux, DELTARUNE's Mac bundle, a Mac version not listed yet): the
         # Windows depot is the way. A known Mac copy that fails another check gets that check's own message.
         if ((r.layout is None or r.layout != "windows" and r.status == vg.UNKNOWN_VERSION)
                 and native_data_files(folder)):
-            message = windows_depot_message(game_key, probes.platform)
+            info, recorded = vg.gog_record(game,folder,probes.gog_records,probes.platform)
+            parent_info = os.path.isfile(os.path.join(os.path.dirname(os.path.normpath(folder)), 'gameinfo'))
+            message = windows_depot_message(game_key, probes.platform,
+                                           store='gog' if info or recorded or parent_info else 'steam')
         return Verdict(False, r, False, message, game.store_links)
     excluded = []
     if game_key == 'deltarune':
@@ -153,7 +154,7 @@ def verify_copy(game_key, folder, probes: Probes | None = None, allow_list=None,
         if not any(p != 'root' for p in r.accepted_parts):
             return Verdict(False, r, False, 'Missing or unreadable audio: %s. Verify the game files in Steam.' % audio_failures[0], ())
     ok, note = products.music_check(product, r.data_dir or folder, r.version, platform=r.layout or "windows",
-                                    parts=r.accepted_parts)
+                                    parts=r.accepted_parts, store=r.store or "steam")
     if not ok:
         return Verdict(False, r, False, note, ())
     if excluded:
@@ -185,11 +186,15 @@ def native_data_files(folder):
             if os.path.isfile(os.path.join(b, name))]
 
 
-def windows_depot_message(game_key, platform=sys.platform):
+def windows_depot_message(game_key, platform=sys.platform, store="steam"):
     """Short numbered steps; the full walk-through is docs/release/builder-platforms.md."""
     title = products.PRODUCTS[game_key].title
     head = "This is the %s version of %s. The builder needs the Windows version's files.\n" % (
         "Linux" if platform == "linux" else "Mac", title)
+    if store == 'gog':
+        return ("This GOG copy's Mac or Linux files aren't supported yet.\n"
+                "Choose the supported Windows GOG files, with their original music.\n"
+                "Keep the original files together. Stay determined.")
     if platform == "linux":
         return head + ("1. In Steam, right-click %s > Properties > Compatibility.\n"
                        "2. Tick 'Force the use of a specific Steam Play compatibility tool', choose Proton "
