@@ -142,10 +142,9 @@ static inline __attribute__((always_inline)) RValue ukvInt(int32_t v, uint8_t gm
     return r;
 }
 
-static RValue* ukvSlot(Instance* inst, int32_t varID) UKV_LATE;
-static RValue* ukvSlot(Instance* inst, int32_t varID) {
-    return IntRValueHashMap_findSlot(&inst->selfVars, varID);
-}
+#define ukvSlot UtFlames_slot // z_utflames.c's IntRValueHashMap_findSlot copy: one for every UNDERTALE late file
+RValue* ukvSlot(Instance* inst, int32_t varID); // (freebytes: each file had its own byte-identical 108 B copy)
+#line 149
 
 // A store of a popped value (AOT_STORE after its coercion) into a slot that owns nothing (a precondition), of a number
 // or a static string: storeStackValueIntoSlot's plain copy.

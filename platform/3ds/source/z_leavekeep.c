@@ -93,11 +93,50 @@ LK_CODE void CTR_EXIT_ONCE(int status) {
 }
 
 // The heap stays mapped when a lab leave owns the exit, or when another thread waits in _exit.
+#ifdef CTRPORT_EXITTRAIL
+static u32 lkFrees[2] LK_BSS; // exit trail builds: MEMOP_FREE calls skipped, passed on
+// usstop's provoke test: [keep, owner, entered, retAddr, skipped frees, passed frees]
+LK_CODE void CtrLeavekeep_state(u32* out) {
+    out[0] = lkKeepHeap;
+    out[1] = lkOwner;
+    out[2] = lkEntered;
+    out[3] = (u32) (uintptr_t) __system_retAddr;
+    out[4] = lkFrees[0];
+    out[5] = lkFrees[1];
+}
+#define LK_COUNT_FREE(i) if ((op & MEMOP_OP_MASK) == MEMOP_FREE) lkFrees[i]++
+// usstop's provoke test 6: rev 2's mark (542eaccb4), the control arm for c26rev r10 F1.
+LK_CODE void CtrLeavekeep_rev2Keep(void) {
+    __atomic_store_n(&lkKeepHeap, lkSelf(), __ATOMIC_RELEASE);
+}
+#else
+#define LK_COUNT_FREE(i)
+#endif
+#ifdef ENABLE_WAD16
+// usstop (UNDERTALE; ctr_audio_system.c's end, rev 3): called only from the exit's own aptExit and svcExitProcess.
+// On the thread that owns the exit (lkOwner), with want (a sound copy still under way when shutdownAudio's wait ran
+// out) or when the exit is already a keep exit (lkKeepHeap = this thread: filesRecover, a lab leave), the exit keeps
+// the heap: the owner counts itself into lkEntered, so __wrap_svcControlMemory's "a second thread is in the exit"
+// test skips libctru's MEMOP_FREE calls (with no return address, as for every keep). lkEntered only grows, so no
+// other thread can take the keep back (rev 2 overwrote lkKeepHeap: c26rev r10 F1). Returns whether the exit keeps
+// the heap; on any other thread, false and nothing changes.
+// Its section is named outside .text.*: late_reserve.ld takes z_leavekeep.o's .text.* in leavekeep's place.
+__attribute__((noinline, section(".usstop_keep_text"))) bool CtrLeavekeep_ownerKeep(bool want) {
+    u32 self = lkSelf();
+    if (__atomic_load_n(&lkOwner, __ATOMIC_ACQUIRE) != self) return false;
+    if (!want && __atomic_load_n(&lkKeepHeap, __ATOMIC_ACQUIRE) != self) return false;
+    __atomic_add_fetch(&lkEntered, 1, __ATOMIC_ACQ_REL);
+    return true;
+}
+#endif
 LK_CODE Result __wrap_svcControlMemory(u32* addr_out, u32 addr0, u32 addr1, u32 size, MemOp op, MemPerm perm) {
     u32 keep = __atomic_load_n(&lkKeepHeap, __ATOMIC_ACQUIRE);
     if ((op & MEMOP_OP_MASK) == MEMOP_FREE && __system_retAddr == NULL &&
-        ((keep != 0 && keep == __atomic_load_n(&lkOwner, __ATOMIC_ACQUIRE)) || __atomic_load_n(&lkEntered, __ATOMIC_ACQUIRE) > 1))
+        ((keep != 0 && keep == __atomic_load_n(&lkOwner, __ATOMIC_ACQUIRE)) || __atomic_load_n(&lkEntered, __ATOMIC_ACQUIRE) > 1)) {
+        LK_COUNT_FREE(0);
         return 0;
+    }
+    LK_COUNT_FREE(1);
     return __real_svcControlMemory(addr_out, addr0, addr1, size, op, perm);
 }
 

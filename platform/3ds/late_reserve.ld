@@ -367,7 +367,7 @@ SECTIONS
     *(.text.late.utasgore)
     /* Any other late text (round 14 dropped the wildcard ahead of the host table: it placed nothing). Not
        ctr_renderer.c's or z_itemverdict.c's, whose smartcut sections come last (round 17). */
-    *(SORT_BY_NAME(EXCLUDE_FILE (*z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *ctr_data_version.o *z_gogut* *ctr_pixgrid* *z_builderx_review* *z_builderx_new* *z_builderx_old* *z_builderx_receipt* *runner.o *z_loadscreen.o *z_symverdict* *z_smalltext_dr* *z_utstall* *z_sdmigrate* *source/ctr_renderer.o *source/z_itemverdict.o *z_phaseplan* *z_utold_scalar* *source/ctr_benchmark.o *z_sdlat* *vm_builtins.o *z_gamedir* *ctr_flowervramg_promotion.o *ctr_memory.o *ctr_flowervramg_palette.o *ctr_textures.o) .text.late.*))
+    *(SORT_BY_NAME(EXCLUDE_FILE (*z_asrtext* *z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *ctr_data_version.o *z_gogut* *ctr_pixgrid* *z_builderx_review* *z_builderx_new* *z_builderx_old* *z_builderx_receipt* *runner.o *z_loadscreen.o *z_symverdict* *z_smalltext_dr* *z_utstall* *z_sdmigrate* *source/ctr_renderer.o *source/z_itemverdict.o *z_phaseplan* *z_utold_scalar* *source/ctr_benchmark.o *z_sdlat* *vm_builtins.o *z_gamedir* *ctr_flowervramg_promotion.o *ctr_memory.o *ctr_flowervramg_palette.o *ctr_textures.o) .text.late.*))
     /* builderx UT-only adapters, after every round-14 fixed section. DR excludes this object. */
     *z_builderx_review*(.text .text.* .rodata .rodata.*)
     *(.text.late.builderxnew)
@@ -744,6 +744,35 @@ SECTIONS
        (z_lbind.c). Named outside .text.late.* so the catch-all leaves it here. */
     *(.text.lbind_late)
     *z_lbind.o(.text .text.* .rodata .rodata.*)
+    /* nopromo (freebies r12 rev 2, last, merge order; UNDERTALE only, empty in DELTARUNE): once the packed budget is 0
+       with nothing packed, Draw asks no promotions (z_freebies.c, the CtrRenderer_endFrame chain's link after
+       freebies), then its constants. Named outside .text and .rodata so z_freebies.o's line above leaves them here. */
+    *(.late_nopromo)
+    *(.late_nopromo_ro)
+    /* knightgpu L-A (last, merge order; DELTARUNE New only, empty elsewhere): the application surface's
+       unused full-resolution memory lent to hot spilled surfaces (ctr_renderer.c's end). Named
+       outside .text.late.* so ctr_renderer.o's own late line above leaves it here. */
+    *(.text.knightgpu_late)
+    /* utold c112dtm (merge order): rooms.dtm at the room change (ctr_textures.c and ctr_tile_reader.c tails),
+       then its log constants. Named outside .text.late.* so the catch-alls above leave it here. */
+    *(.text.utolddtm_late)
+    *(.rodata.utolddtm_late)
+    /* utext (credfix T1, ruling 2026-10-28; last, merge order; UNDERTALE only, empty elsewhere): steady text
+       glyphs straight into the open batch (ctr_renderer.c's end, utxEmitPageRegion). Named outside .text.late.*. */
+    *(.text.utext_late)
+    /* usstop (credfix, UT-002; last, merge order; UNDERTALE only, empty in DELTARUNE): the sound plan worker held idle
+       before shutdownAudio's frees (ctr_audio_system.c's end, the CtrReadAhead_shutdown wrap), then the exit trail
+       build's provoke test constants. Named outside .text.late.* so the catch-alls leave it here. */
+    *(.text.usstop_late)
+    *(.usstop_keep_text) /* z_leavekeep.c's CtrLeavekeep_ownerKeep: named outside .text.* (its file's catch-all) */
+    *(.rodata.usstop_in_text)
+    /* asrtext (last, merge order): exact-string PC-height glyph selection. */
+    *(.text.late.asrtext)
+    /* flowend burst (last, merge order; UNDERTALE only, empty in DELTARUNE): a step's plays past the first four
+       start at the frame's audio update (ctr_audio_system.c's end, the vtable's playSound and update entries).
+       Named outside .text.late.* so the catch-alls leave it here. */
+    *(.text.flowburst_late)
+    *(.rodata.flowburst_in_text)
     __late_text_end = ABSOLUTE(.);
   }
   /* 192 KiB (grown in whole 4 KiB pages from 16 KiB, each time late code outgrew it): screens' options page took
@@ -863,7 +892,7 @@ SECTIONS
     *(.rodata.late.pacer)
     /* oomport (integrate round 15, after pacer): checked optional renderer/history arrays. */
     *(.rodata.late.oomport)
-    *(SORT_BY_NAME(EXCLUDE_FILE (*z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *ctr_flowervramg_promotion.o *ctr_flowervramg_palette.o *z_gogut* *z_builderx_new* *z_builderx_receipt* *z_sdlat*) .rodata.late.*))
+    *(SORT_BY_NAME(EXCLUDE_FILE (*z_asrtext* *z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *ctr_flowervramg_promotion.o *ctr_flowervramg_palette.o *z_gogut* *z_builderx_new* *z_builderx_receipt* *z_sdlat*) .rodata.late.*))
     *(.rodata.late.builderxnew)
     *(.rodata.late.builderxreceipt)
     *(.rodata.late.gogut)
@@ -883,6 +912,14 @@ SECTIONS
     /* snap names (credfix 8232d6954, last, merge order; both games): the L+SELECT scan prefix "snap_"
        (ctr_screenshot_path.c). Named outside .rodata.late.* so the catch-all above leaves it here. */
     *(.rodata.snapname_late)
+    /* knightgpu L-A (last, merge order): log formats, profile builds only (ctr_renderer.c's end). Named outside
+       .rodata.late.* so the catch-all above leaves them here. */
+    *(.rodata.knightgpu_late)
+    /* freebytes (last, merge order): on UNDERTALE Old 3DS only, CMakeLists.txt takes these constants out of the late
+       text block (argcrash's and pacer_io's lines and ctr_bench_io.o's catch-all) and puts them here: late code is
+       the scarce reserve there, and its late constants page had 3.6 KB spare. Every other target keeps them in late
+       text. */
+    /* FREEBYTES_RODATA */
     __late_rodata_end = ABSOLUTE(.);
   }
   /* 8 KiB (at first 4 KiB): late code's constants are mostly log formats; heapfrag's are 472 B, and
@@ -951,7 +988,7 @@ SECTIONS
     *(.data.late.pacer_vc)
     /* utold lava (integrate round 16): its data. */
     *(.data.late.utlava)
-    *(SORT_BY_NAME(EXCLUDE_FILE (*z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *z_gogut* *z_builderx_new* *z_builderx_old* *z_loadscreen.o *source/ctr_benchmark.o *z_sdlat*) .data.late.*))
+    *(SORT_BY_NAME(EXCLUDE_FILE (*z_asrtext* *z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *z_gogut* *z_builderx_new* *z_builderx_old* *z_loadscreen.o *source/ctr_benchmark.o *z_sdlat*) .data.late.*))
     *(.data.late.builderxnew)
     *(.data.late.builderxold)
     *(.data.late.builderxoldconst)
@@ -1145,7 +1182,7 @@ SECTIONS
     *(.bss.late.bootlog)
     /* utasgore (round 17, after bootlog, before the catch-all): the steady path's plan cache (utaKeys). */
     *(.bss.late.utasgore)
-    *(SORT_BY_NAME(EXCLUDE_FILE (*z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *z_gogut* *z_loadscreen.o *z_symverdict* *z_smalltext_dr* *z_utstall* *z_sdmigrate* *libswkbd_late.a:* *source/ctr_renderer.o *source/z_itemverdict.o *z_phaseplan* *z_sdlat* *z_gamedir* *ctr_flowervramg_palette.o) .bss.late.*))
+    *(SORT_BY_NAME(EXCLUDE_FILE (*z_asrtext* *z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *z_gogut* *z_loadscreen.o *z_symverdict* *z_smalltext_dr* *z_utstall* *z_sdmigrate* *libswkbd_late.a:* *source/ctr_renderer.o *source/z_itemverdict.o *z_phaseplan* *z_sdlat* *z_gamedir* *ctr_flowervramg_palette.o) .bss.late.*))
     /* packscreen (integrate round 16, after the catch-all, merge order): the setup line it draws. */
     *(.bss.late.packscreen)
     /* symverdict (after packscreen; UNDERTALE only): the table's bits. */
@@ -1301,6 +1338,19 @@ SECTIONS
     *z_frametrace.o(.bss .bss.* COMMON)
     /* utold Continue transition (last, merge order): the original script code index. */
     *(.bss.utoldcontblack_late)
+    /* knightgpu L-A (last, merge order; DELTARUNE New only): the lending state (ctr_renderer.c's end). Named outside
+       .bss.late.* so ctr_renderer.o's own late line above leaves it here. */
+    *(.bss.knightgpu_late)
+    /* utold c112dtm: the pending record's cache (4 B). */
+    *(.bss.utolddtm_late)
+    /* utext (credfix T1, last, merge order; UNDERTALE test builds only, empty in release): UTX_SHADOW's counters. */
+    *(.bss.utext_late)
+    /* usstop (last, merge order): the provoke test's read count (exit trail builds only). */
+    *(.bss.usstop_late)
+    /* asrtext (last, merge order): the optional glyph rule in the loaded pack. */
+    *(.bss.late.asrtext)
+    /* flowend burst (last, merge order): the step's play count and pending-voice bits (8 B, UNDERTALE only). */
+    *(.bss.flowburst_late)
     /* 3dsxtool refuses a segment whose size isn't a multiple of 4 ("The segments is not word-aligned!"), and this
        block ends the RW segment: late statics of odd sizes (bools) would end it off a word. */
     . = ALIGN(4);

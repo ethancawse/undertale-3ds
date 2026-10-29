@@ -122,34 +122,63 @@ class PlatformToolchainTests(unittest.TestCase):
                 self.phase, self.code = phase, code
             def write(self, data):
                 if self.phase == "write":
-                    raise OSError(self.code, "fixture")
+                    raise OSError(self.code, "fixture", self.file.name)
                 return self.file.write(data)
             def close(self):
                 self.file.close()
                 if self.phase == "close":
-                    raise OSError(self.code, "fixture")
+                    raise OSError(self.code, "fixture", self.file.name)
         cases = (("mkdir", errno.ENOSPC, "Not enough space"), ("open", errno.EROFS, "Cannot write"),
                  ("write", errno.ENOSPC, "Not enough space"), ("close", errno.EDQUOT, "Not enough space"),
-                 ("replace", errno.EACCES, "Cannot write"), ("write", errno.EIO, "Could not save"))
+                 ("replace", errno.EACCES, "Cannot write"), ("write", errno.EIO, "Could not save"),
+                 ("mkdir", errno.ENOTDIR, "Cannot save the download at this path"),
+                 ("open", errno.ENOENT, "Cannot save the download at this path"),
+                 ("replace", errno.ENAMETOOLONG, "Cannot save the download at this path"))
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "file"
-            for phase, code, message in cases:
+            for platform, phase, code, message in ((p, *c) for p in ("win32", "linux", "darwin") for c in cases):
                 dest.write_bytes(b"previous verified file")
+                error = OSError(code, "fixture", str(dest))
                 if phase in ("open", "write", "close"):
                     def file_open(path, mode="r", **kwargs):
                         if mode != "wb":
                             return real_open(path, mode, **kwargs)
                         if phase == "open":
-                            raise OSError(code, "fixture")
+                            raise error
                         return BrokenFile(path, phase, code)
                     effect = file_open
                     patch = mock.patch.object(toolchain, "open", effect, create=True)
                 else:
                     patch = mock.patch.object(toolchain.os, "makedirs" if phase == "mkdir" else "replace",
-                                              side_effect=OSError(code, "fixture"))
-                with self.subTest(phase=phase, code=code), patch, self.assertRaisesRegex(toolchain.Refused, message):
+                                              side_effect=error)
+                with self.subTest(platform=platform, phase=phase, code=code), patch, \
+                     mock.patch.object(toolchain.sys, "platform", platform), \
+                     self.assertRaisesRegex(toolchain.Refused, message) as caught:
                     toolchain.download("https://example.invalid/file", str(dest), hashlib.sha256(body).hexdigest(),
                                        opener=lambda request, timeout: Response(body), size=len(body))
+                self.assertIn("[Errno %d] fixture" % code, str(caught.exception))
+                self.assertIn(repr(str(dest))[:-1], str(caught.exception))
+                self.assertNotIn("connection", str(caught.exception).lower())
+                self.assertEqual(dest.read_bytes(), b"previous verified file")
+                self.assertFalse(Path(str(dest) + ".part").exists())
+
+    def test_windows_download_errors_without_errno_keep_the_os_cause(self):
+        for code, message in ((39, "Not enough space"), (112, "Not enough space"),
+                              (5, "Cannot write"), (19, "Cannot write"),
+                              (3, "Cannot save the download at this path"),
+                              (123, "Cannot save the download at this path"),
+                              (206, "Cannot save the download at this path")):
+            error = OSError(None, "fixture Windows error %d" % code, "C:/fixture/work/file.part")
+            error.winerror = code
+            with self.subTest(winerror=code), tempfile.TemporaryDirectory() as tmp:
+                dest = Path(tmp) / "file"
+                dest.write_bytes(b"previous verified file")
+                opener = mock.Mock()
+                with mock.patch.object(toolchain, "open", side_effect=error, create=True), \
+                     self.assertRaisesRegex(toolchain.Refused, message) as caught:
+                    toolchain.download("https://example.invalid/file", str(dest), "0"*64, opener=opener)
+                self.assertIn(str(error), str(caught.exception))
+                opener.assert_not_called()
                 self.assertEqual(dest.read_bytes(), b"previous verified file")
                 self.assertFalse(Path(str(dest) + ".part").exists())
 
@@ -702,7 +731,8 @@ class PackagingTests(unittest.TestCase):
                 "root=Path(sys.argv[1]).resolve(); "
                 "sys.path[:0]=[str(root/'tools/release/builder'),str(root/'tools/release'),"
                 "str(root/'tools/aot')]; "
-                "modules=[importlib.import_module(n) for n in json.loads(sys.argv[2])]; "
+                "names=json.loads(sys.argv[2]); "
+                "modules=[importlib.import_module(n) for n in names]; "
                 "assert all(root in Path(m.__file__).resolve().parents for m in modules); "
                 "import pipeline,products; assert pipeline.release_version(str(root)); "
                 "\ntry:\n    pipeline.release_source(root,'undertale')\n"
@@ -746,8 +776,11 @@ class PackagingTests(unittest.TestCase):
                         self.assertIn("This beta builder is unsigned.", opening)
                         self.assertNotIn(".sha256", opening)
                         self.assertNotIn("Check the download", opening)
+                    expected = sorted(name for name, source in dependencies.items()
+                                      if pipeline.source_wanted(source.relative_to(repo).as_posix(), 'undertale'))
+                    self.assertFalse((kit / 'tools/release/builder/chapters.py').exists())
                     result = subprocess.run([sys.executable, "-I", "-c", code, str(kit),
-                                             json.dumps(sorted(dependencies))], cwd=unpacked,
+                                             json.dumps(expected)], cwd=unpacked,
                                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                             stderr=subprocess.STDOUT, text=True, timeout=30)
                     self.assertEqual(result.returncode, 0, result.stdout)
@@ -775,11 +808,17 @@ class PackagingTests(unittest.TestCase):
                     main = next(n for n in names if n.endswith("/builder/builder.py"))
                     self.assertIn(b'FIXED_GAME = "undertale"', tar.extractfile(main).read())
                     self.assertFalse(any("runtime/" in n or n.endswith(".ogg") for n in names))
+                    opening = tar.extractfile(next(n for n in names if n.endswith("/README.md"))).read()
+                    self.assertNotIn(b"delta" + b"tale", opening.lower())
+                    self.assertNotIn(b".sha256", opening)
                     if platform == "macos":
-                        opening = tar.extractfile(next(n for n in names if n.endswith("/README.md"))).read()
                         self.assertIn(Path(start).name.encode("utf-8"), opening)
                         self.assertIn(b'choose "Open Anyway", then "Open".', opening)
                         self.assertNotIn(b".sha256", opening)
+                    else:
+                        self.assertIn(b'`sh ./undertale-3ds-builder.sh`', opening)
+                        self.assertIn(b'python3 python3-tk', opening)
+                        self.assertIn(b'3DS compiler page', opening)
                 self.assertTrue(archive.with_name(archive.name + ".sha256").is_file())
 
     def test_windows_runtime_is_required(self):

@@ -14,6 +14,11 @@
 #include "common.h"
 #include "ctr_display.h"
 #include "ctr_fps_clock.h"
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+#define ARGUI_ROOM_PREFETCH CtrTextures_dtmPrefetch // utold c112dtm: the room load, then rooms.dtm
+#else
+#define ARGUI_ROOM_PREFETCH CtrRoomload_prefetchRoom
+#endif
 #line 16
 #ifndef CTR_SCREENS_SETTINGS_ONLY
 #include "audio_system.h"
@@ -167,7 +172,7 @@ static const char* const arguiAssetNames[5] ARGUI_RO = {
 };
 static const uint8_t arguiMorton[8] ARGUI_RO = { 0, 1, 4, 5, 16, 17, 20, 21 };
 
-void CtrRoomload_prefetchRoom(CtrTextureCache* cache, Runner* runner); // z_roomload.c; it calls __real_
+void CtrRoomload_prefetchRoom(CtrTextureCache* cache, Runner* runner); void CtrTextures_dtmPrefetch(CtrTextureCache* cache, Runner* runner); // z_roomload.c; it calls __real_ (2nd: ctr_textures.c, utold c112dtm)
 void CtrOptmenu_prepareGlyphs(void);
 void __wrap_CtrTextures_prefetchRoom(CtrTextureCache* cache, Runner* runner);
 
@@ -178,7 +183,7 @@ ARGUI_CODE void __wrap_CtrTextures_prefetchRoom(CtrTextureCache* cache, Runner* 
         g.assetIds[i] = (int16_t) shget(runner->assetsByName, arguiAssetNames[i]);
     }
     CtrOptmenu_prepareGlyphs(); // ctr_optmenu.c: the menu's glyphs, from the tiles resident now
-    CtrRoomload_prefetchRoom(cache, runner);
+    ARGUI_ROOM_PREFETCH(cache, runner); // UNDERTALE Old: then rooms.dtm if a record changed (utold c112dtm)
 }
 
 ARGUI_STATIC bool arguiSampleGlyph(uint8_t ch, int32_t gx, int32_t gy) {

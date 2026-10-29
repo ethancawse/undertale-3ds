@@ -596,13 +596,19 @@ def _save_download(action, *args, **kwargs):
     try:
         return action(*args, **kwargs)
     except OSError as exc:
-        if exc.errno in (errno.ENOSPC, errno.EDQUOT):
+        winerror = getattr(exc, "winerror", None)
+        if exc.errno in (errno.ENOSPC, errno.EDQUOT) or winerror in (39, 112):
             message = "Not enough space in the work folder."
-        elif exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+        elif exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS) or winerror in (5, 19):
             message = "Cannot write to the work folder. Check its permissions."
+        elif exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG,
+                           errno.EINVAL, errno.EISDIR) or winerror in (2, 3, 123, 206, 267):
+            message = "Cannot save the download at this path. Check the work folder."
         else:
             message = "Could not save the download. Check the work folder."
-        raise Refused(message) from None
+        # Preserve the OS cause/code and filename; never turn a local I/O failure
+        # into the socket/HTTP message handled by download().
+        raise Refused(message + "\n" + str(exc)) from None
 
 
 def download(url, dest, sha256, opener=urllib.request.urlopen, progress=None, size=None):

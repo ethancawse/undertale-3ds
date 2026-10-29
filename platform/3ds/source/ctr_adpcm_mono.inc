@@ -14,8 +14,9 @@ static struct {
     AdSfxMeta* metas;
     AdSfxPhysical physical[VOICE_COUNT];
     uint64_t ticks, calls, decodedFrames, maxTicks, lastLog;
-    uint32_t cores, gameFrames, installed, ringBytes, ringPeak, ringFailures;
+    uint32_t cores, gameFrames, installed, ringBytes, ringPeak, ringFailures, rawDropped;
     bool coreUnavailable;
+    uint8_t flush, flushLogged; // AD_FLUSH_*: how pieces reach the DSP (pieces.inc adFlush)
 } adSfx MM_BSS;
 static const char msInstalled[] MM_RO = "ADPCM MONO sound %ld: %lu -> %lu B cache; %lu frames, %lu Hz, source ch 2; %.3f ms game-thread admission; no WAV load/copy\n";
 static const char msFallback[] MM_RO = "ADPCM MONO fallback sound %ld: status %d; original PCM path\n";

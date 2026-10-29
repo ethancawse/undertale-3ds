@@ -54,7 +54,7 @@
     {
       "member": "tools/release/sfxpack-versions.json",
       "class": "data-versions",
-      "sha256": "00a91a0fe5a31b4bc89102e2f2406a96773a537e79f50daac0b0d9e2ded3192f",
+      "sha256": "6fcc2cfd814996966dbf813e19830d7ec02e05fa69dfeb27edff671224cc455f",
       "justification": "Sizes and digests of the builder's sound-effect pack per verified player data file; no audio bytes."
     },
     {
@@ -108,7 +108,7 @@
     {
       "member": "engine/src/runner.c",
       "class": "engine-lookups",
-      "sha256": "38add77270221e95fcd4f93cf6749c6e7012438652a5a347501da151f995c1de",
+      "sha256": "960cb8bb5dc05f395b8888b3754c4d8561468b90140fc2aa412fdce23c3a78da",
       "justification": "Object and variable lookup examples explain runner initialization and dispatch.",
       "evidence_sha256": [
         "e21b4a0970f25e43698b263730323baeaa930e9907f1661a433985a117c25dc1"
@@ -135,7 +135,7 @@
     {
       "member": "platform/3ds/source/ctr_benchmark.c",
       "class": "engine-lookups",
-      "sha256": "e152f5bf1deeb75e380fbfab1f3f3b4e17e8e662308f45fca33ccd916e58dacd",
+      "sha256": "4b640cbd5735febe01d89cde222fa43347f4b186f994926f5c0c42711dab7d29",
       "justification": "Room, object and script lookup names select harness setup in player data.",
       "evidence_sha256": [
         "2b5bc4fa300c8eb091e9e80ba7df656563bd895c75a5e7b06f4a4104ea59a29b"
@@ -162,7 +162,7 @@
     {
       "member": "platform/3ds/source/ctr_renderer.c",
       "class": "engine-lookups",
-      "sha256": "7fc0b93d91cddbeff9edeffe6356f31499161c3d82cc079fcee250b81d7ce3a9",
+      "sha256": "1bab18f78ee6f4c267e5daff3e4be29151e048e4d4f995be07b67f4697d038e0",
       "justification": "Shader, object and sprite lookup names select renderer compatibility paths.",
       "evidence_sha256": [
         "b47ae0eeb50b4a01adfe2722ac27cb04c8fa69e3e88b357925af0ed56f2163c2"
@@ -216,7 +216,7 @@
     {
       "member": "tools/release/builder/gui.py",
       "class": "engine-lookups",
-      "sha256": "9bee5e0ac450cc99dea7633945e111cb345b3b6f8ead055c602d3eddf6ecf825",
+      "sha256": "a88493645d4e4316f7bf723a5821dcc801477d96db9986df337911b2e749e4ba",
       "justification": "A sprite lookup extracts the cursor from the players own game.",
       "evidence_sha256": [
         "1b62cafb12b9229024771f28d5dab2c6ebfe350c96bb76639a061bf6de96155d"
@@ -234,7 +234,7 @@
     {
       "member": "platform/3ds/source/ctr_argui.c",
       "class": "engine-lookups",
-      "sha256": "d631a26e6e7984216e10bd60b5109275216a1614e6886d0878c9aedd9122f342",
+      "sha256": "33e77bdda5be205b3e0e6f857eb8c266a5e70fd6759f1b99be1f7de8ab1f44d9",
       "justification": "Sound and sprite names select player-owned assets for the ports menu.",
       "evidence_sha256": [
         "b291957bba88a74d17ab4095454e6e9a3189d316481440f59df566a2938d9439"
@@ -387,7 +387,7 @@
     {
       "member": "platform/3ds/source/ctr_textures.c",
       "class": "engine-symbols",
-      "sha256": "c0ee95d57ab7ba75c618580dfb18ec215688fa0e0a70a41c90e4b8064f12d69e",
+      "sha256": "58b056955e6a27830514fcb30dd2a84736a313a3849801f583c44a03a0f9bf9b",
       "justification": "Reviewed parser limits, format fields, settings or upstream APIs; prefix overlap is not a game asset.",
       "evidence_sha256": [
         "fa3195d59833c0bb17ff059283d9ea5552a7023e68e0cb575a13476296cd56a0"
@@ -441,7 +441,7 @@
     {
       "member": "tools/release/test_texcache.py",
       "class": "gating-hashes",
-      "sha256": "35428d7e3e32b2cbb34b805330d744312f0290155e3ad38fd995aa434b4eb4d8",
+      "sha256": "5d5c6d4bc3f7b28cb197979a17d27411b5c722acc345d7b7d5d55c2a12f57e40",
       "justification": "A known player-data digest tests compile-time cache profile selection with fixture input.",
       "evidence_sha256": [
         "dcf99176f5beeab6da7c76142996000867d039c9fffd11c97f64eb2640957c09"
@@ -536,7 +536,7 @@
     {
       "member": "tools/roomplan/records/undertale-steam-1.08.json",
       "class": "roomplan-record",
-      "sha256": "a4f67501ab7fda21e2225e0ff47f5568edfdb710f561f1884b417da4db5e90ea",
+      "sha256": "1f384634e7f1f76b5f74f723e6d695a65f5ab1137c12d08628e27aaebf6440c3",
       "justification": "Owner-approved hash-gated indices and source rectangles recorded during our own playthroughs.",
       "evidence_sha256": [
         "dcf99176f5beeab6da7c76142996000867d039c9fffd11c97f64eb2640957c09",
@@ -585,7 +585,7 @@
     {
       "member": "engine/src/vm_builtins.c",
       "class": "engine-symbols",
-      "sha256": "3ca89e69cccf20394a9569fec4a2221aa9428454fd3758b276179893d41363fd",
+      "sha256": "b6737493aa425fefbdd53cf3b1d5b3c8057f4d3649a5c7c0d9c1a46466cfce90",
       "justification": "Generic GameMaker room API names and argument placeholders only; game-specific comment examples removed, with no native game bodies remaining.",
       "evidence_sha256": [
         "e4e79ad2fa93fd7259698723d25e590113b4ad6e849a82ee5240fc890c43d313"
@@ -603,7 +603,7 @@
     {
       "member": "engine/src/z_btnprompt.c",
       "class": "engine-lookups",
-      "sha256": "cd86df0a4e367bf856f68970076a5a54a2dc6f49a1abf599d7b937b6fe78f06e",
+      "sha256": "423b11b8344cb7bb59768eda6904e4c669a51932090b7306178c6886e9a38b4d",
       "justification": "The button-sprite API name selects our controller adaptation; original text and words come from private build inputs, with STRG index/FNV matching and retained ELF slots.",
       "evidence_sha256": [
         "4b798f4494300d76eb5ca66259d8ebbdfd048e31216029690970ccc6b972913b"
@@ -684,7 +684,7 @@
     {
       "member": "platform/3ds/source/z_smalltext.c",
       "class": "engine-lookups",
-      "sha256": "1daed6373cfdfa20515e5c667e5ae432018c4c73cf31cb2ed35316d27ae0ee92",
+      "sha256": "c6fd07e21ea585ed9bd2364602aef36408fa9574f35ea689eb41923c3559379a",
       "justification": "The KR label's sprite name finds the frame that Crisp text draws sharp (UNDERTALE only; part of the Smoothing menu's choices). Speech bubbles (bubbleclip; integrate21, approved by the lead 2026-10-27): the text writer object and the four bubble border objects find the writer and the bubble edges so Crisp text stays inside the bubble.",
       "evidence_sha256": [
         "db903e39c5e3b4b4503b85492d4397b9c79fb2534f86197307ffd9a0e012f190"
@@ -736,7 +736,7 @@
     {
       "member": "tools/roomplan/records/undertale-gog-1.08.json",
       "class": "roomplan-record",
-      "sha256": "41067da0985375133374348a3a489609a257d323bd524f226bc359a55f46acfc",
+      "sha256": "5c88c4869d162a559d6cfdb317cc19141840ae5c0f380535e1f9d675af94e282",
       "justification": "Lead-approved GOG hash-gated record, reprojecting our recorded playthrough indices through equal metadata and RGBA.",
       "evidence_sha256": [
         "ea1289ef94f5f714e142d7cb8c4e851dc4326e625c48c21bb9639130497f6b5e",
@@ -789,12 +789,12 @@
       "evidence_sha256": [
         "ec6d5c493df4c8b53e57dd4a2ce27ce563d52ee9ccf95083c9135cec002574aa"
       ],
-      "sha256": "7cfe2ebb3b79e5f8b513b47adba17e3531782cc9ba3d7c6961eebfcb3dee0395"
+      "sha256": "533f358df0b2dbfa4a85bf87d6ce30de16d8a58112fc029c3e884b4b581c004f"
     },
     {
       "member": "tools/aot/stpack.py",
       "class": "engine-lookups",
-      "sha256": "4423960a3fb8ac3c5ac7faeaa3031d4125ff4a57c24783c2959900103dc94430",
+      "sha256": "29139984fb8fc8f268076710da57e4d0049437d0c7a199b1f93644c4ec3efed7",
       "justification": "The KR label's sprite name finds the frame the Crisp text pack derives from the player's own data (UNDERTALE only; the release builder's copy of smalltext_pack.py).",
       "evidence_sha256": [
         "ecdb0a96383efd78bb790d5279000c44bc1a007310aa6f2d31b00d0d992d8237"
@@ -851,7 +851,7 @@
     {
       "member": "engine/src/z_utflames.c",
       "class": "engine-lookups",
-      "sha256": "4a2947c8a505daa3244067a9934b8f0ebf3ec47bf64e13da655032585eccef59",
+      "sha256": "5ee8258fa6941146951d999f3e2b23e5458d6156e0077d068dd76352f0fdfc4d",
       "justification": "A section comment names the room whose snow floor collision_circle's native no-hit answer serves (comment only; UNDERTALE only, utflames circle af36f9670).",
       "evidence_sha256": [
         "5ba75d9207f269aac4ebb0473447bf55bac5fb0cc3bb0ff2f73c41b3923717d3"
@@ -887,7 +887,7 @@
     {
       "member": "platform/3ds/source/z_knightnew_history.c",
       "class": "engine-lookups",
-      "sha256": "05b5c24d6ba9a8f27abd6572a0f0fd1ebf915691129f943e43ea18fa1e7b8202",
+      "sha256": "32bd512d211e1d432626820a04e0053349e8391a417b3bfebedc6a185527b762",
       "justification": "integrate21 2026-10-26 (knightnew GPU-1), approved by the lead 2026-10-27: two object names and one room name find the player's own Knight roar afterimages and its room so the afterimage history copy runs only there (DELTARUNE New only; not packaged with UNDERTALE).",
       "evidence_sha256": [
         "0c7396112965c282728467b2ffeb2b0118f3229afe2666b18639c6fb0775f2a4"
@@ -927,6 +927,15 @@
       "justification": "integrate25 2026-10-28 (freebies writer front): approved by the lead 10-28, functional lookup, as z_dodgefront.c: the set-font script's name is the call the dialogue writer front binds to by name; the other code entries are pinned by bytecode hash and not named; UNDERTALE Old only; not packaged with DELTARUNE.",
       "evidence_sha256": [
         "617adc7e7ac3820cd63f126c8311ebc7f0676226aa8c5cd76045725f5b140c0e"
+      ]
+    },
+    {
+      "member": "tools/aot/stasrtext.py",
+      "class": "engine-lookups",
+      "sha256": "cc9e0719d4ccd6788c299539099b3ce780e28bfdd8ea7586e90d6b904621306e",
+      "justification": "The Crisp text pack's PC-height row rule for Asriel's stacked lines finds the battle's Draw code and the English text lookup in the player's own data (UNDERTALE only; the release builder's copy of the pack helper).",
+      "evidence_sha256": [
+        "81cbebefcb99825084d63e6e36e69a494e61c54a93b2a100e3d5f917891f3c45"
       ]
     }
   ],

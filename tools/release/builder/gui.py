@@ -18,6 +18,7 @@ import struct
 import subprocess
 import sys
 import threading
+import types
 import tkinter as tk
 import tkinter.font as tkfont
 import traceback
@@ -1386,7 +1387,28 @@ def wheel_units(event, platform):
     if number in (4, 5):
         return -3 if number == 4 else 3
     delta = float(getattr(event, "delta", 0) or 0)
+    if getattr(event, '_tk9_wheel', False):
+        return -delta / 40
     return -delta if platform == 'darwin' else -delta / 120 * 3
+
+
+def bind_touchpad(widget, tag, callback):
+    # Tk 8.6 rejects the event name. Tk 9 precise devices never emit MouseWheel.
+    if int(str(widget.tk.call('package', 'require', 'Tk')).split('.')[0]) >= 9:
+        def precise(event):
+            for axis, value in zip(('x', 'y'), touchpad_deltas(event.delta)):
+                if value:
+                    callback(types.SimpleNamespace(**dict(vars(event),
+                        _scroll_axis=axis, _scroll_amount=-value)))
+            return 'break'
+        widget.bind_class(tag, '<TouchpadScroll>', precise)
+
+
+def touchpad_deltas(delta):
+    """Tk TIP 684: two signed 16-bit pixel deltas packed in %D."""
+    value = int(delta)
+    signed = lambda n: (n & 0xffff) - (0x10000 if n & 0x8000 else 0)
+    return signed(value >> 16), signed(value)
 
 
 class DetailsToggle:
@@ -1436,8 +1458,10 @@ class Page:
         self._fit_key = None
         self.canvas.bind("<Configure>", lambda _e: self.fit())
         self._wheel_tag = "BuilderPageWheel" + str(self.canvas)
-        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+        for sequence in ("<MouseWheel>", "<Shift-MouseWheel>", "<Button-4>", "<Button-5>",
+                         "<Shift-Button-4>", "<Shift-Button-5>"):
             self.canvas.bind_class(self._wheel_tag, sequence, app._wheel)
+        bind_touchpad(self.canvas, self._wheel_tag, app._wheel)
 
     def bind_wheel(self):
         # A page-specific tag runs before widget/class bindings, including on aqua.
@@ -1805,10 +1829,12 @@ class ToolchainPage(Page):
         label(self.frame, "Checks for devkitPro and the other build tools." + mode)
         self.tree = ttk.Treeview(self.frame, columns=("ok", "item", "detail"), show="headings", height=3,
                                  selectmode="none")
-        for c, w in (("ok", 70), ("item", 250), ("detail", 260)):
+        for c, w in (("ok", 110), ("item", 250), ("detail", 220)):
             self.tree.heading(c, text={"ok": "", "item": "Item", "detail": "Found"}[c])
             self.tree.column(c, width=w, minwidth=60, stretch=(c == "detail"))
         self.tree.pack(fill="x", pady=(0, 8))
+        self.tree.bind('<<ThemeChanged>>', lambda _e: self.fit_status())
+        self.fit_status()
         self.result = label(self.frame, "")
         self.steps = ttk.Frame(self.frame)
         self.steps.pack(fill="x")
@@ -1826,7 +1852,8 @@ class ToolchainPage(Page):
         button(row, text="Check again", command=self.detect).pack(side="left", padx=(0, 8))
         self.update_btn = button(row, text="Update devkitPro", command=self.update)
         self.update_btn.pack(side="left", padx=(0, 8))
-        button(row, text="Dry run", command=self.show_dry_run).pack(side="left")
+        if app.opts.toolchain_dry_run:
+            button(row, text="Dry run", command=self.show_dry_run).pack(side="left")
         self.log = tk.Text(self.frame, height=6, width=60, wrap="word", font=app.theme.mono_font,
                            bg="#000000", fg="#ffffff", insertbackground="#ffffff",
                            highlightbackground="#ffffff", highlightcolor="#ffffff", highlightthickness=2, bd=0)
@@ -1888,8 +1915,16 @@ class ToolchainPage(Page):
                 box.failed(self.failures[step.key])
             else:
                 box._say(status)
+        self.fit_status()
         self.update_buttons()
         self.app.update_nav()
+
+    def fit_status(self):
+        # Theme/font changes can arrive before detection has populated the rows.
+        font = tkfont.Font(self.tree, font=ttk.Style(self.tree).lookup('Treeview', 'font') or 'TkDefaultFont')
+        labels = ['Installed'] + [self.tree.item(row, 'values')[0] for row in self.tree.get_children()]
+        width = max(110, max(font.measure(text) for text in labels) + 28)
+        self.tree.column('ok', width=width, minwidth=width, stretch=False)
 
     def update_buttons(self):
         busy = self.running_step or self.detecting
@@ -1977,7 +2012,7 @@ class ToolchainPage(Page):
     def auto(self):
         if self.detecting or self.st.tc is None:
             return "wait"
-        if not self.dry_run_shown:
+        if self.app.opts.toolchain_dry_run and not self.dry_run_shown:
             self.show_dry_run()
         return "next" if self.can_next() else ("fail", "toolchain incomplete")
 
@@ -2055,13 +2090,11 @@ class OptionsPage(Page):
             self.st.parts = [p for p, v in self.part_vars.items() if v.get()]
         self.st.openh264 = bool(getattr(self, "h264", None) and self.h264.get())
         p = self.st.product
-        best = sum(p.reference_seconds[x][0] for x in self.st.targets)
         disk = sum(p.disk_mb[x] for x in self.st.targets)
         if self.st.game == 'deltarune' and self.st.folder:
             import chapters
             disk += (chapters.stage_bytes(self.st.folder, self.st.parts) + (1 << 20) - 1) // (1 << 20)
-        self.estimate.config(text="About %d-%d min, %d MB in %s." % (
-            max(1, round(best / 60)), max(5, round(best * 8 / 60)), disk + 30, self.app.opts.work))
+        self.estimate.config(text="About %d MB in %s." % (disk + 30, self.app.opts.work))
         if self.st.game == 'deltarune':
             import chapters
             self.estimate.config(text=self.estimate.cget('text') + '\nSelected chapters: ' +
@@ -2103,6 +2136,7 @@ class BuildPage(Page):
         self.bar = progressbar(self.frame, mode="determinate", length=560, maximum=100)
         self.bar.pack(fill="x", pady=(0, 6))
         self.eta = label(self.frame, "")
+        self.packaging = progressbar(self.frame, mode='indeterminate', length=180)
         self.status = label(self.frame, "")
         row = ttk.Frame(self.frame)
         row.pack(anchor="w", pady=(0, 6))
@@ -2183,11 +2217,20 @@ class BuildPage(Page):
         within = p.completion()
         overall = share * self.target_index + share * within / 100
         self.bar.config(value=overall)
-        self.eta.config(text="%s - %d%% - %s" % (pipeline.STAGES[p.stage], int(round(overall)),
-                                                pipeline.format_eta(p.estimate())))
+        self.eta.config(text="%s - %d%%" % (p.activity, int(round(overall))))
+        # makerom exposes no intra-file percentage. Keep the overall bar honest
+        # and animate activity while it packages rather than inventing an ETA.
+        if p.activity == 'Making .cia' and not self.packaging.winfo_manager():
+            self.packaging.pack(fill='x', pady=(0, 6), after=self.eta)
+            self.packaging.start(16)
+        elif p.activity != 'Making .cia':
+            self.packaging.stop()
+            self.packaging.pack_forget()
 
     def finished(self, err):
         self.running = False
+        self.packaging.stop()
+        self.packaging.pack_forget()
         if err is None:
             self.st.build_ok = True
             self.intro.config(text="Build complete.")
@@ -2246,7 +2289,7 @@ class DeliverPage(Page):
                     command=self.mode).pack(anchor="w")
         radiobutton(self.frame, text="Install over Wi-Fi", value="wifi",
                     variable=self.how, command=self.mode).pack(anchor="w")
-        radiobutton(self.frame, text="Save as files on PC", value="files",
+        radiobutton(self.frame, text="Save to a folder on this computer", value="files",
                     variable=self.how, command=self.mode).pack(anchor="w", pady=(0, 8))
         self.sd = ttk.Frame(self.frame)
         row = ttk.Frame(self.sd)
@@ -2334,7 +2377,7 @@ class DeliverPage(Page):
         self.panels[how].pack(anchor="w", fill="x")
         if how == "files":
             ready = self.saved_key == self.files_key() and bool(self.st.files_root)
-            self.steps.config(text=("Output: %s\nCopy this folder's contents to your SD card." % self.st.files_root
+            self.steps.config(text=("Output: %s\nRead READ-ME-FIRST.txt before copying. Use Copy to SD card for a safe merge." % self.st.files_root
                                     if ready else "Save the build, game files and prepared textures in one folder."))
             self.open_files.state(["!disabled"] if ready else ["disabled"])
             self.st.sd_root = None
@@ -2366,7 +2409,7 @@ class DeliverPage(Page):
                 self.set_status("files", str(res))
             else:
                 self.saved_key = key
-                self.st.files_root = res.root
+                self.st.files_root = getattr(res, 'folder', None) or res.root
                 self.show_progress("files", 100)
                 self.set_status("files", "Saved %d files (%.1f MB).\n%s" %
                                 (res.files, res.bytes / 1e6, res.textures.message))
@@ -2414,16 +2457,52 @@ class DeliverPage(Page):
         root = self.target_root()
         if not root:
             return
-        try:
-            items = deliver.plan_sd_copy(root, self.st.product, self.st.artifacts, self.st.folder, self.st.parts)
-        except deliver.DeliverError as e:
-            self.set_status("sd", str(e))
-            return
-        except OSError as e:
-            self.set_status("sd", "Could not read SD card (%s).\nCheck the card and try again." % e)
-            return
         self.copying = True
         self.go.state(["disabled"])
+        self.set_status('sd', 'Preparing a list of files. Nothing is being copied to the card yet.')
+        self.app.update_nav()
+        def prepared(result):
+            if isinstance(result, Exception):
+                self.copying = False
+                self.go.state(['!disabled'])
+                self.set_status('sd', str(result))
+                self.app.update_nav()
+                return
+            items, tool, text = result
+            # Autopilot only writes to its explicit disposable card fixture.
+            if self.app.opts.autopilot is not None:
+                self._copy_approved(root, items, tool)
+                return
+            window = tk.Toplevel(self.frame)
+            window.title('Files for this SD card')
+            window.geometry('780x520')
+            label(window, 'Check the files below, then choose Copy to card.')
+            box = tk.Text(window, wrap='none', height=18)
+            scroll = ttk.Scrollbar(window, command=box.yview)
+            box.configure(yscrollcommand=scroll.set)
+            scroll.pack(side='right', fill='y')
+            box.pack(fill='both', expand=True)
+            box.insert('1.0', str(root) + '\n\n' + text)
+            box.configure(state='disabled')
+            self.app.bind_scroll_area(box)
+            def dismiss():
+                window.destroy()
+                self.copying = False
+                self.go.state(['!disabled'])
+                self.set_status('sd', 'Copy cancelled. Nothing was copied.')
+                self.app.update_nav()
+            def approve():
+                window.destroy()
+                self._copy_approved(root, items, tool)
+            button(window, text='Copy to card', command=approve, primary=True).pack(side='right', padx=8, pady=8)
+            button(window, text='Cancel', command=dismiss).pack(side='right', padx=8, pady=8)
+            window.protocol('WM_DELETE_WINDOW', dismiss)
+            window.transient(self.app.root)
+            window.grab_set()
+        self.app.work(lambda: deliver.sd_preview(root, self.st.product, self.st.artifacts,
+                      self.st.folder, self.app.opts.work, self.st.parts), prepared, errors=True)
+
+    def _copy_approved(self, root, items, tool):
         self.set_status("sd", "Copying...")
         self.show_progress("sd", 0)
         self.app.update_nav()
@@ -2447,7 +2526,7 @@ class DeliverPage(Page):
                 self.st.delivered = True
             self.app.update_nav()
         self.app.work(lambda: deliver.copy_with_textures(root, items, self.st.product, self.st.folder,
-                                                         self.app.opts.work, self.st.parts, prog), after, errors=True)
+                                                         self.app.opts.work, self.st.parts, prog, tool=tool), after, errors=True)
 
     def send(self):
         if self.copying:
@@ -2503,11 +2582,12 @@ class DeliverPage(Page):
         self.app.call(self.set_status, 'wifi', text)
         self.app.call(self.show_progress, 'wifi', 100*event.done/max(1, event.total))
 
-    def find_console(self):
+    def find_console(self, permission_retry=False):
         if self.copying:
             return
         self.wifi_busy(True)
-        self.set_status('wifi', 'Looking for a 3DS running ftpd on your network...')
+        self.set_status('wifi', 'Looking for a 3DS running ftpd on your network...' +
+            ('\nIf macOS asks for Local Network access, choose Allow.' if sys.platform == 'darwin' else ''))
         def job():
             networks = ftp_delivery.local_networks()
             return ftp_delivery.find_consoles(networks, allowed=networks, cancelled=self.cancelled.is_set,
@@ -2517,12 +2597,23 @@ class DeliverPage(Page):
             if isinstance(found, Exception):
                 self.set_status('wifi', ftp_delivery.error_text(found, connecting=True))
             elif not found:
-                self.set_status('wifi', 'No 3DS found. Check that ftpd is open and the 3DS is on the same network as this PC, or type the address ftpd shows.')
+                self.set_status('wifi', 'No 3DS found. Check that ftpd is open and the 3DS is on the same network as this PC, or type the address ftpd shows.' +
+                    ('\nLocal Network access may be off. Open System Settings > Privacy & Security > Local Network and allow this builder, then try Find my 3DS again.' if sys.platform == 'darwin' else ''))
+                # TCP cannot distinguish a privacy refusal from an unreachable
+                # console. Explain that uncertainty, then offer one explicit
+                # retry after the player has allowed access, never a scan loop.
+                if sys.platform == 'darwin' and not permission_retry:
+                    if messagebox.askretrycancel('Find my 3DS',
+                            'No 3DS answered. If Local Network access was blocked, allow this builder in System Settings > Privacy & Security > Local Network, then choose Retry.',
+                            parent=self.app.root):
+                        self.find_console(permission_retry=True)
             else:
                 self.addr.config(values=found)
                 self.addr.set(found[0])
                 self.set_status('wifi', 'Found a 3DS. Check that the address matches the one ftpd shows, then click Send.')
-        self.app.work(job, after, errors=True)
+        # Paint and finish the button-release event before discovery can trigger
+        # macOS's Local Network prompt. Never update Tk from a probe thread.
+        self.app.root.after_idle(lambda: self.app.work(job, after, errors=True))
 
     def can_next(self):
         return self.st.delivered and not self.copying
@@ -2858,6 +2949,7 @@ class DonePage(Page):
         text.pack(fill='both', expand=True)
         text.insert('1.0', plan.preview(selected))
         text.config(state='disabled')
+        self.app.bind_scroll_area(text)
         def remove():
             window.destroy()
             self.cleaning = True
@@ -2948,7 +3040,8 @@ class App:
         self.next_btn.pack(side="right")
         self.back_btn.pack(side="right", padx=8)
         self.theme.apply()
-        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+        for seq in ("<MouseWheel>", "<Shift-MouseWheel>", "<Button-4>", "<Button-5>",
+                    "<Shift-Button-4>", "<Shift-Button-5>"):
             root.bind_all(seq, self._wheel, add="+")
         # Mouse focus must not move a pressed button before its release event.
         root.bind_all("<KeyRelease-Tab>", self._focused, add="+")
@@ -2967,24 +3060,62 @@ class App:
 
     def _wheel(self, event):
         """The mouse wheel scrolls a page that is taller than the window, except over a widget that scrolls itself."""
-        try:
-            widget = self.root.winfo_containing(event.x_root, event.y_root)
-        except (tk.TclError, KeyError):
-            return
+        # Aqua/Tk 9 may omit useful root pointer coordinates for a trackpad
+        # event. Its receiving widget is authoritative; hit testing is fallback.
+        widget = event.widget
+        if not isinstance(widget, tk.Misc):
+            try:
+                widget = self.root.winfo_containing(event.x_root, event.y_root)
+            except (tk.TclError, KeyError):
+                return
         page = self.page
-        if widget is None or not page.scrollable() or not str(widget).startswith(str(page.box) + "."):
+        if widget is None or not str(widget).startswith(str(page.box) + "."):
             return
-        if isinstance(widget, (tk.Text, ttk.Treeview, tk.Listbox, ttk.Combobox)):
+        if isinstance(widget, (ttk.Scrollbar, ttk.Combobox)):
             return
-        if isinstance(widget, ttk.Scrollbar):
-            return
-        amount = wheel_units(event, sys.platform)
-        page._wheel_remainder = getattr(page, '_wheel_remainder', 0.0) + amount
-        units = int(page._wheel_remainder)
-        page._wheel_remainder -= units
+        axis = getattr(event, '_scroll_axis', 'x' if getattr(event, 'state', 0) & 1 else 'y')
+        target = widget if isinstance(widget, (tk.Text, ttk.Treeview, tk.Listbox)) else page.canvas
+        view = getattr(target, axis + 'view')
+        if view() == (0.0, 1.0):
+            target = page.canvas
+        if target is page.canvas and (axis == 'x' or not page.scrollable()):
+            return 'break'
+        if hasattr(event, '_scroll_amount'):
+            # Canvas units are 20 pixels; native text/table units are rows.
+            amount = event._scroll_amount / (20 if target is page.canvas else 16)
+        else:
+            event._tk9_wheel = int(str(self.root.tk.call('package', 'require', 'Tk')).split('.')[0]) >= 9
+            amount = wheel_units(event, sys.platform)
+        key = '_wheel_remainder_' + axis
+        remainder = getattr(target, key, 0.0) + amount
+        units = int(remainder)
+        setattr(target, key, remainder - units)
         if units:
-            page.canvas.yview_scroll(units, "units")
+            getattr(target, axis + 'view_scroll')(units, "units")
         return "break"
+
+    def bind_scroll_area(self, widget):
+        """Dialogs have no Page; give their text areas the same precise scrolling."""
+        tag = 'BuilderScrollArea' + str(widget)
+        def scroll(event):
+            axis = getattr(event, '_scroll_axis', 'x' if getattr(event, 'state', 0) & 1 else 'y')
+            if hasattr(event, '_scroll_amount'):
+                amount = event._scroll_amount / 16
+            else:
+                event._tk9_wheel = int(str(widget.tk.call('package', 'require', 'Tk')).split('.')[0]) >= 9
+                amount = wheel_units(event, sys.platform)
+            key = '_wheel_remainder_' + axis
+            remainder = getattr(widget, key, 0.0) + amount
+            units = int(remainder)
+            setattr(widget, key, remainder - units)
+            if units:
+                getattr(widget, axis + 'view_scroll')(units, 'units')
+            return 'break'
+        for seq in ('<MouseWheel>', '<Shift-MouseWheel>', '<Button-4>', '<Button-5>',
+                    '<Shift-Button-4>', '<Shift-Button-5>'):
+            widget.bind_class(tag, seq, scroll)
+        bind_touchpad(widget, tag, scroll)
+        widget.bindtags((tag,) + widget.bindtags())
 
     def _focused(self, event):
         widget = event.widget

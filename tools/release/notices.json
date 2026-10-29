@@ -309,7 +309,8 @@
       "name": "Cisco OpenH264 2.6.0 (optional video decoder)",
       "license": "BSD-2-Clause",
       "paths": [
-        "tools/deps/openh264/"
+        "tools/deps/openh264/",
+        "tools/release/licenses/openh264-LICENSE"
       ],
       "provenance": "https://raw.githubusercontent.com/cisco/openh264/v2.6.0/LICENSE",
       "texts": [

@@ -23,7 +23,6 @@ import time
 import products
 import toolchain
 import home_art
-import chapters
 import sfx_encoder
 from processes import hidden_options
 
@@ -108,10 +107,22 @@ def source_wanted(relative, game=None):
     if relative.replace("\\", "/") == "tools/release/builder/undertale-3ds-builder.cmd":
         return False  # Packages have one game-specific launcher at their root.
     parts = relative.replace("\\", "/").split("/")
+    game_only = {
+        'tools/release/sfxpack-versions.json': 'undertale',
+        'tools/release/music-versions.json': 'undertale',
+        'tools/release/manifest-ut.txt': 'undertale',
+        'tools/release/builder/chapters.py': 'deltarune',
+        'tools/release/builder/audio-deltarune.json': 'deltarune',
+        'engine/src/runner_tile_plan.inc': 'undertale',
+    }
+    if game is not None and '/'.join(parts) in game_only and game_only['/'.join(parts)] != game:
+        return False
     if any(p in SKIP_DIRS or p == ".github" for p in parts) or not _wanted(parts[-1]):
         return False
     if parts[:2] == ["engine", "src"]:
         if len(parts) == 3:
+            if parts[-1].startswith('utold_tile_') and game == 'deltarune':
+                return False
             # simplefix's board-grid front (CMake compiles it for DELTARUNE New only; Policy E).
             if parts[-1] == "z_boardgrid.c":
                 return game != "undertale"
@@ -140,7 +151,7 @@ def source_wanted(relative, game=None):
         return len(parts) == 3 and (parts[-1] in (
             "builtin_audit.py", "btnprompt.py", "corpus.py", "data_versions.py", "escape.py", "fontverdict.py",
             "gmlaot.py", "itemverdict.py", "prepare.py", "aot_select.py", "typed.py", "loadscreen_art.py", "late_numeric.py",
-            "symverdict.py", "stglyphs.py", "stpack.py", "credits.py")
+            "symverdict.py", "stglyphs.py", "stpack.py", "stasrtext.py", "credits.py")
             or (parts[-1] in ("pixgrid.py", "btnprompt_build.py", "stmenu.py") and game != "deltarune")
             or (parts[-1] in ("gog_smart.py", "gog-smart-1.08.json") and game != "deltarune")
             # offkill.py: the early destroy's entries (build.sh runs it; UNDERTALE only).
@@ -157,7 +168,14 @@ def source_wanted(relative, game=None):
     if parts[:3] == ["tools", "deps", "openh264"]:
         # DELTARUNE's intro video decoder; build.sh never builds it for UNDERTALE.
         return game != "undertale"
+    if parts[:2] == ['tools', 'audio']:
+        # The stage's optional ADPCM staging driver is shared by both games.
+        return len(parts) == 3 and (parts[-1] in (
+            'stage.py', 'prepare.py', 'mono_sfx.py', 'convert.py', 'dspadpcm.py', 'dspadpcm.c', 'FORMAT.md')
+            or parts[-1] == 'sfxpack.py' and game != 'deltarune')
     if parts[:2] == ["tools", "roomplan"]:
+        if parts[2:] == ['build_sfxplan.py']:
+            return game != 'deltarune'
         # The room plan's build step (build.sh runs build_plan.py) and this game's committed records.
         # codeclose.py: build_plan.py imports it (UNDERTALE's in-play code closure; codeclose).
         # records/sounds/: the sound plan records (build_sfxplan.py, UNDERTALE).
@@ -169,7 +187,7 @@ def source_wanted(relative, game=None):
         # New DELTARUNE builds derive tracks.dtp from these reviewed records.
         if parts[2] == "tracks" and len(parts) == 4:
             return parts[-1] == "deltarune.json" and game != "undertale"
-        if len(parts) == 3 and parts[-1] == "build_tracks.py":
+        if len(parts) == 3 and parts[-1] in ("build_tracks.py", "build_phases.py"):
             return game != "undertale"
         # build_flowcode.py: build.sh's flowcode step (flowfull's chapter-5 code plan, DELTARUNE New, default off).
         if len(parts) == 3 and parts[-1] == "build_flowcode.py":
@@ -178,6 +196,12 @@ def source_wanted(relative, game=None):
                                                  "records.py",
                                                  "source_plan.py")
     if parts[:2] == ["platform", "3ds"]:
+        if game == 'undertale' and (parts[2:] in (
+                ['source', 'z_builderx_new.c'], ['source', 'z_builderx_chapters.c'], ['source', 'z_phaseplan.c'])
+                or len(parts) == 4 and parts[2] == 'hotpin' and parts[-1].startswith('deltarune-')):
+            return False
+        if game == 'deltarune' and (parts[-1].startswith('utold_tile_') or parts[-1] == 'z_utold_tile_assets.c'):
+            return False
         if parts == ["platform", "3ds", "source", "z_builderx_old.c"] and game == "undertale":
             return False
         if parts[2:] == ["source", "z_gogut.c"]:
@@ -213,6 +237,12 @@ def source_wanted(relative, game=None):
         return len(parts) == 3 or (parts[2] in ("aot", "bench", "cold", "cia", "source", "vendor", "hotpin")
                                    and "profiles" not in parts)
     return True
+
+
+def source_directories(game):
+    """Whole source folders belonging to this game, including curated exports."""
+    omitted = {'tools/deps/openh264'} if game == 'undertale' else set()
+    return tuple(path for path in SOURCE_DIRS if path not in omitted)
 
 
 def mirror_source(src_root, dest_root, game=None):
@@ -269,6 +299,8 @@ def mirror_source(src_root, dest_root, game=None):
                         os.remove(os.path.join(dst, r))
                         removed += 1
     for rel in SOURCE_FILES:
+        if not source_wanted(rel, game):
+            continue
         s = os.path.join(src_root, rel)
         if os.path.isfile(s):
             d = os.path.join(dest_root, rel)
@@ -279,7 +311,7 @@ def mirror_source(src_root, dest_root, game=None):
 def source_payload(root, game):
     """The kit's build inputs, including its builder; excludes launchers, host binaries and the descriptor."""
     root = Path(root)
-    paths = set(SOURCE_FILES)
+    paths = {rel for rel in SOURCE_FILES if source_wanted(rel, game)}
     for directory in SOURCE_DIRS + ('tools/release/builder',):
         base = root / directory
         for p in base.rglob('*'):
@@ -292,6 +324,7 @@ def source_payload(root, game):
     # These modules participate in the build but live outside the mirrored source folders.
     paths.update(('tools/release/release_contract.py', 'tools/release/verify_game.py',
                   'tools/release/music-versions.json'))
+    paths = {rel for rel in paths if source_wanted(rel, game)}
     for rel in paths:
         if (root / rel).is_symlink():
             raise ValueError('Source contains a symlink: ' + rel)
@@ -389,6 +422,7 @@ class Progress:
         self.aot_up_to_date = False
         self.warnings = 0
         self.outputs = []
+        self.activity = STAGES[0]
 
     def feed(self, line):
         t = self.clock()
@@ -425,6 +459,9 @@ class Progress:
                     self.outputs.append(s[6:])
         if ": warning:" in s:
             self.warnings += 1
+        self.activity = ('Making .cia' if 'Building CIA' in s else
+                         'Making .3dsx' if 'Creating 3DSX' in s else
+                         self.activity if self.stage == 3 and not s.startswith('built ') else STAGES[self.stage])
 
     def speed_factor(self):
         if self.aot_seconds and self.ref_aot and not self.aot_up_to_date:
@@ -498,7 +535,7 @@ class SupportLogFilter:
                 if line.strip():
                     continue
                 self.in_saves = False
-            if line.startswith("AOT:   ") or "gml_" in line:
+            if line.startswith("AOT:   ") or "gml_" in line or re.match(r'^\s*SKIP\s+\d+\s', line):
                 out.append("[line removed: game identifiers]")
                 continue
             # Keep artifact hashes even when a CLI puts one after a private output path.
@@ -655,6 +692,7 @@ class Build:
 
     def prepare(self):
         if self.product.key == 'deltarune':
+            import chapters
             try:
                 self.parts = chapters.runtime_selection(self.data_dir, self.parts, self.target)
             except (OSError, ValueError) as exc:
@@ -677,6 +715,8 @@ class Build:
         return version, copied, removed
 
     def run(self):
+        if self.product.key == 'deltarune':
+            import chapters
         t0 = time.monotonic()
         version, copied, removed = self.prepare()
         # A macOS copy's game.ios is staged as data.win (products.aot_data_dir); a Windows copy is used where it is.
@@ -770,7 +810,7 @@ class Build:
         except BuildFailed as e:
             raise BuildFailed(str(e), self.log_path)
         arts = self.collect()
-        # The Old model alone reads the pack; building both runs this step once.
+        # Only the Old model runtime reads the pack. Building both models invokes this once.
         if self.product.key == 'undertale' and self.target == 'o3ds':
             try:
                 pack = self.sfx_builder(self, data_dir)

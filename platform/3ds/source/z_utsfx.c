@@ -89,17 +89,17 @@ typedef enum {
 
 // ===[ The file ]===
 
-UTSFX_TEXT static uint32_t utsfxFnv1a(const uint8_t* data, size_t size) {
-    uint32_t hash = 2166136261u;
-    for (size_t i = 0; size > i; i++) hash = (hash ^ data[i]) * 16777619u;
-    return hash;
-}
+#ifndef UTSFX_HOST_TEST // z_roomplan.c's RoomPlan_fnv1a, byte-identical (freebytes); the host test links no z_roomplan.c
+uint32_t RoomPlan_fnv1a(const uint8_t* data, size_t size); static inline uint32_t utsfxFnv1a(const uint8_t* d, size_t n) { return RoomPlan_fnv1a(d, n); }
+#else
+UTSFX_TEXT static uint32_t utsfxFnv1a(const uint8_t* data, size_t size) { uint32_t hash = 2166136261u; for (size_t i = 0; size > i; i++) hash = (hash ^ data[i]) * 16777619u; return hash; }
+#endif
 
-UTSFX_TEXT static int utsfxNibble(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    return -1;
-}
+#ifndef UTSFX_HOST_TEST // z_roomplan.c's (RoomPlan_hexNibble), byte-identical (freebytes)
+int RoomPlan_hexNibble(char c); static inline int utsfxNibble(char c) { return RoomPlan_hexNibble(c); }
+#else
+UTSFX_TEXT static int utsfxNibble(char c) { if (c >= '0' && c <= '9') return c - '0'; if (c >= 'a' && c <= 'f') return c - 'a' + 10; return -1; }
+#endif
 
 // Checks a plan against the running data.win. digest: the boot check's lowercase hex SHA-256.
 UTSFX_TEXT UtSfxStatus UtSfx_check(const uint8_t* data, size_t size, const char* digest, uint32_t soundCount, uint32_t roomCount) {

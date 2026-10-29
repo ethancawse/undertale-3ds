@@ -42,10 +42,9 @@ RValue UtFlames_wfallDraw(VMContext* ctx, uint32_t k, AotFn generated, const int
 // Tracing and stress builds test the generated code itself.
 RValue UtFlames_wfallDraw(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }
 #else
-static RValue* utfFindF(Instance* inst, int32_t varID) UTF_LATE_F;
-static RValue* utfFindF(Instance* inst, int32_t varID) {
-    return IntRValueHashMap_findSlot(&inst->selfVars, varID);
-}
+#define utfFindF UtFlames_slot // z_utflames.c's IntRValueHashMap_findSlot copy: one for every UNDERTALE late file
+RValue* utfFindF(Instance* inst, int32_t varID); // (freebytes: each file had its own byte-identical 108 B copy)
+#line 49
 
 // The variable a Push.v or Pop.v.v operand names (its index in the low 27 bits, as vm.c reads it).
 // gmlaot only emits operands whose index is below the VARI count.

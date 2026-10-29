@@ -637,7 +637,8 @@ class DataVersion(unittest.TestCase):
             self.assertIn("Version check prepared: 1 file(s) written", res.message)
             self.assertEqual(read(self.card_file(fx)), self.expected(fx))
             _, _, _, res = deliver.copy_with_textures(fx.sd, [], UT, fx.game, fx.work, textures=False)
-            self.assertIn("1 already up to date", res.message)
+            # Whole-set SD transactions verify receipts in the fresh staged layout before publication.
+            self.assertIn("1 file(s) written", res.message)
             os.remove(self.card_file(fx))
             deliver.copy_with_textures(fx.sd, [], UT, fx.game, fx.work, textures=False, data_version=False)
             self.assertFalse(os.path.exists(self.card_file(fx)))

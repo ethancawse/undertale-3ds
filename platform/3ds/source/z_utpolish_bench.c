@@ -1,7 +1,7 @@
-// A log line for each bench frame over two vblanks (utpolish).
+// A log line for each late bench frame (utpolish; slowlog threshold fix).
 //
 // A scene's result line gives its worst frame and 1% low, not which frames those were or what they spent. While a
-// test runs, each frame whose interval is over 33.4 ms (two vblanks at 59.83 Hz are 33.43 ms) gets a line: its game
+// test runs, intervals >= 41.8 ms (2.5 vblanks; separates two from three) get a line. The legacy prefix stays for parsers:
 // frame, interval, Step, Draw and GPU time, texture loads, and whether it changed room:
 //
 //     Frame over 33.4 ms: frame <f>: <ms> ms, step <s>, draw <d>, gpu <g>, textures <n>/<t> ms[, room changed] in <room>
@@ -24,7 +24,7 @@
 #define SLOW_LATE __attribute__((noinline, section(".text.late.utpolish")))
 #define SLOW_BSS __attribute__((section(".bss.late.utpolish")))
 #define SLOW_RODATA __attribute__((section(".rodata.late.utpolish")))
-#define SLOW_FRAME_MS 33.4
+#define SLOW_FRAME_MS 41.8
 #define SLOW_ROOM_LINES 16
 
 static UtSlowFrame slowFrame SLOW_BSS;
@@ -52,7 +52,7 @@ CtrBenchFrame SLOW_LATE CtrBench_beginFrameTimed(u32 down, double frameMs) {
         return frame;
     }
     // frameMs is the interval of the frame before this one.
-    if (slowFrame.valid && frameMs > SLOW_FRAME_MS) {
+    if (slowFrame.valid && frameMs >= SLOW_FRAME_MS) {
         if (slowFrame.linesRoom != slowFrame.room) {
             slowFrame.linesRoom = slowFrame.room;
             slowFrame.lines = 0;

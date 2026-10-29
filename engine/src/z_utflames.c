@@ -72,9 +72,9 @@ RValue UtFlames_sidedStep(VMContext* ctx, uint32_t k, AotFn generated, const int
 RValue UtFlames_emberStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }
 void UtFlames_registerCircle(VMContext* ctx) { UtKill_registerAll(ctx); }
 #else
-// The helpers' inline bodies once each, out of the bodies' way.
-static RValue* utfSlot(Instance* inst, int32_t varID) UTF_LATE;
-static RValue* utfSlot(Instance* inst, int32_t varID) {
+#define utfSlot UtFlames_slot // the helpers' inline bodies once each, out of the bodies' way; this one for every UT late file
+RValue* utfSlot(Instance* inst, int32_t varID) UTF_LATE;
+RValue* utfSlot(Instance* inst, int32_t varID) {
     return IntRValueHashMap_findSlot(&inst->selfVars, varID);
 }
 

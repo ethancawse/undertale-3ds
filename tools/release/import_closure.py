@@ -15,19 +15,31 @@ import sys
 
 DRIVERS = ('platform/3ds/build.sh', 'platform/3ds/CMakeLists.txt', 'tools/texprep/build.sh')
 ENTRY_POINTS = ('tools/release/builder/builder.py', 'tools/release/builder_platform_probe.py',
-                'tools/release/package_builder.py', 'tools/release/check_release.py')
+                'tools/release/package_builder.py', 'tools/release/check_release.py', 'tools/audio/sfxpack.py')
 OPTIONAL_PACKERS = {'tools/analysis/crispart_pack.py', 'tools/analysis/smalltext_pack.py'}
 GAME_ONLY = {'tools/aot/pixgrid.py': 'undertale', 'tools/aot/btnprompt_build.py': 'undertale',
-             'tools/aot/loadscreen_art.py': 'deltarune', 'tools/aot/chapter_manifest.py': 'deltarune',
+             'tools/aot/chapter_manifest.py': 'deltarune',
              'tools/roomplan/build_sfxplan.py': 'undertale', 'tools/aot/gog_smart.py': 'undertale',
              # UNDERTALE Old's half-resolution art (build.sh halfart, the builder's products.HALFART setting).
              'tools/analysis/halfart_pack.py': 'undertale',
              # stpack.py and stglyphs.py make both games' glyph packs (DELTARUNE New's Crisp text, sansfont round 3).
-             'tools/roomplan/build_tracks.py': 'deltarune', 'tools/aot/stmenu.py': 'undertale',
+             'tools/roomplan/build_tracks.py': 'deltarune', 'tools/roomplan/build_phases.py': 'deltarune', 'tools/aot/stmenu.py': 'undertale',
              # flowfull's chapter-5 code plan (build.sh flowcode, DELTARUNE New only).
              'tools/roomplan/build_flowcode.py': 'deltarune',
              # offkill's early-destroy entries (build.sh runs it for UNDERTALE only; pipeline.py's source_wanted agrees).
              'tools/aot/offkill.py': 'undertale'}
+GAME_ONLY.update({
+    'tools/audio/' + name: 'undertale' for name in
+    ('sfxpack.py',)})
+GAME_ONLY.update({
+    path: 'undertale' for path in (
+        'engine/src/runner_tile_plan.inc', 'tools/release/sfxpack-versions.json',
+        'tools/release/music-versions.json', 'tools/release/manifest-ut.txt',
+        'engine/src/utold_tile_assets.h', 'engine/src/utold_tile_command.h', 'engine/src/utold_tile_plan.h',
+        'platform/3ds/source/z_utold_tile_assets.c', 'platform/3ds/utold_tile_compile.py',
+        'platform/3ds/utold_tile_elf.py', 'platform/3ds/utold_tile_place.py')})
+GAME_ONLY.update({path: 'deltarune' for path in (
+    'tools/release/builder/chapters.py', 'tools/release/builder/audio-deltarune.json')})
 
 
 class Repository:

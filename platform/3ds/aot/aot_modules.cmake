@@ -135,9 +135,9 @@ add_custom_target(aotm_modules ALL DEPENDS ${CTRPORT_AOT_MODULE_FILES})
 set(AOTM_3DSX "${CTRPORT_3DSX_OUTPUT}")
 add_custom_command(OUTPUT "${AOTM_3DSX}"
     COMMAND "${CTR_3DSXTOOL_EXE}" "$<TARGET_FILE:ctrport>" "${AOTM_3DSX}" "--smdh=${CMAKE_CURRENT_BINARY_DIR}/ctrport.smdh"
-            "--romfs=${CTRPORT_ROMFS_DIR}"
+            "--romfs=${CTRPORT_ROMFS_RAW}"
     DEPENDS ctrport "${CMAKE_CURRENT_BINARY_DIR}/ctrport.smdh" ${CTRPORT_AOT_MODULE_FILES}
-            "${CTRPORT_ROMFS_DIR}/bench_scenes.txt" "${COVERAGE_ROMFS_FILE}"
+            "${CTRPORT_ROMFS_DIR}/bench_scenes.txt" "${COVERAGE_ROMFS_FILE}" "${CTRPORT_ROMFS_RAW}"
     COMMENT "Building 3DSX executable target ctrport_3dsx"
     VERBATIM)
 add_custom_target(ctrport_3dsx ALL DEPENDS "${AOTM_3DSX}")

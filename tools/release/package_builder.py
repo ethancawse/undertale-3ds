@@ -5,6 +5,8 @@
 
 Windows also needs --runtime with a prepared python.org embeddable runtime and matching Tcl/Tk.
 --dsp-library FILE adds the pinned Windows x64 sound encoder to UNDERTALE binary ZIPs only.
+macOS: --mac-runtime-arm64, --mac-runtime-x86_64 and --mac-licences produce one .app ZIP
+with pinned Python/Tk. The legacy script-only tar remains for prior rehearsals.
 --texprep FILE adds the platform's texprep binary (texture preparation on the PC, builder/texcache.py) after checking
 it against its pinned size and SHA-256; without it the package's builder leaves the textures to the console (or, on
 Linux and macOS, builds texprep when a compiler is present).
@@ -30,7 +32,8 @@ EXTRA_FILES = ("tools/release/verify_game.py", "tools/release/release_contract.p
                "tools/release/music-versions.json", "tools/release/test_builder.py",
                "tools/release/test_builder_platforms.py", "tools/release/builder_platform_probe.py",
                "tools/release/package_builder.py", "tools/release/test_builder_native_data.py",
-               "tools/release/test_texcache.py")
+               "tools/release/test_texcache.py", "tools/release/macos_bundle.py",
+               "tools/release/macos_runtime_check.py")
 DIRECTORIES = pipeline.SOURCE_DIRS + ("tools/release/builder",)
 
 
@@ -49,6 +52,12 @@ def opening_instructions(game, platform=None):
         lines.append('Mac: Unpack the download, then open %s-3ds-builder.command. '
                      'If macOS blocks it, open System Settings > Privacy & Security, '
                      'choose "Open Anyway", then "Open".' % game)
+    if platform in (None, "linux"):
+        lines.append('Linux: Install Python 3 with Tk, unpack the download, then run '
+                     '`sh ./%s-3ds-builder.sh` in its folder.' % game)
+        lines.append('On Debian or Ubuntu, install Python and Tk with '
+                     '`sudo apt-get update && sudo apt-get install python3 python3-tk`.')
+        lines.append("The builder's 3DS compiler page installs the remaining tools.")
     return "\n\n".join(lines) + "\n"
 
 
@@ -73,11 +82,13 @@ def launcher(game, platform):
 def inputs(root, game, runtime=None):
     result = {}
     for rel in pipeline.SOURCE_FILES + EXTRA_FILES:
+        if not pipeline.source_wanted(rel, game):
+            continue
         p = root / rel
         if not p.is_file():
             raise ValueError("Incomplete curated export: missing " + rel)
         result[rel] = p.read_bytes()
-    for rel in DIRECTORIES:
+    for rel in pipeline.source_directories(game) + ("tools/release/builder",):
         directory = root / rel
         if not directory.is_dir():
             raise ValueError("Incomplete curated export: missing " + rel)
@@ -125,7 +136,8 @@ def texprep_entry(platform, data):
     return BIN + name, data
 
 
-def package(root, output, game, platform, runtime=None, texprep=None, release_descriptor=None, dsp_library=None):
+def package(root, output, game, platform, runtime=None, texprep=None, release_descriptor=None,
+            mac_runtimes=None, mac_licences=None, dsp_library=None):
     version = pipeline.release_version(str(root))
     if platform == "windows" and runtime is None:
         raise ValueError("Windows needs a prepared embeddable runtime: --runtime DIR")
@@ -152,11 +164,17 @@ def package(root, output, game, platform, runtime=None, texprep=None, release_de
         descriptor = json.loads(Path(release_descriptor).read_text(encoding='utf-8'))
         contract.validate_source(descriptor, game, version, digest)
     files[contract.DESCRIPTOR] = (json.dumps(descriptor, indent=2) + '\n').encode('utf-8')
+    if mac_runtimes is not None:
+        if platform != 'macos' or not mac_licences:
+            raise ValueError('Bundled Mac inputs require --platform macos and --mac-licences')
+        import macos_bundle
+        opening = opening_instructions(game, platform).replace(
+            game + '-3ds-builder.command', game.upper() + ' 3DS Builder.app')
+        return macos_bundle.write_app(files, output, game, version, mac_runtimes, opening, mac_licences)
     suffix = {"windows": ".cmd", "linux": ".sh", "macos": ".command"}[platform]
     start = game + "-3ds-builder" + suffix
     files[start] = launcher(game, platform).encode("utf-8")
-    if platform in ("windows", "macos"):
-        files["README.md"] = opening_instructions(game, platform).encode("utf-8")
+    files["README.md"] = opening_instructions(game, platform).encode("utf-8")
     stem = "%s-3ds-builder-%s-%s" % (game, version, platform)
     output.mkdir(parents=True, exist_ok=True)
     path = output / (stem + (".zip" if platform == "windows" else ".tar.gz"))
@@ -185,13 +203,21 @@ def main():
     p.add_argument("--runtime", type=Path)
     p.add_argument("--texprep", type=Path, help="this platform's texprep binary (checked against its pin)")
     p.add_argument('--dsp-library', type=Path, help='pinned Windows x64 sound encoder DLL (binary kit only)')
+    p.add_argument('--mac-runtime-arm64', type=Path)
+    p.add_argument('--mac-runtime-x86_64', type=Path)
+    p.add_argument('--mac-licences', type=Path)
     p.add_argument('--release-descriptor', type=Path,
                    help='Owner-approved exact public commit and source digest; unset kits cannot build')
     o = p.parse_args()
     try:
+        mac = None
+        if o.mac_runtime_arm64 or o.mac_runtime_x86_64 or o.mac_licences:
+            if not (o.mac_runtime_arm64 and o.mac_runtime_x86_64 and o.mac_licences):
+                raise ValueError('Provide both Mac runtime archives and their licensing directory')
+            mac = dict(arm64=o.mac_runtime_arm64, x86_64=o.mac_runtime_x86_64)
         print(package(o.source.resolve(), o.output.resolve(), o.game, o.platform,
                       o.runtime.resolve() if o.runtime else None, o.texprep.resolve() if o.texprep else None,
-                      o.release_descriptor, o.dsp_library))
+                      o.release_descriptor, mac, o.mac_licences, dsp_library=o.dsp_library))
     except (OSError, ValueError, pipeline.BuildFailed) as e:
         p.error(str(e))
 

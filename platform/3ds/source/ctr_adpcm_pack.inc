@@ -1,11 +1,15 @@
 // UNDERTALE's exact-dual-mono sound effects as DSP-ADPCM, from one pack beside data.win (adpcm-sfx.dtsp).
 //
 // The builder makes the pack from the player's data.win (tools/audio/sfxpack.py): a 128 B header, a table of
-// 24 B rows sorted by sound index, then each sound's DTAD v1 payload (one channel). At audio startup (boot, never
-// a play frame) the game thread opens it once, checks it and keeps it open:
+// 28 B rows sorted by sound index, then each sound's DTAD v1 payload (one channel, whole 32-bit words). At audio
+// startup (boot, never a play frame) the game thread opens it once, checks it and keeps it open:
 //   - the catalog id: the pack format and the mono projection policy this runtime decodes (apCatalog);
 //   - the data.win SHA-256 the builder hashed, against the boot data check's digest of the data.win in use;
 //   - the exact pack size, and every row inside it.
+// Each install then checks its row's first 24 B and the payload bytes it has just read against the row's check
+// (UT-012: a zeroed, stale or damaged payload passes the DTAD block checks and would play silence or noise; c26rev
+// F3: a changed sound ID, offset or length would play another sound's payload); a mismatch plays that one sound
+// from its original PCM, counts "bad checks" and logs the sound (msBad).
 // No timestamps and no receipts, so a pack copied by FTP works. Anything wrong turns the pack off for the session
 // and every sound takes its original PCM path.
 // Planned sounds come in through utsfx: the room change's preload reads the payload on the game thread (the frame
@@ -28,16 +32,17 @@ extern void* __real_malloc(size_t);
 #include "ctr_adpcm_sfx_types.inc"
 
 #define AP_HEADER 128u
-#define AP_ROW 24u
+#define AP_ROW 28u
 #define AP_MAGIC 0x50535444u // "DTSP"
-#define AP_VERSION 1u
+#define AP_VERSION 2u
 
 typedef struct {
     uint16_t sound;
     uint8_t sourceBits, reserved;
     uint32_t offset, bytes, frames, rate, seamMaxStep;
+    uint32_t check; // sfxpack.py row_check: the 24 B above, then the payload
 } ApRow;
-_Static_assert(sizeof(ApRow) == AP_ROW, "pack row layout");
+_Static_assert(sizeof(ApRow) == AP_ROW && offsetof(ApRow, check) == AP_ROW - 4u, "pack row layout");
 
 static struct {
     CtrAudioSystem* ca;
@@ -58,19 +63,26 @@ static struct {
     AdSfxMeta* metas;
     AdSfxPhysical physical[VOICE_COUNT];
     uint64_t ticks, calls, decodedFrames, maxTicks, lastLog;
-    uint32_t cores, gameFrames, installed, ringBytes, ringPeak, ringFailures;
+    uint32_t cores, gameFrames, installed, ringBytes, ringPeak, ringFailures, rawDropped;
+    uint32_t badChecks, badSound, badLogged; // apPrepare payload checks (UT-012), logged by msUpdate
     bool coreUnavailable;
+    uint8_t flush, flushLogged; // AD_FLUSH_*: how pieces reach the DSP (pieces.inc adFlush)
 } adSfx MM_BSS;
 
-// SHA-256 of "DTSP v1\0exact-dual-mono-wave-v2\0DTAD v1" (tools/audio/sfxpack.py CATALOG_ID).
+// SHA-256 of "DTSP v2\0exact-dual-mono-wave-v2\0DTAD v1\0fnv1a-words-row24-payload" (tools/audio/sfxpack.py
+// CATALOG_ID).
 static const uint8_t apCatalog[32] MM_RO = {
-    0x43, 0x52, 0x26, 0xf2, 0xd3, 0x8a, 0x72, 0xf1, 0x01, 0xd4, 0x35, 0x4a, 0x84, 0x63, 0xc9, 0x9c,
-    0x08, 0x62, 0x4a, 0xb9, 0x23, 0x51, 0xd6, 0xbc, 0x20, 0x43, 0x99, 0x10, 0xef, 0xb4, 0x5b, 0xea,
+    0xcb, 0x03, 0x5f, 0x8a, 0x70, 0x59, 0xb1, 0xd8, 0x2b, 0xb5, 0xb1, 0x6b, 0x88, 0xb8, 0xfc, 0xba,
+    0x42, 0x94, 0x30, 0xe7, 0xfe, 0xa4, 0x95, 0xe9, 0xd3, 0x03, 0x25, 0x0f, 0xcd, 0x63, 0x63, 0x00,
 };
 static const char apName[] MM_RO = "/adpcm-sfx.dtsp";
-static const char apOpened[] MM_RO = "ADPCM SFX pack: status %d (1 no digest, 2 missing, 3 header/size/catalog, 4 other data.win, 5 table); %lu sounds; %.3f ms\n";
+static const char apOpened[] MM_RO = "ADPCM SFX pack: status %d (1 no digest, 2 missing, 3 header/size/catalog, 4 other data.win, 5 table, 6 no feeder workspace); %lu sounds; %.3f ms\n";
 static const char msInstalled[] MM_RO = "ADPCM MONO sound %ld: %lu -> %lu B cache; %lu frames, %lu Hz, source ch 2; %.3f ms game-thread admission; no WAV load/copy\n";
-static const char msCost[] MM_RO = "[adpcm-mono] pieces %llu, decoded %llu frames, %.6f ms decode, %.6f ms max, core mask 0x%lX, unknown %u; %lu updates; base %lu B, extra %lu B, peak %lu B, failures %lu; installed %lu\n";
+// The counters that matter come first: a line longer than MESSAGE_LENGTH (192) loses its end.
+static const char msFlush[] MM_RO = "ADPCM SFX pieces flushed through %s\n";
+static const char msBad[] MM_RO = "ADPCM SFX pack: sound %lu failed its payload check (%lu so far); original PCM\n";
+static const char msFlushHow[3][32] MM_RO = { "the kernel", "the dsp service", "the dsp service (svc failed)" };
+static const char msCost[] MM_RO = "[adpcm-mono] installed %lu; raw dropped %lu; bad checks %lu; ring failures %lu, peak %lu B, extra %lu B, base %lu B; %lu updates; pieces %llu, %llu frames, %.3f ms decode, %.3f ms max; cores 0x%lX/%u\n";
 
 // Preserve original callgraph/data references: this table is resolved by the
 // assembler and checked by the layout gate, not GCC's varpool walk.
@@ -88,6 +100,11 @@ __asm__(".pushsection .rodata.late.adpcm,\"a\",%progbits\n"
 
 #include "ctr_adpcm_sfx_pieces.inc"
 
+// The feeder is on and has both linear workspaces (tail and seam pieces).
+MM_CODE static bool apFeeder(void) {
+    return *CtrAdpcm_sfxView.active && *CtrAdpcm_sfxView.tail && *CtrAdpcm_sfxView.seam;
+}
+
 // The pack's row for a sound, or NULL (pack off, or not one of its sounds). The rows never change after startup,
 // so the worker may read them too.
 MM_CODE static const ApRow* apRow(int32_t sound) {
@@ -98,6 +115,9 @@ MM_CODE static const ApRow* apRow(int32_t sound) {
 
 // Game thread at audio startup: open, check and keep the pack; any failure leaves it off (mm.count 0).
 MM_CODE static int apOpen(CtrAudioSystem* ca) {
+    // The feeder's workspaces (allocated when the callback is set, before this) decode pack sounds into PCM pieces.
+    // Without them the feeder would queue a sound's own buffer: compressed bytes played as PCM. The pack stays off.
+    if (!apFeeder()) return 6;
     if (!mmDigest[0] || !ca->dataWinPath || strcmp(ca->dataWinPath, mmWin)) return 1;
     char* slash = strrchr(mmWin, '/');
     size_t dir = slash ? (size_t)(slash - mmWin) : 0;
@@ -125,7 +145,7 @@ MM_CODE static int apOpen(CtrAudioSystem* ca) {
     for (uint32_t i = 0; ok && i < count; i++) {
         const ApRow* r = &rows[i];
         ok = r->sound < ca->soundCount && (!i || r->sound > rows[i - 1].sound) &&
-            (r->sourceBits == 8 || r->sourceBits == 16) && r->bytes > CTR_ADPCM_HEADER_BYTES &&
+            (r->sourceBits == 8 || r->sourceBits == 16) && r->bytes > CTR_ADPCM_HEADER_BYTES && !(r->bytes & 3u) &&
             r->offset >= start && r->offset <= bytes && r->bytes <= bytes - r->offset &&
             r->rate && r->rate <= 48000u && r->frames &&
             r->frames <= SFX_CACHE_MAX_ENTRY_BYTES / (r->sourceBits / 8u);
@@ -139,6 +159,19 @@ MM_CODE static int apOpen(CtrAudioSystem* ca) {
 // Decode-side checks and the seam data the original cache scan would have made, on the resident payload.
 // Pure computation on m->data: the game thread or the copy worker.
 MM_CODE static bool apPrepare(AdSfxMeta* m, const ApRow* r) {
+    // The row and the payload as read must be the ones the builder wrote (sfxpack.py row_check: FNV-1a's step over
+    // the 32-bit words of the row's first 24 B, then of the payload; apOpen takes only whole-word rows): a damaged
+    // payload, or a row now naming another sound, offset or length, plays that sound from its original PCM.
+    uint32_t h = 0x811C9DC5u, w;
+    for (uint32_t i = 0; i < AP_ROW - 4u + r->bytes; i += 4) {
+        memcpy(&w, i < AP_ROW - 4u ? (const uint8_t*)r + i : (const uint8_t*)m->data + i - (AP_ROW - 4u), 4);
+        h = (h ^ w) * 0x01000193u;
+    }
+    if (h != r->check) {
+        __atomic_store_n(&adSfx.badSound, r->sound, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&adSfx.badChecks, 1u, __ATOMIC_RELAXED);
+        return false;
+    }
     if (!CtrAdpcmPcm_open(&m->initial, m->data, r->bytes) || m->initial.info.channels != 1 ||
         m->initial.info.rate != r->rate || m->initial.info.frames != r->frames) return false;
     // At most two block prefixes, never a whole-sound seam scan.
@@ -160,10 +193,12 @@ MM_CODE static void apFree(AdSfxMeta* m) {
     if (m) { linearFree(m->data); free(m); }
 }
 
-// Game thread: into the cache as buildSfx would put the sound's first copy (never played yet).
+// Game thread: into the cache as buildSfx would put the sound's first copy (never played yet). The only place a pack
+// payload is published; false (the caller frees it, the sound takes its original path) unless the feeder can decode.
 MM_CODE static bool apInstall(CtrAudioSystem* ca, int32_t sound, AdSfxMeta* m) {
     CachedSfx* c = &ca->sfxCache[sound];
-    if (!adSfx.pool) adSfx.pool = linearAlloc(AS_POOL_BYTES);
+    if (!apFeeder()) return false;
+    if (!adSfx.pool) adSfx.pool = UTA_FAULT_ALLOC(3, AS_POOL_BYTES);
     if (!adSfx.pool) return false;
     adSfxReap();
     m->cache = c;
@@ -361,7 +396,8 @@ MM_CODE static int32_t msPlay(AudioSystem* audio, int32_t sound, int32_t priorit
 MM_CODE static void msUpdate(AudioSystem* audio, float dt) {
     if ((CtrAudioSystem*)audio == mm.ca && mm.count) apCollect(mm.ca);
     mm.inner->update(audio, dt);
-    if (!adSfx.pool) return;
+    // No pool yet: nothing installed. A pack whose every install failed its check still logs them (msBad).
+    if (!adSfx.pool && !__atomic_load_n(&adSfx.badChecks, __ATOMIC_RELAXED)) return;
     adSfxReap();
     adSfx.gameFrames++;
     u64 now = svcGetSystemTick();
@@ -372,11 +408,23 @@ MM_CODE static void msUpdate(AudioSystem* audio, float dt) {
     uint64_t ticks = adSfx.ticks, calls = adSfx.calls, frames = adSfx.decodedFrames, maximum = adSfx.maxTicks;
     uint32_t cores = adSfx.cores;
     bool unknown = adSfx.coreUnavailable;
+    uint8_t flush = adSfx.flush;
     LightLock_Unlock(CtrAdpcm_sfxView.lock);
-    CtrAdpcm_musicLegacy.post(mm.ca, msCost, (unsigned long long)calls, (unsigned long long)frames,
-        TICKS_TO_MS(ticks), TICKS_TO_MS(maximum), (unsigned long)cores, (unsigned)unknown,
-        (unsigned long)adSfx.gameFrames, (unsigned long)AS_POOL_BYTES, (unsigned long)adSfx.ringBytes,
-        (unsigned long)adSfx.ringPeak, (unsigned long)adSfx.ringFailures, (unsigned long)adSfx.installed);
+    if (flush != adSfx.flushLogged && flush >= AD_FLUSH_SVC && flush <= AD_FLUSH_DSP_AFTER_SVC) {
+        adSfx.flushLogged = flush;
+        CtrAdpcm_musicLegacy.post(mm.ca, msFlush, msFlushHow[flush - 1]);
+    }
+    uint32_t bad = __atomic_load_n(&adSfx.badChecks, __ATOMIC_RELAXED);
+    if (bad != adSfx.badLogged) {
+        adSfx.badLogged = bad;
+        CtrAdpcm_musicLegacy.post(mm.ca, msBad, (unsigned long)__atomic_load_n(&adSfx.badSound, __ATOMIC_RELAXED),
+            (unsigned long)bad);
+    }
+    CtrAdpcm_musicLegacy.post(mm.ca, msCost, (unsigned long)adSfx.installed, (unsigned long)adSfx.rawDropped,
+        (unsigned long)bad,
+        (unsigned long)adSfx.ringFailures, (unsigned long)adSfx.ringPeak, (unsigned long)adSfx.ringBytes,
+        (unsigned long)AS_POOL_BYTES, (unsigned long)adSfx.gameFrames, (unsigned long long)calls,
+        (unsigned long long)frames, TICKS_TO_MS(ticks), TICKS_TO_MS(maximum), (unsigned long)cores, (unsigned)unknown);
 }
 
 MM_CODE static void mmCleanup(void) {

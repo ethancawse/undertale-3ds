@@ -27,9 +27,50 @@ class SourceDescriptorTests(unittest.TestCase):
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             (root / name).write_bytes(data)
         git('-c', 'core.autocrlf=false', 'add', '.')
+        message = root / '.git/fixture-message'
+        message.write_text('Invented public export\n', encoding='utf-8')
         git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-            '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Invented public export')
+            '-c', 'commit.gpgsign=false', 'commit', '-q', '-F', str(message))
         return root, git('rev-parse', 'HEAD')
+
+    def test_public_tree_with_issue_templates_and_crlf_launcher(self):
+        # Same shape as the public tree: repository-only issue templates and a
+        # Windows launcher stored as LF but exported from a CRLF checkout.
+        files = {'.gitattributes': b'* text=auto eol=lf\n*.cmd text eol=crlf\n',
+                 'VERSION': b'1.0.0-beta.1\n',
+                 'tools/release/builder/undertale-3ds-builder.cmd': b'@echo off\nexit /b\n'}
+        root, commit = self.public_export(dict(files, **{
+            '.github/ISSUE_TEMPLATE/bug_report.md': b'Fixture issue template\n',
+            '.github/ISSUE_TEMPLATE/config.yml': b'blank_issues_enabled: false\n'}))
+        (root / '.gitattributes').write_bytes(b'* text eol=lf\n')
+        name = 'tools/release/builder/undertale-3ds-builder.cmd'
+        for endings in (b'\n', b'\r\n'):
+            export = dict(files, **{name: files[name].replace(b'\n', endings)})
+            with self.subTest(endings=endings):
+                result = release_contract.record_public_source(export, root, 'undertale',
+                                                                '1.0.0-beta.1', 'd' * 64)
+                self.assertEqual(result['public_commit'], commit)
+                # A single content byte must still fail, including in CRLF mode.
+                export[name] = export[name].replace(b'off', b'ofF')
+                with self.assertRaisesRegex(ValueError, 'changed=' + name):
+                    release_contract.record_public_source(export, root, 'undertale',
+                                                          '1.0.0-beta.1', 'd' * 64)
+
+    def test_line_endings_are_exact_without_committed_crlf_attribute(self):
+        files = {'.gitattributes': b'* text eol=lf\n', 'example.cmd': b'fixture\n'}
+        root, _ = self.public_export(files)
+        # Working-tree attribute edits must not relax the committed policy.
+        (root / '.gitattributes').write_bytes(b'*.cmd text eol=crlf\n')
+        with self.assertRaisesRegex(ValueError, 'changed=example.cmd'):
+            release_contract.record_public_source(dict(files, **{'example.cmd': b'fixture\r\n'}),
+                                                  root, 'undertale', '1.0.0', 'd' * 64)
+
+    def test_only_github_directory_is_excluded(self):
+        for extra in ('unexpected.txt', '.github-extra/file', 'src/.github/file'):
+            files = {'example': b'fixture\n'}
+            root, _ = self.public_export(dict(files, **{extra: b'extra\n'}))
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, 'extra='):
+                release_contract.record_public_source(files, root, 'undertale', '1.0.0', 'd' * 64)
 
     def test_export_records_public_tree_commit_not_private_head(self):
         files = {'VERSION': b'1.0.0-beta.1\n', 'src/example.py': b'print("fixture")\n'}

@@ -52,8 +52,15 @@ def native(build=None, library=None):
         subprocess.run([compiler] + CFLAGS + (['-static-libgcc'] if os.name == 'nt' else [])
                        + ['-o', str(library), str(source), '-lm'],
                        stdin=subprocess.DEVNULL, check=True, timeout=60)
-        stamp.write_text(signature)
-    return _load(library)
+    try:
+        loaded = _load(library)
+    except Exception:
+        stamp.unlink(missing_ok=True)
+        raise
+    # A successful compiler exit is not enough: dependencies or the library ABI can be wrong.
+    with stamp.open('w', encoding='ascii', newline='\n') as stream:
+        stream.write(signature)
+    return loaded
 
 
 def _load(library):

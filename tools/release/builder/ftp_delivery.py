@@ -6,7 +6,7 @@ No netloader, broadcast, or 3dslink is used.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -111,6 +111,17 @@ def identify(ftp):
         raise TransferError("This ftpd isn't showing a 3DS SD card. Check that the address is your 3DS's and its SD card is in.")
 
 
+def disconnect(ftp, *, graceful=True):
+    """QUIT only an idle command stream; always close even if QUIT fails."""
+    try:
+        if graceful and hasattr(ftp, 'quit'):
+            ftp.quit()
+    except (OSError, EOFError, ftplib.Error):
+        pass
+    finally:
+        ftp.close()
+
+
 def connect(value, *, factory=ConsoleFTP, timeout=10):
     host, port = endpoint(value)
     ftp = factory()
@@ -171,28 +182,48 @@ def find_consoles(networks, *, allowed, cancelled=lambda: False, progress=lambda
     if not selected <= allowed or any(n.prefixlen < 20 or n.is_loopback for n in selected):
         raise TransferError("Couldn't search your network. Type the address ftpd shows on your 3DS.")
     hosts = sorted({str(h) for n in selected for h in n.hosts()})
+    active = set()
+    lock = threading.Lock()
     def probe(host):
         if cancelled():
             return None
-        ftp = None
+        ftp = factory()
+        with lock:
+            active.add(ftp)
+        complete = False
         try:
-            ftp = connect(host + ':5000', factory=factory, timeout=0.6)
+            connect(host + ':5000', factory=lambda: ftp, timeout=0.6)
+            check_cancel(cancelled)
+            complete = True
             return host + ':5000'
         except (OSError, EOFError, ftplib.Error):
             return None  # Other devices, including AirPlay, are ordinary non-matches.
         finally:
-            if ftp is not None:
-                ftp.close()
+            disconnect(ftp, graceful=complete and not cancelled())
+            with lock:
+                active.discard(ftp)
     found = []
     with ThreadPoolExecutor(max_workers=16) as workers:
         # Submit in small batches so cancellation never leaves a subnet queued.
         for offset in range(0, len(hosts), 16):
             check_cancel(cancelled)
-            for hit in workers.map(probe, hosts[offset:offset+16]):
-                if hit:
-                    found.append(hit)
+            pending = {workers.submit(probe, host) for host in hosts[offset:offset+16]}
+            while pending:
+                if cancelled():
+                    with lock:
+                        for ftp in active:
+                            ftp.close()
+                    for future in pending:
+                        future.cancel()
+                    check_cancel(cancelled)
+                done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                for future in done:
+                    hit = future.result()
+                    if hit:
+                        found.append(hit)
             progress(min(offset+16, len(hosts)), len(hosts))
-    return found
+    check_cancel(cancelled)
+    return sorted(found)
 
 
 def remote_path(value):
@@ -312,7 +343,8 @@ class Transfer:
                                                        expected_size, expected_hash, 'sdmc:' + receipt_for)
             if source.read_bytes() != expected_text or fingerprint(self.ftp, receipt_for) != identity:
                 raise TransferError('The game file on the 3DS changed during sending. Send again.')
-        critical = data_file or item.size <= SMALL or PurePosixPath(path).suffix.casefold() in ('.3dsx', '.cia', '.dtsp')
+        critical = (data_file or item.size <= SMALL or PurePosixPath(path).name == 'install.json'
+                    or PurePosixPath(path).suffix.casefold() in ('.3dsx', '.cia', '.dtsp'))
         local_hash = hashlib.sha256()
         if critical:
             with source.open('rb') as stream:
@@ -405,16 +437,18 @@ class Transfer:
     def send(self, items):
         check_cancel(self.cancelled)
         items = list(items)
-        # Data -> pages -> complete -> version receipts; never leave an old complete marker over new pages.
+        # Data -> pages -> complete -> version receipts -> install record.
         def order(it):
             name = PurePosixPath(it.dst).name
-            return (3 if name == 'data-version.txt' else 2 if name == 'complete' else 0 if name == 'data.win' else 1,
+            return (4 if name == 'install.json' else 3 if name == 'data-version.txt' else
+                    2 if name == 'complete' else 0 if name == 'data.win' else 1,
                     it.dst)
         items.sort(key=order)
         self.total = sum(it.size * (2 if it.size <= SMALL or PurePosixPath(it.dst).suffix.casefold() in ('.3dsx', '.cia', '.dtsp')
-                                    or PurePosixPath(it.dst).name.casefold() == 'data.win' else 1) for it in items)
+                                    or PurePosixPath(it.dst).name.casefold() in ('data.win', 'install.json')
+                                    else 1) for it in items)
         for it in items:
-            if self.install and PurePosixPath(it.dst).name == 'complete':
+            if self.install and PurePosixPath(it.dst).name in ('complete', 'install.json'):
                 delete_if_present(self.ftp, remote_path(it.dst))
         for it in items:
             check_cancel(self.cancelled)

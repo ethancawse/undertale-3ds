@@ -198,7 +198,8 @@ def cli(o, out=print):
             out('Choose only checked, installed chapters.')
             return 1
         try:
-            parts = pipeline.chapters.selection(folder, o['chapters'])
+            import chapters
+            parts = chapters.selection(folder, o['chapters'])
         except ValueError as exc:
             out(str(exc))
             return 1
@@ -212,13 +213,12 @@ def cli(o, out=print):
     targets = ["n3ds", "o3ds"] if o["target"] == "both" else [o["target"]]
     arts = []
     for t in targets:
-        last = [-1, -1]
+        last = [-1, -1, None]
 
         def prog(p, last=last):
-            if p.stage != last[0] or p.percent // 10 != last[1]:
-                last[0], last[1] = p.stage, p.percent // 10
-                out("  %s%s %s" % (pipeline.STAGES[p.stage], " %d%%" % p.percent if p.stage == 2 else "",
-                                   pipeline.format_eta(p.estimate())))
+            if p.stage != last[0] or p.percent // 10 != last[1] or p.activity != last[2]:
+                last[:] = p.stage, p.percent // 10, p.activity
+                out("  %s - %d%%" % (p.activity, int(round(p.completion()))))
         try:
             b = pipeline.Build(product, tc, work, t, folder, outputs=outputs, on_progress=prog, store=v.result.store, parts=parts, openh264=o['openh264'])
             out("Building %s; log: %s" % (t, b.log_path))
@@ -280,7 +280,7 @@ def cli(o, out=print):
         except (deliver.DeliverError, OSError) as e:
             out(str(e))
             return 1
-        out("Saved %d files (%.1f MB) to %s." % (saved.files, saved.bytes / 1e6, saved.root))
+        out("Saved %d files (%.1f MB) to %s." % (saved.files, saved.bytes / 1e6, saved.folder or saved.root))
         out(saved.textures.message)
     out(deliver.instructions(product, targets, outputs, o["sd"], save_result=saves_res,
                              delivery="wifi" if o.get('ftp') else "sd" if o["sd"] else "files"))

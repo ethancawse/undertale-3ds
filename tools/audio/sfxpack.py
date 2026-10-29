@@ -4,18 +4,21 @@ Input: the player's data.win. Output: one file, copied to the SD card beside tha
 (sdmc:/3ds/undertale-3ds/adpcm-sfx.dtsp). The runtime (platform/3ds/source/ctr_adpcm_pack.inc, build flag adpcmpack)
 opens it once at audio startup and checks it by content: CATALOG_ID below, the data.win SHA-256 written here against
 the boot data check's digest, and the exact file size. No receipt or timestamp, so copying it by FTP works. A missing
-or mismatched pack plays every sound from its original PCM.
+or mismatched pack plays every sound from its original PCM. Each row also carries a check of its own first 24 B and its
+payload (row_check), which the runtime tests on the bytes it reads for each install: a damaged payload, or a row whose
+sound, offset or length changed, plays that sound from its original PCM.
 
 Eligible sounds: embedded RIFF WAVs in data.win (audio group 0) whose two channels are sample-for-sample identical
 (mono_sfx.project). Each is encoded once to a one-channel DTAD v1 payload (dspadpcm.c through mono_sfx.encode);
 --work keeps the encodes so a second run reuses them.
 
 Layout (little-endian):
-  header, 128 B: "DTSP", version 1, row count, pack bytes, catalog id (32 B), data.win SHA-256 as 64 lowercase hex
+  header, 128 B: "DTSP", version 2, row count, pack bytes, catalog id (32 B), data.win SHA-256 as 64 lowercase hex
                  characters, 16 B zero.
-  rows, 24 B each, sorted by sound index: u16 sound, u8 source bits (8/16), u8 0, u32 payload offset,
-                 u32 payload bytes, u32 frames, u32 rate, u32 largest adjacent-sample step of the render (seam test).
-  payloads: DTAD v1 files, each 4-byte aligned.
+  rows, 28 B each, sorted by sound index: u16 sound, u8 source bits (8/16), u8 0, u32 payload offset,
+                 u32 payload bytes, u32 frames, u32 rate, u32 largest adjacent-sample step of the render (seam test),
+                 u32 check (row_check: the row's first 24 B, then the payload).
+  payloads: DTAD v1 files, each 4-byte aligned and whole 32-bit words.
 
 Release check: tools/release/sfxpack-versions.json (names only) holds the expected pack size and SHA-256 for each
 verified UNDERTALE data file. For a listed data.win the build fails (exit 1, output removed) unless its pack matches.
@@ -37,10 +40,13 @@ import mono_sfx as mono
 import prepare
 
 MAGIC = b'DTSP'
-VERSION = 1
+VERSION = 2
 HEADER_BYTES = 128
-ROW = struct.Struct('<HBBIIIII')
-CATALOG_ID = hashlib.sha256(b'DTSP v1\0' + mono.POLICY.encode('ascii') + b'\0DTAD v1').digest()
+ROW = struct.Struct('<HBBIIIIII')
+ROW_HEAD = struct.Struct('<HBBIIIII')  # a row before its check: what row_check binds to the payload
+CHECK_POLICY = 'fnv1a-words-row24-payload'  # row_check's definition; part of the catalog id
+CATALOG_ID = hashlib.sha256(b'DTSP v2\0' + mono.POLICY.encode('ascii') + b'\0DTAD v1\0' +
+                            CHECK_POLICY.encode('ascii')).digest()
 NAME = 'adpcm-sfx.dtsp'
 VERSIONS = Path(__file__).resolve().parents[2] / 'tools/release/sfxpack-versions.json'
 
@@ -103,7 +109,8 @@ def build(data_win, out, work=None, *, log=print, library=None):
     for e in entries:
         offset = (offset + 3) & ~3
         e['offset'] = offset
-        rows += ROW.pack(e['sound'], e['bits'], 0, offset, len(e['payload']), e['frames'], e['rate'], e['seam'])
+        head = ROW_HEAD.pack(e['sound'], e['bits'], 0, offset, len(e['payload']), e['frames'], e['rate'], e['seam'])
+        rows += head + struct.pack('<I', row_check(head, e['payload']))
         offset += len(e['payload'])
     total = offset
     header = MAGIC + struct.pack('<III', VERSION, len(entries), total) + CATALOG_ID + digest.encode('ascii')
@@ -124,6 +131,19 @@ def build(data_win, out, work=None, *, log=print, library=None):
     return summary
 
 
+def row_check(head: bytes, payload: bytes) -> int:
+    """A row's check (ctr_adpcm_pack.inc apPrepare): FNV-1a's step over the little-endian 32-bit words of the row's
+    first 24 B (ROW_HEAD: sound ID, bits, offset, length, frames, rate, seam step), then of its payload of whole words
+    (the runtime refuses any other row). Each step is a bijection of the state, so one damaged word always changes the
+    result, and a payload is never valid under another row (c26rev F3: a flipped sound ID played another sound)."""
+    if len(head) != ROW_HEAD.size or len(payload) % 4:
+        raise ValueError('A payload must be whole 32-bit words')
+    h = 0x811C9DC5
+    for (word,) in struct.iter_unpack('<I', head + payload):
+        h = ((h ^ word) * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
 def read(path, data_win_sha256=None):
     """Check a pack the way the runtime does (apOpen) and return its rows; raises ValueError."""
     image = Path(path).read_bytes()
@@ -138,10 +158,13 @@ def read(path, data_win_sha256=None):
         raise ValueError('Row count')
     start, rows, previous = HEADER_BYTES + count * ROW.size, [], -1
     for i in range(count):
-        sound, bits, _, offset, size, frames, rate, seam = ROW.unpack_from(image, HEADER_BYTES + i * ROW.size)
-        if (sound <= previous or bits not in (8, 16) or size <= dsp.HEADER_BYTES or offset < start
+        sound, bits, _, offset, size, frames, rate, seam, check = ROW.unpack_from(image, HEADER_BYTES + i * ROW.size)
+        if (sound <= previous or bits not in (8, 16) or size <= dsp.HEADER_BYTES or size % 4 or offset < start
                 or offset > total or size > total - offset or not 0 < rate <= 48000 or not frames):
             raise ValueError(f'Row {i}')
+        at = HEADER_BYTES + i * ROW.size
+        if row_check(image[at:at + ROW_HEAD.size], image[offset:offset + size]) != check:
+            raise ValueError(f'Row {i}: check')  # the runtime plays that sound from its original PCM
         previous = sound
         rows.append(dict(sound=sound, bits=bits, offset=offset, bytes=size, frames=frames, rate=rate, seam=seam))
     return rows

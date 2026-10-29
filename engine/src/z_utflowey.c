@@ -123,10 +123,9 @@ static GMLReal utwTrig(UtwTrig* tab, GMLReal (*f)(GMLReal), GMLReal x) {
 #define utwSin(x) utwTrig(utwSinTab, GMLReal_sin, (x))
 #define utwCos(x) utwTrig(utwCosTab, GMLReal_cos, (x))
 
-static RValue* utwSlot(Instance* inst, int32_t varID) UTW_LATE;
-static RValue* utwSlot(Instance* inst, int32_t varID) {
-    return IntRValueHashMap_findSlot(&inst->selfVars, varID);
-}
+#define utwSlot UtFlames_slot // z_utflames.c's IntRValueHashMap_findSlot copy: one for every UNDERTALE late file
+RValue* utwSlot(Instance* inst, int32_t varID); // (freebytes: each file had its own byte-identical 108 B copy)
+#line 130
 
 // A real or int32 with its tags as a push or handler leaves it (AOT_SET_REAL / AOT_SET_INT).
 static inline void utwReal(RValue* s, GMLReal v, uint8_t g) {

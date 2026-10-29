@@ -82,22 +82,13 @@ static inline Instance* utkSelf(VMContext* ctx) {
     return inst != nullptr && inst->objectIndex != STRUCT_OBJECT_INDEX ? inst : nullptr;
 }
 
-static uint32_t utkDigest(const uint8_t* bytes, uint32_t length) UTK_LATE_W;
-static uint32_t utkDigest(const uint8_t* bytes, uint32_t length) {
-    uint32_t h = 0x811C9DC5u;
-    for (uint32_t i = 0; length > i; i++) h = (h ^ bytes[i]) * 0x01000193u;
-    return h;
-}
+#define utkDigest UtFlames_waverDigest // z_utflames_waver.c's FNV-1a of the code bytes (freebytes: was a 72 B copy)
+uint32_t utkDigest(const uint8_t* bytes, uint32_t length);
+#line 91
 
-// The varID of the variable the Push.v or Pop.v operand at off names (patched to its index at load).
-static int32_t utkOperandVar(VMContext* ctx, const uint8_t* bytes, uint32_t off) UTK_LATE_W;
-static int32_t utkOperandVar(VMContext* ctx, const uint8_t* bytes, uint32_t off) {
-    uint32_t w = (uint32_t) bytes[off] | (uint32_t) bytes[off + 1] << 8 | (uint32_t) bytes[off + 2] << 16 |
-                 (uint32_t) bytes[off + 3] << 24;
-    uint32_t index = w & 0x07FFFFFFu;
-    if (index >= ctx->dataWin->vari.variableCount) return -1;
-    return ctx->dataWin->vari.variables[index].varID;
-}
+#define utkOperandVar UtFlames_waverOperandVar // z_utflames_waver.c's: the varID the Push.v/Pop.v operand at off names
+int32_t utkOperandVar(VMContext* ctx, const uint8_t* bytes, uint32_t off);
+#line 101
 
 static inline RValue* utkFind(Instance* inst, int32_t varID) {
     return IntRValueHashMap_findSlot(&inst->selfVars, varID);

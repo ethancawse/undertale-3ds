@@ -69,7 +69,15 @@ ROOMPLAN_TEXT uint32_t RoomPlan_fnv1a(const uint8_t* data, size_t size) {
     return hash;
 }
 
-ROOMPLAN_TEXT static int hexNibble(char c) {
+#if defined(ENABLE_WAD16) && !defined(ROOMPLAN_HOST_TEST) // freebytes: z_utsfx.c calls it too (UNDERTALE)
+#define hexNibble RoomPlan_hexNibble
+int hexNibble(char c);
+#define ROOMPLAN_NIBBLE_LINKAGE
+#else
+#define ROOMPLAN_NIBBLE_LINKAGE static
+#endif
+#line 72
+ROOMPLAN_TEXT ROOMPLAN_NIBBLE_LINKAGE int hexNibble(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     return -1;

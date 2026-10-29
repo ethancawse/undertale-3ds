@@ -11,6 +11,7 @@
 #include "load_trace.h"
 #include "aot/vm_aot_hooks.h"
 #include "runner_layerfix_layout.inc" // layerfix: retained input slots
+#include "z_utexact_alarm.h"
 #line 13
 #include <stdint.h>
 #include "stdio_compat.h"
@@ -5061,10 +5062,10 @@ static void stepFrame(Runner* runner) {
                 }
 #endif
 
-                inst->alarm[alarmIdx]--;
+                UTEXACT_ALARM_TICK(inst, alarmIdx, bit);
                 if (inst->alarm[alarmIdx] == 0) {
-                    inst->alarm[alarmIdx] = -1;
-                    inst->activeAlarmMask &= (uint16_t) ~bit;
+                    UTEXACT_ALARM_FIRE(inst, alarmIdx, bit);
+
 
 #ifdef ENABLE_VM_TRACING
                     if (shgeti(runner->vmContext->alarmsToBeTraced, "*") != -1 || shgeti(runner->vmContext->alarmsToBeTraced, object->name) != -1) {
@@ -6668,7 +6669,7 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawRoom(
 // (tools/analysis/check_utdust_slots.py). UNDERTALE only (Policy E); the same on Old and New (GCC 16.1.0 Release).
 #define UTDUST_CLEANUP_TAIL ".space 80"
 #if defined(UTSW_ON)
-#define UTDUST_STEP_TAIL ".space 56" // and 12 B less its three dust swarm calls (z_utkill_swarm.c)
+#define UTDUST_STEP_TAIL ".space 96" // UT-040: another 40 B retained after the nonnegative alarm loop
 #else
 #define UTDUST_STEP_TAIL ".space 68" // 172 B less stepFrame's Utdust_insideRoom call (utkill)
 #endif

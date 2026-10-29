@@ -10,6 +10,10 @@
 // file's copies take other names, as collision_compat.c's do.
 #define RValue_toRealOther Colflip14_toRealOther
 #define RValue_toInt32Other Colflip14_toInt32Other
+#if defined(ENABLE_WAD16) // freebytes: global, for alarm_gm14.c and colline_gm14.c (UNDERTALE)
+#define RVALUE_OTHER_GLOBAL
+#endif
+#line 13
 #define COLLISION_GM14_DEFINE
 #include "collision_gm14.h"
 

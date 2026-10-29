@@ -44,9 +44,12 @@ vendor=("$src/stb_impl.c" "$eng/vendor/bzip2/bz_internal_error.c" "$eng/vendor/b
         "$eng/vendor/bzip2/decompress.c" "$eng/vendor/bzip2/huffman.c" "$eng/vendor/bzip2/randtable.c")
 # The sources digest (tools/texprep/sources.py): every file inside the repository that any object reads, and this
 # script. A preprocessing pass lists them; the binary carries the digest and the list (texprep --sources).
-py="${PYTHON:-}"
-if [[ -z "$py" ]]; then
-    if command -v python3 >/dev/null 2>&1; then py=python3; elif command -v py >/dev/null 2>&1; then py="py -3"; else
+py=("${PYTHON:-}")
+# Preserve the documented Windows launcher spelling without splitting executable
+# paths (a bundled .app's path normally contains spaces).
+[[ "${PYTHON:-}" != 'py -3' ]] || py=(py -3)
+if [[ -z "${py[0]}" ]]; then
+    if command -v python3 >/dev/null 2>&1; then py=(python3); elif command -v py >/dev/null 2>&1; then py=(py -3); else
         echo "build.sh: Python 3 is needed for the sources digest (set PYTHON)" >&2; exit 1; fi
 fi
 deps=()
@@ -55,8 +58,7 @@ for f in "${ours[@]}" "${vendor[@]}"; do
     "$cc" "${base[@]}" -DTEXPREP_DEPS_PASS -w -M -MT x -MF "$d" "$f"
     deps+=("$d")
 done
-# shellcheck disable=SC2086
-$py -I "$here/sources.py" header "$root" "$objdir/texprep_sources.h" "${deps[@]}" >/dev/null
+"${py[@]}" -I "$here/sources.py" header "$root" "$objdir/texprep_sources.h" "${deps[@]}" >/dev/null
 common+=(-I"$objdir")
 objs=()
 for f in "${ours[@]}"; do

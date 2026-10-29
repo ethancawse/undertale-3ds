@@ -1,5 +1,5 @@
 // Included after the original benchmark functions: all new state/code/constants stay in the late reserves.
-// Existing callers change only a BL target. The per-frame interpreter and benchmark entry stay in their slots.
+// Existing callers change only a BL target. over_33_4 stays >33.4 ms (not slowlog's >=41.8 ms line threshold).
 typedef struct {
     bool active;
     int32_t ready;

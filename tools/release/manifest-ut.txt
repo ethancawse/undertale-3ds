@@ -193,8 +193,6 @@ platform/3ds/compiler_policy.cmake
 platform/3ds/data_versions.inc
 platform/3ds/hotpin/check_hot.cmake
 platform/3ds/hotpin/check_knfuse_size.cmake
-platform/3ds/hotpin/deltarune-o3ds.hot
-platform/3ds/hotpin/deltarune-o3ds.ld
 platform/3ds/late_reserve.ld
 platform/3ds/legal.cmake
 platform/3ds/python.sh
@@ -408,7 +406,6 @@ platform/3ds/source/stb_impl.c
 platform/3ds/source/vine_old_observer.inc
 platform/3ds/source/z_argcrash.c
 platform/3ds/source/z_btnprompt_ctr.c
-platform/3ds/source/z_builderx_chapters.c
 platform/3ds/source/z_builderx_review.c
 platform/3ds/source/z_chapterleak.c
 platform/3ds/source/z_freewins.c
@@ -693,9 +690,9 @@ tools/release/test_verify_game.py
 tools/release/test_builder.py
 tools/release/generate_music_manifest.py
 tools/release/builder/builder.py
-tools/release/builder/chapters.py
-tools/release/builder/audio-deltarune.json
 tools/release/builder/deliver.py
+tools/release/builder/sd_transaction.py
+tools/release/builder/install_record.py
 tools/release/builder/ftp_delivery.py
 tools/release/builder/ftp_saves.py
 tools/release/builder/cleanup.py
@@ -714,9 +711,6 @@ engine/src/z_utflames_waver.c
 tools/aot/btnprompt_build.py
 tools/aot/pixgrid.py
 tools/aot/loadscreen_art.py
-tools/deps/openh264/LICENSE
-tools/deps/openh264/README.md
-tools/deps/openh264/build.sh
 tools/release/builder/art_pixels.py
 tools/release/builder/fixtures/appmanifest_1690940.acf
 tools/release/builder/fixtures/appmanifest_391540.acf
@@ -736,6 +730,8 @@ tools/release/licenses/openh264-LICENSE
 tools/release/licenses/winpthreads-COPYING
 tools/release/original-asset-policy.json
 tools/release/package_builder.py
+tools/release/macos_bundle.py
+tools/release/macos_runtime_check.py
 tools/release/test_builder_native_data.py
 tools/release/test_builder_platforms.py
 tools/release/test_texcache.py
@@ -790,6 +786,7 @@ platform/3ds/source/z_benchfid_window.c
 platform/3ds/source/ctr_panelgrid.c
 # smalltext (UNDERTALE, and DELTARUNE New through z_smalltext_dr.c; Crisp small text)
 platform/3ds/source/z_smalltext.c
+platform/3ds/source/z_asrtext.c
 platform/3ds/source/z_smalltext_dr.c
 # sdmigrate (both games; the first launch moves the old SD folder)
 platform/3ds/source/z_sdmigrate.c
@@ -839,11 +836,11 @@ engine/src/aot/vm_aot_lava.inc
 tools/aot/late_numeric.py
 tools/aot/stglyphs.py
 tools/aot/stpack.py
+tools/aot/stasrtext.py
 tools/aot/stmenu.py
 engine/src/z_utkill_vapor.c
 engine/src/z_utkill_swarm.c
 engine/src/z_utkill_waver.c
-platform/3ds/source/z_builderx_new.c
 tools/release/import_closure.py
 tools/release/test_import_closure.py
 # swkbd: the software keyboard at the essay prompt
@@ -853,8 +850,6 @@ platform/3ds/source/z_itemverdict.c
 tools/aot/itemverdict.py
 # phaseplan (utflowey): its builder (build.sh names it, and runs it for DELTARUNE only), and its source (CMake
 # names it to leave it out of UNDERTALE builds)
-platform/3ds/source/z_phaseplan.c
-tools/roomplan/build_phases.py
 # utold scalar3: the lava's numeric draw_sprite_part call (UNDERTALE only)
 platform/3ds/source/z_utold_scalar.c
 # utold contblack: black before the title menu's Continue load (UNDERTALE only; compiles empty for DELTARUNE)
@@ -872,7 +867,6 @@ platform/3ds/source/z_frametrace.c
 platform/3ds/source/ctr_hintpos.c
 # drresid: its builder (build.sh names it, and runs it for DELTARUNE New only), and its source (compiled empty here)
 platform/3ds/source/z_drresid.c
-tools/roomplan/build_tracks.py
 # utold partial sprites: draw_sprite_part's partial-tile path (both games)
 platform/3ds/source/ctr_renderer_parts.inc
 
@@ -911,3 +905,6 @@ platform/3ds/source/z_lbind.c
 
 # Windows sound encoder validation; no DLL in the source export.
 tools/release/builder/sfx_encoder.py
+tools/buildcache/romfs.py
+tools/buildcache/test_romfs.py
+engine/src/z_utexact_alarm.h

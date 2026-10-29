@@ -177,6 +177,12 @@ typedef struct {
 bool CtrPack_romfsName(char* name, size_t size);
 // ctr_renderer.c's end (UNDERTALE): a sw x sh texel part of tex at (sx, sy) drawn at (x, y), two drawing units a texel.
 void Smalltext_drawTexture(Renderer* renderer, C3D_Tex* tex, float sx, float sy, float sw, float sh, float x, float y, uint32_t color, float alpha);
+#if defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
+void Asrtext_load(const uint8_t* data, size_t size);
+const uint8_t* Asrtext_match(const char* text, size_t len, int32_t font);
+int Asrtext_motion(const char* text, size_t len, int32_t font);
+#endif
+#line 180
 void __real_CtrRenderer_loadFontVerdicts(Renderer* renderer);
 void __wrap_CtrRenderer_loadFontVerdicts(Renderer* renderer);
 #if defined(ENABLE_WAD16) || defined(ST_DR_UNIT)
@@ -471,6 +477,8 @@ static ST_LATE bool stTouchPc(const StFont* f, const uint8_t* a, int32_t ax, con
 
 #ifndef ST_DR_UNIT
 static int32_t stBubbleClip(Runner* runner, const StFont* f, float pen); // bubbleclip (the file's end)
+static int32_t asrPcDy(Renderer* renderer, const StFont* f, float y, float py, int32_t dy);
+#line 474
 #endif
 #ifdef CTRPORT_BUBBLE_CHECK
 // out of line, so none of it lands in stDraw's late text
@@ -478,6 +486,10 @@ static __attribute__((noinline)) void bckGlyph(Renderer* renderer, const StFont*
 #endif
 // The native x of a whole-pixel glyph (entry g, pen in 640 space, nominal native x nx0) with carry spacing.
 static ST_LATE int32_t stCarry(Renderer* renderer, const StFont* f, const uint8_t* g, float pen, float y, int32_t nx0, bool spaceBefore) {
+#ifndef ST_DR_UNIT
+    int32_t bubbleShift = stBubbleClip(renderer->runner, f, pen);
+#endif
+#line 481
     int32_t frame = renderer->runner != nullptr ? renderer->runner->frameCount : 0;
     StLine* line = nullptr;
     StLine* near = nullptr;
@@ -509,6 +521,10 @@ static ST_LATE int32_t stCarry(Renderer* renderer, const StFont* f, const uint8_
     }
     int32_t carry = line->carry, nx = nx0 + carry;
     int32_t dyPc = (int32_t) y - (int32_t) line->py, dy = ((int32_t) y >> 1) - ((int32_t) line->py >> 1);
+#ifndef ST_DR_UNIT
+    dyPc = asrPcDy(renderer, f, y, line->py, dyPc);
+#endif
+#line 512
     if (line->prev != nullptr && !spaceBefore && (float) f->adv + 1.0f >= pen - line->pen &&
         !stTouchPc(f, line->prev, (int32_t) line->pen, g, (int32_t) pen, dyPc)) {
         while (carry > 0 && !stTouchNative(f, line->prev, line->x, g, nx - 1, dy)) {
@@ -528,7 +544,7 @@ static ST_LATE int32_t stCarry(Renderer* renderer, const StFont* f, const uint8_
 #ifdef ST_DR_UNIT
     return nx;
 #else
-    return nx + stBubbleClip(renderer->runner, f, pen); // a writer's line in its bubble may give pixels back (the file's end)
+    return nx + bubbleShift; // a writer's line in its bubble may give pixels back (the file's end)
 #endif
 }
 
@@ -551,6 +567,9 @@ static ST_LATE uint8_t* stReadRomfs(const char* fmt, char* file, size_t fileSize
 // Read only until the outer table is in (the renderer's first install), so before any atlas is made: the fonts' atlas
 // fields are still empty when this clears them.
 static ST_LATE bool stLoadPack(DataWin* dw, char* file, size_t fileSize) {
+#ifndef ST_DR_UNIT
+    Asrtext_load(nullptr, 0);
+#endif
     free(st.file);
     st.file = nullptr;
     st.fontCount = 0;
@@ -626,9 +645,13 @@ static ST_LATE bool stLoadPack(DataWin* dw, char* file, size_t fileSize) {
         for (uint32_t i = 0; st.fontCount > i; i++) st.fonts[i].entries = buf + off[i];
     }
 #endif
+#ifndef ST_DR_UNIT
+    Asrtext_load(buf + at, n - at);
+#endif
     st.file = buf;
     return true;
 }
+#line 632
 
 #ifndef ST_DR_UNIT
 // The menu data's header against this data.win (tools/aot/stmenu.py): the soul, sharp and preview counts, or false.
@@ -973,6 +996,9 @@ static ST_LATE bool stDraw(Renderer* renderer, const char* text, float x, float 
     }
     if (!stAtlas(f)) return false;
 
+#ifndef ST_DR_UNIT
+    const uint8_t* rowRule = Asrtext_match(text, (size_t) textLen, fontIndex);
+#endif
     bool fixW = (st.keys >> ST_KEY_FIX_W & 1u) != 0 && f->fixW != 0;
     bool fixStar = (st.keys >> ST_KEY_FIX_STAR & 1u) != 0 && f->fixStar != 0;
     bool carry = (st.keys >> ST_KEY_CARRY & 1u) != 0;
@@ -1012,6 +1038,9 @@ static ST_LATE bool stDraw(Renderer* renderer, const char* text, float x, float 
         }
         float cursorX = halignOffset;
         bool space = false;
+#ifndef ST_DR_UNIT
+        const uint8_t* localRows = rowRule != nullptr && lineIdx >= rowRule[130] ? rowRule : nullptr;
+#endif
         for (int32_t i = 0; lineLen > i; i++) {
             uint8_t ch = (uint8_t) text[lineStart + i];
             FontGlyph* glyph = TextUtils_findGlyph(font, ch);
@@ -1021,6 +1050,10 @@ static ST_LATE bool stDraw(Renderer* renderer, const char* text, float x, float 
                 uint32_t e = (uint32_t) f->lut[ch] - 1u;
                 if (ch == 'W' && fixW) e = (uint32_t) f->fixW - 1u;
                 else if (ch == '*' && fixStar) e = (uint32_t) f->fixStar - 1u;
+#ifndef ST_DR_UNIT
+                bool localGlyph = localRows != nullptr && localRows[ch] != 0 && localRows[ch] <= f->count;
+                if (localGlyph) e = (uint32_t) localRows[ch] - 1u;
+#endif
                 const uint8_t* g = stEntry(f, e);
                 if (g[2] != 0) {
                     float pen = x + cursorX, gx = pen + 2.0f * (float) (int8_t) g[3], gy = y + cursorY;
@@ -1040,7 +1073,12 @@ static ST_LATE bool stDraw(Renderer* renderer, const char* text, float x, float 
                         int32_t p = stGridPixel(pen + ox), off = -(p & 1) - (int32_t) (int8_t) g[5];
                         if (-2 >= off) gx += 2.0f * (float) (-off / 2);
                         else if (off >= 2) gx -= 2.0f * (float) (off / 2);
-                        gy += 2.0f * (float) f->rowShift[stGridPixel(gy + oy) & 1]; // the font's rows against PC's
+                        int32_t parity = stGridPixel(gy + oy) & 1;
+                        int32_t rowShift = f->rowShift[parity];
+#ifndef ST_DR_UNIT
+                        if (localGlyph) rowShift = (int8_t) localRows[128 + parity];
+#endif
+                        gy += 2.0f * (float) rowShift; // the font's rows against PC's
                         if (carry) {
                             int32_t nx0 = stGridPixel(gx + ox) >> 1; // the screen pixel the grid puts it on
                             gx += 2.0f * (float) (stCarry(renderer, f, g, pen, gy, nx0, space) - nx0);
@@ -1062,6 +1100,7 @@ static ST_LATE bool stDraw(Renderer* renderer, const char* text, float x, float 
     return true;
 }
 
+#line 1057
 #ifndef ST_DR_UNIT
 // The KR label crisp (see the top); every other sprite as before.
 static ST_LATE void stDrawSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale,
@@ -1246,7 +1285,7 @@ enum { BC_XEND, BC_X0, BC_SP, BC_MYX, BC_MYY, BC_Y0, BC_VSP, BC_VTEXT, BC_STR, B
 typedef struct {
     uint32_t id, hash; // the writer (instance id), its string's hash, writingx, writingy and the surface x it is for
     float x0, y0, ox;
-    bool ok;           // false: no bubble, or a layout this doesn't follow (codes that move the pen)
+    uint8_t ok;        // bit 0: bubble plan; bit 1: exact-string PC-y contact correction
     // line i's places: a glyph drawn with myx - writingx at least at[i][k] moves px[i][k] native px left (summed)
     uint8_t gives[BC_LINES];
     int16_t at[BC_LINES][BC_GIVES];
@@ -1397,9 +1436,13 @@ static BC_LATE void bcMake(Runner* runner, const StFont* f, BcPlan* p, const flo
         top = t;
     }
     if (edge == nullptr) return;
-    p->ok = true;
+    p->ok = 1u | (Asrtext_motion(text, strlen(text), f->font) ? 2u : 0u);
     bool fixW = (st.keys >> ST_KEY_FIX_W & 1u) != 0 && f->fixW != 0, fixStar = (st.keys >> ST_KEY_FIX_STAR & 1u) != 0 && f->fixStar != 0;
     for (li = 0; BC_LINES > li; li++) {
+        // The selected random-shake line must not cache a weaker plan merely
+        // because its first typed glyph happened to draw one PC pixel left.
+        float planD = (p->ok & 2u) != 0 && li == 0 ? 0.0f : d;
+#line 1395
         // the line's glyphs placed as stDraw and stCarry place them: native ink left and right
         int32_t lo[BC_COLS], hi[BC_COLS], at[BC_COLS], n = 0, carry = 0, prevX = 0, pcRight = -100000;
         bool word[BC_COLS];
@@ -1413,7 +1456,7 @@ static BC_LATE void bcMake(Runner* runner, const StFont* f, BcPlan* p, const flo
             else if (c == '*' && fixStar) e = (uint32_t) f->fixStar - 1u;
             const uint8_t* g = stEntry(f, e);
             if (g[2] == 0) continue;
-            float pen = x0 + d + (float) gl[li][j].at, gx = pen + 2.0f * (float) (int8_t) g[3];
+            float pen = x0 + planD + (float) gl[li][j].at, gx = pen + 2.0f * (float) (int8_t) g[3];
             int32_t q = stGridPixel(pen + p->ox), off = -(q & 1) - (int32_t) (int8_t) g[5];
             if (-2 >= off) gx += 2.0f * (float) (-off / 2);
             else if (off >= 2) gx -= 2.0f * (float) (off / 2);
@@ -1473,7 +1516,7 @@ static BC_LATE void bcMake(Runner* runner, const StFont* f, BcPlan* p, const flo
         // the passes: word gaps to BC_MINGAP, letter gaps to 1, then (only to keep off the edge; steady text) to 0
         int8_t give[BC_COLS];
         memset(give, 0, sizeof(give));
-        for (int32_t pass = 0; (d == 0.0f ? 3 : 2) > pass; pass++) {
+        for (int32_t pass = 0; (planD == 0.0f ? 3 : 2) > pass; pass++) {
             if (pass == 2 && req > 1) need--;
             int32_t floor = pass == 0 ? BC_MINGAP : 2 - pass;
             for (bool moved = true; need > 0 && moved;) {
@@ -2054,3 +2097,14 @@ static ST_CULL void stCullTextColor(Renderer* renderer, const char* text, float 
 }
 #endif // !ST_CULL_INLINE (cullcrisp)
 #endif // ENABLE_WAD16 || ST_DR_UNIT
+
+#if defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
+// UT-026: PC extents have no native row-phase shift. Undo only that shift
+// for the PC contact test, on the reproduced writer's first line. Native
+// contact tests, row placement and glyphs stay intact.
+static __attribute__((noinline, section(".text.late.asrtext"))) int32_t asrPcDy(Renderer* renderer, const StFont* f, float y, float py, int32_t dy) {
+    if (bc.last == nullptr || (bc.last->ok & 2u) == 0 || bc.v[BC_MYY] != bc.v[BC_Y0]) return dy;
+    float oy = stSurfaceOy(renderer);
+    return dy - 2 * ((int32_t) f->rowShift[stGridPixel(y + oy) & 1] - (int32_t) f->rowShift[stGridPixel(py + oy) & 1]);
+}
+#endif

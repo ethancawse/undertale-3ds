@@ -21,13 +21,26 @@
 //
 // Hooks (CMakeLists.txt, UNDERTALE only): Runner_handlePendingRoomChange (CtrBench_handleRoomChange's call) and
 // RoomPlan_utstallPlan (z_utstall.c's call: the checked plan and its texture cache) are wrapped; CtrRenderer_endFrame's
-// wrap chain (ctr_wrap_chain.h) gets a link after swkbd.
+// wrap chain (ctr_wrap_chain.h) gets a link after swkbd, which calls on to nopromo's (below).
 //
 // Scene keys whose restart loads nothing here (fbSkip): a restart frame keeps the last picture on screen, so its load is
 // a held picture the player sees, unless the game has faded out. The Asriel restarts hold a faded picture: black
 // before 255 -> 256, a full white flash around the SAVEs (256 <-> 87-90). Undyne the Undying (306:92) restarts from a
 // lit battle picture, and the base already loads only the first frame's tiles in that frame (Azahar Old: held 33 + 63
 // ms); the restart's load held it 243 ms (152 ms reading no page whole). Its tiles and code come in play, as before.
+//
+// nopromo (round 12 rev 2, 2026-10-29): with no RAM for packed pages, Draw asks no promotions. A tile load from a
+// page's cache file (ctr_textures.c, loadRequestedFrom) first takes the file's size (CtrPack_fileSize, a size request
+// to the card outside the load's logged steps, which waits behind an audio stream's read: nx_opera page 24's second
+// tile, ~45 ms o2ds / ~35 ms o3ds over its read, check, unpack and flush) to ask for the page whole in RAM. On the Old
+// models the UNDERTALE .3dsx's packed budget starts at 310-321 KB and z_utstall.c's utflPkCollect sets it to the heap
+// share, 0, at the first RoomLoad_collect; pklin then stays off. With the budget 0, no packed copy and no whole read,
+// it stays 0 (relieveHeap and relieveFailedAlloc set it to the packed bytes held, 0; keepPacked never adds over it;
+// utflPk sets it once per cache), and every promotion fails at makePromotionRoom's size > budget before any read. So
+// once, after the first such frame's CtrRenderer_endFrame with the tile reader on, every page's promotionRetryFrame is
+// set to the last frame number (page 0's then marks it done): Draw and roomload's font read-backs no longer ask. What
+// changes: the [perf] failed-promotions count and roomload's font-pages count. The tiles load as before. In sections of
+// its own (late_reserve.ld, after every other late code), so nothing before it moves.
 
 #if defined(ENABLE_WAD16) && defined(__3DS__)
 
@@ -63,6 +76,8 @@ static FB_BSS struct {
 static const int16_t fbSkip[][2] FB_CONST = {{306, 92}};
 
 static const char fbLog[] FB_CONST = "Room restart: room %ld scene %ld -> %ld, room load\n";
+static const char npLog[] __attribute__((aligned(4), section(".late_nopromo_ro"))) =
+    "Textures: no RAM for packed pages: Draw asks no promotions (frame %lu)\n";
 
 FB_TEXT const uint8_t* __wrap_RoomPlan_utstallPlan(const CtrTextureCache* cache) {
     const uint8_t* plan = __real_RoomPlan_utstallPlan(cache);
@@ -109,7 +124,7 @@ FB_TEXT void __wrap_Runner_handlePendingRoomChange(Runner* runner) {
 
 // After the frame's CtrRenderer_endFrame, where main.c runs a room change's CtrRenderer_prefetchRoom.
 FB_TEXT void CTR_ENDFRAME_FREEBIES(Renderer* renderer) {
-    __real_CtrRenderer_endFrame(renderer);
+    CTR_ENDFRAME_AFTER_FREEBIES(renderer);
     Runner* runner = fb.restarted;
     if (runner != nullptr && renderer->runner == runner) {
         fb.restarted = nullptr;
@@ -117,6 +132,17 @@ FB_TEXT void CTR_ENDFRAME_FREEBIES(Renderer* renderer) {
         // The restart's own frames record nothing (Records, above).
         if (fb.cache != nullptr) fb.cache->recordRoom = -1;
     }
+}
+
+// nopromo (above), the chain's next link: the real CtrRenderer_endFrame, then the check.
+__attribute__((noinline, section(".late_nopromo"))) void CTR_ENDFRAME_NOPROMO(Renderer* renderer) {
+    __real_CtrRenderer_endFrame(renderer);
+    CtrTextureCache* c = fb.cache;
+    if (c == nullptr || c->pageCount == 0 || c->pages[0].promotionRetryFrame == UINT32_MAX || c->packedBudgetBytes != 0 ||
+        c->packedBytes != 0 || c->wholeBytes != 0 || c->wholeRead != nullptr || c->reader == nullptr)
+        return;
+    for (uint32_t i = 0; c->pageCount > i; i++) c->pages[i].promotionRetryFrame = UINT32_MAX;
+    logInfo(npLog, (unsigned long) c->frame);
 }
 
 #endif

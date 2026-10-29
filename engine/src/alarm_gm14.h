@@ -16,6 +16,8 @@
 #ifndef _BS_ALARM_GM14_H_
 #define _BS_ALARM_GM14_H_
 
+#include "z_utexact_alarm.h"
+
 // The alarm value of an RValue (UNDERTALE's rule for GMS 1.4's data, otherwise RValue_toInt32's). On the 3DS an asm
 // call of Colflip14_alarmValue: a plain call would add a call graph edge from VMBuiltins_setVariable to new code, which
 // reorders GCC's function output (collision.h's Colflip_callScan). The RValue goes in r0-r3 and the value comes back

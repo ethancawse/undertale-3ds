@@ -273,6 +273,10 @@ list(APPEND VENDOR_SOURCES ${PVAAC_SOURCES})
 
 # ===[ 3DS platform layer ]===
 file(GLOB PLATFORM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/source/*.c")
+if(CTRPORT_GAME STREQUAL "deltarune")
+    # UNDERTALE Old's asset tables are absent from the curated DELTARUNE kit.
+    list(REMOVE_ITEM PLATFORM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/source/z_utold_tile_assets.c")
+endif()
 # GPU-1 is compiled only by the New DR switch below.
 list(REMOVE_ITEM PLATFORM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/source/z_knightnew_history.c")
 if(NOT CTRPORT_GAME STREQUAL "undertale" OR NOT CTRPORT_GOG_COMPAT)
@@ -664,6 +668,27 @@ if(CTRPORT_GAME STREQUAL "undertale" AND CTRPORT_TARGET STREQUAL "o3ds")
     string(REPLACE "/* TEST_RODATA_RESERVE */ 0x2000" "0x3000"
            CTRPORT_LATE_LD_TEXT "${CTRPORT_LATE_LD_TEXT}")
 endif()
+# freebytes (lead brief 2026-10-29): UNDERTALE Old 3DS's late code reserve is the one every fix spends, while its late
+# constants page had 3,609 B spare. Two cold constant blocks move from the late text block to the end of the late
+# constants list: the crash screen's (z_argcrash.c, 2,004 B) and the bench files' names (ctr_bench_io.c, 480 B). Same
+# bytes, read only in both places; only late addresses change (tools/analysis/check_smoothux_layout.py proves it).
+# ctr_bench_io.o's defensive catch-all for its other read-only input moves with them (it would otherwise take the
+# bench names back into late text). Other targets keep all three lines in late text (DELTARUNE Old has about 400 B of
+# late constants spare).
+if(CTRPORT_GAME STREQUAL "undertale" AND CTRPORT_TARGET STREQUAL "o3ds")
+    foreach(freebytes_sel "*(.rodata.argcrash_in_text)" "*(.rodata.pacer_io_in_text)" "*ctr_bench_io.o(.rodata .rodata.*)")
+        string(FIND "${CTRPORT_LATE_LD_TEXT}" "    ${freebytes_sel}
+" freebytes_at)
+        if(freebytes_at LESS 0)
+            message(FATAL_ERROR "freebytes: late_reserve.ld has no line ${freebytes_sel}")
+        endif()
+        string(REPLACE "    ${freebytes_sel}
+" "" CTRPORT_LATE_LD_TEXT "${CTRPORT_LATE_LD_TEXT}")
+        string(REPLACE "/* FREEBYTES_RODATA */" "${freebytes_sel}
+    /* FREEBYTES_RODATA */"
+               CTRPORT_LATE_LD_TEXT "${CTRPORT_LATE_LD_TEXT}")
+    endforeach()
+endif()
 # UNDERTALE did not link libctru's RomFS driver on main 36a55611. benchromfs (first) put romfs_dev.o right after its own
 # late lines, so its addresses are frozen there; relprep's later RELPREP_ROMFS_<kind> placeholders stay empty (a second
 # selector for an input section already placed would match nothing). DELTARUNE already linked it at frozen addresses.
@@ -848,6 +873,15 @@ if(CTRPORT_ADPCM_SFXPACK)
     endif()
     target_compile_definitions(ctrport PRIVATE CTRPORT_ADPCM_SFXPACK)
     target_link_options(ctrport PRIVATE "-Wl,--wrap=CtrAudioSystem_create")
+endif()
+# TEST ONLY (build word adpcmfault): one linear allocation of the sound feeder or the pack fails (1 tail, 2 seam,
+# 3 piece pool, 4 a voice's ring), to prove no compressed payload reaches a raw DSP queue.
+set(CTRPORT_ADPCM_FAULT "0" CACHE STRING "TEST ONLY: the feeder/pack allocation that fails (0 none)")
+if(NOT CTRPORT_ADPCM_FAULT STREQUAL "0")
+    if(NOT CTRPORT_ADPCM_SFXPACK OR NOT CTRPORT_ADPCM_FAULT MATCHES "^[1-4]$")
+        message(FATAL_ERROR "adpcmfault needs adpcmpack and one of tail, seam, pool, ring")
+    endif()
+    target_compile_definitions(ctrport PRIVATE CTRPORT_ADPCM_FAULT=${CTRPORT_ADPCM_FAULT})
 endif()
 if(CTRPORT_ADPCM_TEST_UNKNOWN_MTIME)
     if(NOT CTRPORT_ADPCM_MUSIC)
@@ -1048,6 +1082,11 @@ target_link_options(ctrport PRIVATE
 # reads any more and tries once more (ctr_audio_system.c's end). Wrapped, so ctr_memory_lock.c's entry keeps its code;
 # only their call target changes.
 target_link_options(ctrport PRIVATE -Wl,--wrap=CtrMemory_linearAllocOnce)
+# pcmwait (both games): every channel clear and reset notes the NDSP frame callback count (the DSP takes the cut a
+# few frames later, and a block it may still read waits until then), and the uta callback's set/unset and ndspExit
+# keep the DSP's on/off state in a flag (no check reads the audio system, which a worker can outlive). Wrapped, so
+# their callers keep their code; only the call target changes.
+target_link_options(ctrport PRIVATE -Wl,--wrap=ndspChnReset,--wrap=ndspChnWaveBufClear,--wrap=ndspSetCallback,--wrap=ndspExit)
 # Azahar only: every new VRAM block is touched (source/ctr_vram_touch.c, late code). Wrapped, so the allocator entries
 # in source/ctr_memory_lock.c and the renderer's tile copies stay as they were.
 target_link_options(ctrport PRIVATE
@@ -1782,10 +1821,19 @@ ctr_generate_smdh(ctrport.smdh
 # Make also needs an input dependency when title/description arguments change.
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/ctrport.smdh" APPEND
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
+set(CTRPORT_ROMFS_RAW "${CMAKE_CURRENT_BINARY_DIR}/canonical.romfs")
+set(CTRPORT_ROMFS_IVFC "${CMAKE_CURRENT_BINARY_DIR}/canonical.ivfc")
 if(CTRPORT_AOT_MODULES)
     include("${CMAKE_CURRENT_SOURCE_DIR}/aot/aot_modules.cmake")
 else()
-    ctr_create_3dsx(ctrport OUTPUT "${CTRPORT_3DSX_OUTPUT}" SMDH ctrport.smdh ROMFS "${CTRPORT_ROMFS_DIR}")
+    # ctr_create_3dsx accepts directories only; feed the shared canonical image directly.
+    add_custom_command(OUTPUT "${CTRPORT_3DSX_OUTPUT}"
+        COMMAND "${CTR_3DSXTOOL_EXE}" "$<TARGET_FILE:ctrport>" "${CTRPORT_3DSX_OUTPUT}"
+                "--smdh=${CMAKE_CURRENT_BINARY_DIR}/ctrport.smdh" "--romfs=${CTRPORT_ROMFS_RAW}"
+        DEPENDS ctrport "${CMAKE_CURRENT_BINARY_DIR}/ctrport.smdh" "${CTRPORT_ROMFS_RAW}"
+        VERBATIM)
+    add_custom_target(ctrport_3dsx ALL DEPENDS "${CTRPORT_3DSX_OUTPUT}")
+    dkp_set_target_file(ctrport_3dsx "${CTRPORT_3DSX_OUTPUT}")
     add_custom_command(OUTPUT "${CTRPORT_3DSX_OUTPUT}" APPEND
         DEPENDS "${CTRPORT_ROMFS_DIR}/bench_scenes.txt" "${COVERAGE_ROMFS_FILE}")
 endif()
@@ -1836,16 +1884,7 @@ find_program(MAKEROM_EXE NAMES makerom HINTS "${DEVKITPRO}/tools/bin")
 find_program(BANNERTOOL_EXE NAMES bannertool HINTS "${DEVKITPRO}/tools/bin")
 set(CIA_RSF "${CMAKE_CURRENT_SOURCE_DIR}/cia/${CTRPORT_TARGET}.rsf")
 set(CIA_EXTRA_DEPENDS "")
-# Every package includes legal texts and the bench scenes; chapter AOT modules share this RomFS.
-# makerom paths are relative to its build working directory.
-file(READ "${CIA_RSF}" CIA_RSF_TEXT)
-set(CIA_RSF_ROMFS "${CMAKE_CURRENT_BINARY_DIR}/cia-${CTRPORT_TARGET}-romfs.rsf")
-file(RELATIVE_PATH CIA_ROMFS_REL "${CMAKE_CURRENT_BINARY_DIR}" "${CTRPORT_ROMFS_DIR}")
-file(WRITE "${CIA_RSF_ROMFS}" "${CIA_RSF_TEXT}
-RomFs:
-  RootPath: ${CIA_ROMFS_REL}
-")
-set(CIA_RSF "${CIA_RSF_ROMFS}")
+# Use the same sorted payload as the 3dsx, wrapped in an IVFC hash tree.
 set(CIA_EXTRA_DEPENDS ${CTRPORT_AOT_MODULE_FILES} "${CTRPORT_ROMFS_DIR}/bench_scenes.txt"
     "${COVERAGE_ROMFS_FILE}" ${BTNPROMPT_ROMFS_FILES} ${LOADSCREEN_ROMFS_FILES} "${CTRPORT_FONT_TABLES_STAMP}")
 set(CIA_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${RELEASE_PACKAGE_STEM}.cia")
@@ -1882,12 +1921,12 @@ if(MAKEROM_EXE AND BANNERTOOL_EXE)
     add_custom_command(OUTPUT "${CIA_OUTPUT}"
         COMMAND "${MAKEROM_EXE}" -f cia -o "${CIA_OUTPUT}" -target t -exefslogo
                 -rsf "${CIA_RSF}" -elf "$<TARGET_FILE:ctrport>"
-                -icon ctrport.icn -banner ctrport.bnr
+                -icon ctrport.icn -banner ctrport.bnr -romfs "${CTRPORT_ROMFS_IVFC}"
                 -major ${RELEASE_CIA_MAJOR} -minor ${RELEASE_CIA_MINOR} -micro ${RELEASE_CIA_PATCH}
                 "-DAPP_TITLE=${CIA_TITLE}" "-DAPP_PRODUCT_CODE=${CIA_PRODUCT_CODE}" "-DAPP_UNIQUE_ID=${CIA_UNIQUE_ID}"
                 "-DAPP_SYSTEM_MODE=${CIA_O3DS_MEMORY}" "-DAPP_SYSTEM_MODE_EXT=${CTRPORT_N3DS_MEMORY}"
         DEPENDS ctrport "${CIA_RSF}" "${CMAKE_CURRENT_BINARY_DIR}/ctrport.icn" "${CMAKE_CURRENT_BINARY_DIR}/ctrport.bnr"
-                ${CIA_EXTRA_DEPENDS} ${RELEASE_LEGAL_FILES}
+                ${CIA_EXTRA_DEPENDS} ${RELEASE_LEGAL_FILES} "${CTRPORT_ROMFS_IVFC}"
         COMMENT "Building CIA ${CIA_OUTPUT}"
         VERBATIM
     )
@@ -1983,6 +2022,11 @@ set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/source/z_freebies.c" PR
     "-Os;-fno-builtin-printf;-fno-builtin-puts;-fno-builtin-putchar;-fno-builtin-fprintf;-fno-builtin-fputs;-fno-tree-switch-conversion;-fno-jump-tables")
 if(CTRPORT_GAME STREQUAL "undertale")
     target_link_options(ctrport PRIVATE -Wl,--wrap=CtrRenderer_skipPresent)
+    # usstop (UT-002): shutdownAudio's CtrReadAhead_shutdown call first holds the sound plan's worker idle
+    # (source/ctr_audio_system.c's end). Wrapped, so shutdownAudio keeps its code; DELTARUNE has no worker. A copy
+    # still under way after its wait keeps the heap: the exit's owner decides at aptExit, and svcExitProcess calls
+    # a return address set aside there (exit trail builds chain aptExit after z_exittrail.c's wrap).
+    target_link_options(ctrport PRIVATE -Wl,--wrap=CtrReadAhead_shutdown,--wrap=aptExit,--wrap=svcExitProcess)
     # freebies (source/z_freebies.c): restarting the room into another planned scene gets the room load. Wrapped, so the
     # runner, main.c and z_utstall.c keep their code; DELTARUNE compiles the file empty and wraps nothing.
     target_link_options(ctrport PRIVATE -Wl,--wrap=Runner_handlePendingRoomChange,--wrap=RoomPlan_utstallPlan)
@@ -2078,6 +2122,28 @@ if(MAKEROM_EXE AND BANNERTOOL_EXE)
     add_custom_command(OUTPUT "${CIA_OUTPUT}" APPEND DEPENDS "${ROMFS_CONTENT_STAMP}")
 endif()
 
+# Both external packers enumerate directories in host order. Serialize once with
+# an explicit UTF-16 key; no timestamp, locale or filesystem-order dependency.
+add_custom_command(OUTPUT "${CTRPORT_ROMFS_RAW}" "${CTRPORT_ROMFS_IVFC}"
+    COMMAND "${CTRPORT_PYTHON_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/buildcache/romfs.py"
+            --source "${CTRPORT_ROMFS_DIR}" --raw "${CTRPORT_ROMFS_RAW}" --ivfc "${CTRPORT_ROMFS_IVFC}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/buildcache/romfs.py"
+            "${ROMFS_CONTENT_STAMP}" "${CTRPORT_FONT_TABLES_STAMP}"
+            ${CTRPORT_AOT_MODULE_FILES} ${RELEASE_LEGAL_FILES}
+            "${CTRPORT_ROMFS_DIR}/bench_scenes.txt" "${COVERAGE_ROMFS_FILE}"
+            ${BTNPROMPT_ROMFS_FILES} ${LOADSCREEN_ROMFS_FILES}
+    COMMENT "Packing sorted RomFS for both formats"
+    VERBATIM)
+add_custom_target(ctrport_romfs DEPENDS "${CTRPORT_ROMFS_RAW}" "${CTRPORT_ROMFS_IVFC}")
+add_dependencies(ctrport_romfs legal_texts)
+if(CTRPORT_AOT_MODULES)
+    add_dependencies(ctrport_romfs aotm_modules)
+endif()
+add_dependencies(ctrport_3dsx ctrport_romfs)
+if(MAKEROM_EXE AND BANNERTOOL_EXE)
+    add_dependencies(cia ctrport_romfs)
+endif()
+
 # Keep UT's release-only performance-test menu guard; DR uses upstream's exact runtime.
 if(CTRPORT_GAME STREQUAL "undertale")
     get_target_property(builderx_delegate ctrport C_COMPILER_LAUNCHER)
@@ -2159,6 +2225,12 @@ if(CTRPORT_EXITTRAIL)
     set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/source/z_exittrail.c" APPEND PROPERTY COMPILE_OPTIONS "-Os;-fno-jump-tables")
     target_link_options(ctrport PRIVATE -Wl,--wrap=CtrExit_closeFilesLog,--wrap=threadJoin,--wrap=fsExit,--wrap=aptExit,--wrap=srvExit,--wrap=__appExit,--wrap=__libctru_exit,--wrap=CtrLinkFiles_enable,--wrap=CtrExit_flush,--wrap=CtrExitOnce_chain,--wrap=CtrLinkFiles_prepare,--wrap=CtrLab_crashTest)
     set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/source/z_leavekeep.c" APPEND PROPERTY COMPILE_DEFINITIONS CTRPORT_EXITTRAIL)
+    # usstop's provoke test (--ini usprovoke=1-10 or usprovoke.txt, UNDERTALE): source/ctr_audio_system.c's end.
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/source/ctr_audio_system.c" APPEND PROPERTY COMPILE_DEFINITIONS CTRPORT_EXITTRAIL)
+    if(CTRPORT_GAME STREQUAL "undertale")
+        # usstop's provoke test: with usprovoke.txt, the run leaves after its bench (Azahar has no --exit-after).
+        target_link_options(ctrport PRIVATE -Wl,--wrap=CtrLaunchArgs_sendFilesMB,--wrap=envDestroyHandles)
+    endif()
 endif()
 # leavekeep (source/z_leavekeep.c says why): the lab leaves and filesRecover end without libctru's heap unmap (and,
 # in exit trail builds only, --lab-crash can fire after NDSP starts: the CtrLab_crashTest wrap in the block above).
@@ -2243,6 +2315,17 @@ if(CTRPORT_KNIGHTNEW_HISTORY AND CTRPORT_GAME STREQUAL "deltarune" AND CTRPORT_T
     endforeach()
     target_link_options(ctrport PRIVATE
         -Wl,--wrap=CtrRenderer_beginFrame,--wrap=CtrRenderer_endFrame,--wrap=GX_TextureCopy)
+    # Knight GPU L-A (knightgpu): while the application surface draws native, its texture's unused full-resolution
+    # memory holds hot spilled surfaces (ctr_renderer.c's end), through GPU-1's beginFrame wrapper. Exact pixels.
+    option(CTRPORT_KNIGHTGPU_LEND "Lend the application surface's unused memory to spilled surfaces on New DR" ON)
+    if(CTRPORT_KNIGHTGPU_LEND)
+        foreach(part ctr_renderer z_knightnew_history)
+            set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/source/${part}.c" APPEND PROPERTY
+                COMPILE_DEFINITIONS CTRPORT_KNIGHTGPU_LENDER)
+        endforeach()
+        # C3D_FrameBufClear: the slots go back before a resolution change's clear (ctr_renderer.c's end).
+        target_link_options(ctrport PRIVATE -Wl,--wrap=C3D_TexDelete,--wrap=C3D_FrameBufClear)
+    endif()
     set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/source/z_knightnew_history.c" PROPERTIES
         COMPILE_OPTIONS "-Os;-fno-tree-switch-conversion;-fno-jump-tables")
 endif()

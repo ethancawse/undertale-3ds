@@ -13360,6 +13360,14 @@ static bool isDimText(int32_t c1, int32_t c2, int32_t c3, int32_t c4, float alph
     return true;
 }
 
+// credfix T1 (UNDERTALE only): drawTextImpl's glyph draw goes to utxEmitPageRegion (this file's end), which draws a
+// steady glyph straight into the open batch and hands anything else to emitPageRegion.
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_RENDER_TIMING)
+static void utxEmitPageRegion(CtrRenderer* r, CtrPage* page, float sx0, float sy0, float sx1, float sy1, const float* px, const float* py,
+                              const CtrColor* c);
+#define emitPageRegion utxEmitPageRegion
+#endif
+#line 12032
 // Port of the GL renderers' text layout: line breaks, alignment, kerning and
 // per-glyph horizontal gradients (c1..c4 are TL, TR, BR, BL).
 static void drawTextImpl(CtrRenderer* r, const char* text, float x, float y, float xscale, float yscale, float angleDeg, int32_t c1in, int32_t c2in,
@@ -13571,6 +13579,10 @@ static void drawTextImpl(CtrRenderer* r, const char* text, float x, float y, flo
     if (track && boxX1 >= boxX0) noteText(r, text, boxX0, boxY0, boxX1, boxY1, small);
     if (linear) smartLinearEnd(r, keepFilter);
 }
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_RENDER_TIMING)
+#undef emitPageRegion
+#endif
+#line 12243
 
 static void ctrDrawText(Renderer* renderer, const char* text, float x, float y, float xscale, float yscale, float angleDeg, float lineSeparation) {
     int32_t c = (int32_t) renderer->drawColor;
@@ -26330,5 +26342,682 @@ void Utold_continueBlack(Renderer* renderer) {
     gspWaitForEvent(vblank, true);
     gspWaitForEvent(vblank, true);
     if (active) resumeFrame(r, &saved);
+}
+#endif
+
+// ===[ Knight GPU L-A: the application surface's unused full-resolution memory holds hot spilled surfaces ]===
+//
+// With native drawing the application surface draws into the half view of its full-resolution texture (see "Native
+// drawing"): its first half-view size of bytes. The rest of the texture (1456 KB of 1952 for 640x480) waits for the
+// frames drawn in full, and meanwhile nothing uses it. DELTARUNE Chapter 3's Roaring Knight keeps up to eleven 640x480
+// afterimages, each a native 512x256 texture redrawn every frame; VRAM holds one, so the rest
+// spill and pay a GPU copy in and one out per frame each (0.42-0.78 ms each on the New 3DS, knightgpu).
+//
+// While the surface draws native, that memory is lent in slots of the half view's size: a spilled surface drawn on in
+// the frames before moves into a slot and keeps its own target there, as if VRAM had had room for it. Its pixels are
+// copied in once and its linear texture is kept as a spare. Once a frame starts in full (updateAppResolution, which
+// only swaps views: the full view's first draw comes later in the frame), and before the application surface's
+// texture is deleted (__wrap_C3D_TexDelete), whatever is in a slot goes back to linear memory with its pixels:
+// surfaces through demoteSurface, the scratches that leaves over a slot (and any made over one) released. Deleting lent
+// memory frees nothing (it is the lender's): libctru's vramFree ignores an address no block starts at. Deferred frees are done at the
+// start of each frame (beginFrame), before slots are filled, and the GPU runs what used a slot's memory before them in
+// order. 640x480 gives two slots.
+// Nothing drawn changes: the same pixels are drawn and sampled, from VRAM instead of linear memory. Built at -Os; its
+// log lines are in profile builds only.
+#if defined(ENABLE_WAD17) && defined(CTRPORT_KNIGHTGPU_LENDER)
+// Two slots: 640x480's half view is 496 KB of the full texture's 1952.
+#define KG_SLOTS 2u
+#define KG_LATE __attribute__((optimize("Os"), section(".text.knightgpu_late")))
+#ifdef CTRPORT_RENDER_TIMING
+static const char kgLendText[] __attribute__((section(".rodata.knightgpu_late"))) =
+    "Renderer: lending %u slots of the application surface's full-resolution texture\n";
+static const char kgBackText[] __attribute__((section(".rodata.knightgpu_late"))) =
+    "Renderer: lent texture memory given back (%u moved in so far)\n";
+static const char kgSwapText[] __attribute__((section(".rodata.knightgpu_late"))) =
+    "Renderer: idle surface %d moved to linear memory, its VRAM to spilled surface %d\n";
+#define KG_LOG(...) logInfo(__VA_ARGS__)
+#define KG_MOVED() kg.moved++
+#else
+#define KG_LOG(...) ((void) 0)
+#define KG_MOVED() ((void) 0)
+#endif
+static struct {
+    CtrRenderer* r;
+    uint8_t* base;      // the lender's memory, nullptr while nothing is lent
+    uint32_t slotSize;  // slot i (1..KG_SLOTS) is at base + i * slotSize
+    uint32_t moved;     // surfaces moved into slots (profile builds)
+    RendererVtable* table;                     // the table whose surfaceFree is kgSurfaceFree (L-C')
+    void (*prev)(Renderer*, int32_t);          // what it held before
+    C3D_RenderTarget* dead[KG_SLOTS];          // targets of slot surfaces freed this frame (L-C')
+    RendererVtable* ctable;                    // the same for createSurface (L-D)
+    int32_t (*cprev)(Renderer*, int32_t, int32_t);
+    CtrDeferredFree spare;                     // a VRAM surface of a slot's size freed this frame (L-D)
+    uint32_t frame;                            // kg.r's frame number when this frame began
+    C3D_Tex keep[KG_SLOTS];                    // slot i+1's surface's own linear texture, kept for its way back
+    int32_t keepId[KG_SLOTS];                  // that surface (while keep[i].data is set)
+    C3D_Tex zombie;                            // the lender's texture, deleted in a frame: freed once given back
+    bool zombieFree;                           // given back: zombie goes at the next frame's begin
+} kg __attribute__((section(".bss.knightgpu_late")));
+
+void __real_CtrRenderer_beginFrame(Renderer* renderer);
+void __real_C3D_TexDelete(C3D_Tex* tex);
+
+static bool KG_LATE kgIn(const void* p, const uint8_t* at, uint32_t size) {
+    const uint8_t* q = (const uint8_t*) p;
+    return q >= at && at + size > q;
+}
+
+// The application surface, if this frame draws it native: the half view of its full texture, which appView keeps
+// (updateAppResolution drops appView's target once the surface's texture goes).
+static CtrSurface* KG_LATE kgLender(CtrRenderer* r) {
+    if (r->appView.target == nullptr || r->appView.shift != 0) return nullptr;
+    CtrSurface* s = &r->surfaces[r->appView.surface];
+    return s->shift == 1 && s->tex.data == r->appView.tex.data ? s : nullptr;
+}
+
+// The bound spilled surface's scratch, or the slot whose VRAM that scratch reuses (aliasScratch), lies in a slot.
+static bool KG_LATE kgBoundInSlot(CtrRenderer* r) {
+    if (0 > r->spillBound) return false;
+    int32_t k = r->surfaces[r->spillBound].scratch;
+    if (0 > k || k >= arrlen(r->scratches)) return false;
+    int32_t root = 0 <= r->scratches[k].base ? r->scratches[k].base : k;
+    return kgIn(r->scratches[k].tex.data, kg.base + kg.slotSize, KG_SLOTS * kg.slotSize) ||
+           kgIn(r->scratches[root].tex.data, kg.base + kg.slotSize, KG_SLOTS * kg.slotSize);
+}
+
+// Everything in a slot back to linear memory; nothing is lent after. It runs in a frame (KnightGpu_beginFrame after the
+// real one, and __wrap_C3D_FrameBufClear inside bindSurface's clear of the application surface), or outside one
+// (__wrap_C3D_TexDelete while no frame is begun: a Step's reclaimVram, the deferred frees that begin a frame, ctrDestroy;
+// or in a frame ended early, suspendFrame's, which __wrap_C3D_TexDelete runs as outside one: knightldrev's F2). Its
+// copies and releaseIdleScratches then go without a frame. Every scratch is released, those over a slot too, so none is
+// left over the lender's memory once it goes. One bound is stored and unbound first, as a surface in a slot that is bound
+// (knightldrev's F1). Only in a frame ended early can either be bound here: beginFrame resets spillBound, binding the
+// application surface (the clear) stored it (bindTarget's storeSpill), and present() stored it before any point outside
+// a frame. Unbound, the rest of that target's draws are dropped until the game binds a target again; without lending
+// the frame would have drawn them. That needs the application surface resized in a frame, while a surface is the
+// target and VRAM is full, which no DELTARUNE scene does (no "resized surface 0" in DR44).
+static void KG_LATE kgSplit(CtrRenderer* r);
+static void KG_LATE kgGiveBack(CtrRenderer* r) {
+    uint8_t* slots = kg.base + kg.slotSize;
+    // L-D's spare goes the usual way (ctrDestroy's processDeferredFrees, when the lender goes with the renderer).
+    if (kg.spare.target != nullptr) queueDeferredFree(r, kg.spare);
+    kg.spare.target = nullptr;
+    if (kg.base == nullptr) return;
+    bool boundInSlot = kgBoundInSlot(r);
+    // Nothing is lent from here on (a nested call does nothing).
+    kg.base = nullptr;
+    if (kg.zombie.data != nullptr) kg.zombieFree = true;
+    if (boundInSlot) {
+        CtrSurface* b = &r->surfaces[r->spillBound];
+        // As storeSpill: what was drawn waits in the scratch, which releaseIdleScratches copies to the surface.
+        if (r->inFrame) flushBatch(r);
+        if (r->spillDirty) {
+            r->scratches[b->scratch].owner = r->spillBound;
+            r->scratches[b->scratch].pendingStore = true;
+        }
+        if (r->boundTarget == b->target) {
+            r->boundTarget = nullptr;
+            r->boundSurface = -1;
+        }
+        r->spillBound = -1;
+        r->spillLoadPending = false;
+        r->spillDirty = false;
+    }
+    // Every scratch goes, those over a slot included: a spilled surface's own texture keeps its pixels and it gets a
+    // scratch again when next bound.
+    releaseIdleScratches(r, 0);
+    for (uint32_t i = 0; r->surfaceCount > i; i++) {
+        CtrSurface* s = &r->surfaces[i];
+        // A parked one keeps only a stale pointer (its pixels are in the heap). One without a target is being freed
+        // (deferSurfaceFree, which leaves it used): ctrDestroy's, at a chapter's end, or a resize's. Moved out, its new
+        // linear texture would be lost (arglcreview's review: up to 496 KB a slot at every chapter change).
+        if (!s->used || s->spilled || s->recorded || s->parked != nullptr || s->target == nullptr ||
+            !kgIn(s->tex.data, slots, KG_SLOTS * kg.slotSize)) continue;
+        if (r->boundTarget == s->target) {
+            r->boundTarget = nullptr;
+            r->boundSurface = -1;
+        }
+        // Back to its own linear texture, kept since it moved in (kgPromote): nothing to allocate, so it cannot fail
+        // and its pixels come with it (knightldrev's F3). Its scratch number is still the one it had before it moved
+        // in, a placeholder in range (kgSwap's).
+        uint32_t j = (uint32_t) (((const uint8_t*) s->tex.data - slots) / kg.slotSize);
+        if (kg.keep[j].data != nullptr && kg.keepId[j] == (int32_t) i) {
+            C3D_Tex lin = kg.keep[j];
+            kg.keep[j].data = nullptr;
+            if (r->inFrame) {
+                kgSplit(r);
+                if (!s->needsClear) queueTextureCopy(r, &s->tex, &lin, s->tex.width);
+            } else if (!s->needsClear) {
+                u32 dim = GX_BUFFER_DIM(((u32) s->tex.width * 8 * 4) >> 4, 0);
+                C3D_SyncTextureCopy((u32*) s->tex.data, dim, (u32*) lin.data, dim, s->tex.size, GX_TRANSFER_RAW_COPY(1));
+            }
+            queueDeferredFree(r, (CtrDeferredFree) { .target = s->target });
+            s->tex = lin;
+            s->target = nullptr;
+            s->spilled = true;
+            s->storeQueued = false;
+            continue;
+        }
+        // Not reached: every surface in a slot came by kgPromote with its texture kept, and a kept one whose surface
+        // left the slot is freed (kgKeepCheck). Kept as it was before the keep: a free scratch slot, which
+        // demoteSurface makes over the slot.
+        ptrdiff_t k = 0;
+        while (arrlen(r->scratches) > k && r->scratches[k].target != nullptr) k++;
+        if (arrlen(r->scratches) == k || !demoteSurface(r, (int32_t) i, (int32_t) k)) {
+            // No linear memory: recorded, blank (as a surface neither VRAM nor linear memory has room for).
+            queueDeferredFree(r, (CtrDeferredFree) { .target = s->target });
+            initRecordedSurface(s, s->width, s->height);
+        }
+        releaseIdleScratches(r, 0);
+    }
+    // Kept textures whose surface left its slot another way.
+    for (uint32_t j = 0; KG_SLOTS > j; j++) {
+        if (kg.keep[j].data != nullptr) queueDeferredFree(r, (CtrDeferredFree) { .tex = kg.keep[j] });
+        kg.keep[j].data = nullptr;
+    }
+    KG_LOG(kgBackText, (unsigned) kg.moved);
+}
+
+// A kept texture (kgPromote) whose surface is no longer in its slot (freed, demoted for a scratch, parked, resized) goes.
+static void KG_LATE kgKeepCheck(CtrRenderer* r) {
+    for (uint32_t j = 0; KG_SLOTS > j; j++) {
+        if (kg.keep[j].data == nullptr) continue;
+        int32_t id = kg.keepId[j];
+        CtrSurface* s = 0 <= id && r->surfaceCount > (uint32_t) id ? &r->surfaces[id] : nullptr;
+        if (s != nullptr && s->used && !s->spilled && s->parked == nullptr && s->target != nullptr &&
+            s->tex.data == kg.base + (j + 1u) * kg.slotSize) continue;
+        queueDeferredFree(r, (CtrDeferredFree) { .tex = kg.keep[j] });
+        kg.keep[j].data = nullptr;
+    }
+}
+
+static bool KG_LATE kgSlotFree(CtrRenderer* r, const uint8_t* at) {
+    for (uint32_t i = 0; r->surfaceCount > i; i++) {
+        if (r->surfaces[i].used && kgIn(r->surfaces[i].tex.data, at, kg.slotSize)) return false;
+    }
+    for (ptrdiff_t k = 0; arrlen(r->scratches) > k; k++) {
+        if (r->scratches[k].target != nullptr && kgIn(r->scratches[k].tex.data, at, kg.slotSize)) return false;
+    }
+    return true;
+}
+
+// A spilled surface drawn on in the frame before (and the one before that), to move into VRAM, while another in use
+// (touched within SCRATCH_IDLE_FRAMES) stays spilled. In the Knight's scenes those are all afterimages of one size: the
+// one left keeps the scratch they share in use, so a new one spills into it. With none left the scratch is released,
+// and the next one scratchFor makes moves a surface out of a slot (knightgpu's Azahar run of ch3_roar: every third
+// afterimage made did, a copy out and one back in each time; counting only those drawn in the last two frames left
+// nine). An idle one (L-B's) keeps no scratch in use.
+static int32_t KG_LATE kgCandidate(CtrRenderer* r) {
+    int32_t found = -1;
+    uint32_t inUse = 0;
+    for (uint32_t i = 0; r->surfaceCount > i; i++) {
+        CtrSurface* s = &r->surfaces[i];
+        // Parked ones have no texture; recorded ones are never spilled; none is bound yet (beginFrame). A sample region
+        // is a copy, and frame skip's recordings that read a surface count in skipRealRefs.
+        if (!s->used || !s->spilled || s->windowed || s->lazy != nullptr || s->lazyRefs != 0 || s->skipRec != nullptr ||
+            s->skipRealRefs != 0 || s->tex.data == nullptr || s->tex.size > kg.slotSize ||
+            SCRATCH_IDLE_FRAMES <= r->frame - s->touchedFrame) continue;
+        inUse++;
+        if (0 > found && 2 <= s->boundFrames && s->boundFrame + 1u == r->frame) found = (int32_t) i;
+    }
+    return 2 <= inUse ? found : -1;
+}
+
+// After what was recorded so far, ahead of everything that draws on or samples what moves.
+static void KG_LATE kgSplit(CtrRenderer* r) {
+    flushBatch(r);
+    if (r->drawnSinceSplit) splitFrame(r);
+}
+
+// Spilled surface id takes `tex` (VRAM of its texture's size) and `target`: its pixels are copied in, from its scratch
+// if that holds them, and its linear texture goes after the GPU (a spare), or into *keep. The caller has split the frame.
+static void KG_LATE kgMoveIn(CtrRenderer* r, int32_t id, const C3D_Tex* tex, C3D_RenderTarget* target, C3D_Tex* keep) {
+    CtrSurface* s = &r->surfaces[id];
+    CtrScratch* sc = 0 <= s->scratch && arrlen(r->scratches) > s->scratch ? &r->scratches[s->scratch] : nullptr;
+    bool inScratch = sc != nullptr && sc->target != nullptr && sc->owner == id;
+    if (!s->needsClear) queueTextureCopy(r, inScratch ? &sc->tex : &s->tex, tex, tex->width);
+    if (keep != nullptr) *keep = s->tex;
+    else queueDeferredFree(r, (CtrDeferredFree) { .tex = s->tex });
+    if (inScratch) {
+        sc->owner = -1;
+        sc->pendingStore = false;
+    }
+    s->tex = *tex;
+    s->target = target;
+    s->spilled = false;
+    s->storeQueued = false;
+    KG_MOVED();
+}
+
+static bool KG_LATE kgPromote(CtrRenderer* r, int32_t id, uint8_t* at) {
+    C3D_Tex tex = r->surfaces[id].tex;
+    tex.data = at;
+    C3D_RenderTarget* target = C3D_RenderTargetCreateFromTex(&tex, GPU_TEXFACE_2D, 0, -1);
+    if (target == nullptr) return false;
+    target->frameBuf.height = (u16) (tex.size / ((uint32_t) tex.width * 4u));
+    kgSplit(r);
+    // Its linear texture stays, for the way back (kgGiveBack): the memory it used before it moved in.
+    uint32_t j = (uint32_t) ((at - kg.base) / kg.slotSize) - 1u;
+    if (kg.keep[j].data != nullptr) queueDeferredFree(r, (CtrDeferredFree) { .tex = kg.keep[j] });
+    kg.keepId[j] = id;
+    kgMoveIn(r, id, &tex, target, &kg.keep[j]);
+    return true;
+}
+
+// L-B: a VRAM surface of the same texture size that nothing has drawn to, sampled or read for SCRATCH_IDLE_FRAMES
+// trades places with spilled surface id (in ch3_roar and ch3_kfinal, a 640x480 surface of the fight's that no frame of
+// either window touches, against an afterimage drawn every frame). It is copied out to new linear memory first and
+// left spilled without a scratch, as releaseIdleScratches leaves surfaces: sampled from linear memory, the same pixels,
+// and given a scratch when next drawn on. Its VRAM and target then take id's pixels. Its scratch number is only a
+// placeholder, id's (an index in range, which freeing reads).
+static void KG_LATE kgSwap(CtrRenderer* r, int32_t id) {
+    CtrSurface* s = &r->surfaces[id];
+    int32_t appId = r->base.runner != nullptr ? r->base.runner->applicationSurfaceId : -1;
+    if (0 > s->scratch || s->scratch >= arrlen(r->scratches)) return;
+    for (uint32_t i = 0; r->surfaceCount > i; i++) {
+        CtrSurface* v = &r->surfaces[i];
+        // Not the lender or anything in its slots.
+        if (!v->used || v->spilled || v->recorded || v->windowed || v->target == nullptr || v->parked != nullptr ||
+            v->lazy != nullptr || v->lazyRefs != 0 || v->skipRec != nullptr || v->skipRealRefs != 0 ||
+            (int32_t) i == appId || (int32_t) i == r->boundSurface || v->tex.width != s->tex.width ||
+            v->tex.height != s->tex.height || v->tex.size != s->tex.size || SCRATCH_IDLE_FRAMES > r->frame - v->touchedFrame ||
+            kgIn(v->tex.data, kg.base, (KG_SLOTS + 1u) * kg.slotSize)) continue;
+        C3D_Tex lin;
+        if (!initLinearTexture(r, &lin, v->tex.width, v->tex.height, (int32_t) (v->tex.size / ((uint32_t) v->tex.width * 4u)))) return;
+        kgSplit(r);
+        if (!v->needsClear) queueTextureCopy(r, &v->tex, &lin, v->tex.width);
+        C3D_Tex vram = v->tex;
+        kgMoveIn(r, id, &vram, v->target, nullptr);
+        v->tex = lin;
+        v->target = nullptr;
+        v->spilled = true;
+        v->scratch = s->scratch;
+        v->storeQueued = false;
+        KG_LOG(kgSwapText, (int) i, (int) id);
+        return;
+    }
+}
+
+// L-C': a surface in a slot that the game frees leaves its target out of the deferred frees, and the next beginFrame
+// deletes it before the real one, outside the frame, as processDeferredFrees would have. Its texture is the lender's
+// memory, which deleting frees nothing of. With the target in the deferred frees, every surface made while VRAM was full
+// ran reclaimVram, which stops the frame and waits for the GPU to release nothing ("out of VRAM, released 0 KB"):
+// once per afterimage made, 8 lines a run went to 31 in rows knightgpu-la-r1 (n3ds), and the slowest 1% of CPU
+// frames rose 2-4 ms. In whichever table renderer->vtable is when a frame begins, unless kgSurfaceFree is still in the
+// one it went into: a wrapper's table copied from that one calls it already, and going in again would loop.
+static void KG_LATE kgSurfaceFree(Renderer* renderer, int32_t id) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    C3D_RenderTarget* target = nullptr;
+    bool slot = false;
+    if (kg.base != nullptr && 0 <= id && r->surfaceCount > (uint32_t) id) {
+        CtrSurface* s = &r->surfaces[id];
+        if (s->used && !s->spilled && !s->recorded && !s->windowed && s->parked == nullptr && s->target != nullptr) {
+            slot = kgIn(s->tex.data, kg.base + kg.slotSize, KG_SLOTS * kg.slotSize);
+            // L-D: or a VRAM surface of its own of a slot's size (not the lender's memory), while none is kept.
+            if (slot || (kg.spare.target == nullptr && ((s->tex.size + 127u) & ~127u) == kg.slotSize &&
+                         !kgIn(s->tex.data, kg.base, (KG_SLOTS + 1u) * kg.slotSize))) {
+                target = s->target;
+            }
+        }
+    }
+    kg.prev(renderer, id);
+    // The application surface's is never freed here; frame skip may have moved the array.
+    if (target == nullptr || r->surfaces[id].used) return;
+    for (ptrdiff_t i = arrlen(r->deferredFrees) - 1; i >= 0; i--) {
+        if (r->deferredFrees[i].target != target) continue;
+        if (slot) {
+            uint32_t j = 0;
+            while (KG_SLOTS > j && kg.dead[j] != nullptr) j++;
+            if (KG_SLOTS == j) return;
+            kg.dead[j] = target;
+        } else {
+            kg.spare = r->deferredFrees[i];
+        }
+        arrdel(r->deferredFrees, i);
+        return;
+    }
+}
+
+// L-D: the VRAM of a surface of a slot's size freed this frame (kgSurfaceFree) goes to the next surface made of its
+// texture's size, which VRAM had no room for: spilled, its linear texture not made yet (spillSurfaceLater), and to be
+// cleared before anything reads it. As reclaimVram would have given it the VRAM, but without stopping the frame to wait
+// for the GPU (about 15 ms on the New 3DS, KGTIME in rows knightgpu-lbprof-coverage-r1). The GPU runs what sampled the
+// freed surface before what draws on the new one: it is all one queue, split here. Its target is reused (L-B reuses
+// one the same way). A spare nothing takes is deleted at the next beginFrame, before the real one, outside the frame.
+// In DELTARUNE Chapter 3's Roaring Knight fight that is the afterimage in VRAM of its own: the game frees the oldest
+// and makes the next every three frames.
+static int32_t KG_LATE kgCreateSurface(Renderer* renderer, int32_t width, int32_t height) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    int32_t id = kg.cprev(renderer, width, height);
+    if (kg.spare.target == nullptr || 0 > id || r->surfaceCount <= (uint32_t) id) return id;
+    CtrSurface* s = &r->surfaces[id];
+    if (!s->used || !s->spilled || s->parked != PARKED_UNMADE || !s->needsClear || s->windowed || s->tex.width != kg.spare.tex.width ||
+        s->tex.height != kg.spare.tex.height || s->tex.size != kg.spare.tex.size) {
+        return id;
+    }
+    kgSplit(r);
+    s->tex.data = kg.spare.tex.data;
+    s->target = kg.spare.target;
+    s->spilled = false;
+    s->parked = nullptr;
+    s->storeQueued = false;
+    kg.spare.target = nullptr;
+    return id;
+}
+
+// The clear of the application surface's whole full-resolution texture, the slots too: its first bind once it draws at
+// full resolution again (bindSurface, needsClear from updateAppResolution: the 3D slider up, Smoothing Full, Drawing
+// Full, wide, the magnifier). What is still in the slots goes back to linear memory first, the copies queued ahead of
+// the clear (demoteSurface in the frame). Giving them back after the real beginFrame copied the clear (
+// arglcreview's review). Not sooner, at the frame begin: beginFrame's remakeNativeSurfaces moves the native-scale ones
+// out of the slots itself, made full, and giving them back first cost it the memory to (knightgpu's Azahar run of
+// ch3_roar with Drawing Full at frame 599: a draw dropped and the application surface shown lost). Those left are
+// full-scale ones, or ones it had no memory to make full.
+void __real_C3D_FrameBufClear(C3D_FrameBuf* fb, C3D_ClearBits clearBits, u32 clearColor, u32 clearDepth);
+void __wrap_C3D_FrameBufClear(C3D_FrameBuf* fb, C3D_ClearBits clearBits, u32 clearColor, u32 clearDepth) KG_LATE;
+void __wrap_C3D_FrameBufClear(C3D_FrameBuf* fb, C3D_ClearBits clearBits, u32 clearColor, u32 clearDepth) {
+    if (kg.base != nullptr && fb->colorBuf == kg.base && kg.r != nullptr && kgLender(kg.r) == nullptr) kgGiveBack(kg.r);
+    __real_C3D_FrameBufClear(fb, clearBits, clearColor, clearDepth);
+}
+
+// Knight GPU-1's beginFrame wrapper (z_knightnew_history.c) calls this in place of the real one.
+void KnightGpu_beginFrame(Renderer* renderer) KG_LATE;
+void KnightGpu_beginFrame(Renderer* renderer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    // A renderer made since the last frame (DELTARUNE's chapters each make their own; the address may repeat, the frame
+    // number starts over): its tables are all copied anew from ctrVtable, which CtrRenderer_create fills afresh, so none
+    // holds the wrappers. The tables they went into may be out of its chain for good while still holding them
+    // (smalltext's st.outer with Crisp text off in the next chapter; the state hash's after it ends), which would keep
+    // them out of every later chapter (arglcreview's review).
+    if (kg.r != r || kg.frame >= r->frame) {
+        kg.table = nullptr;
+        kg.ctable = nullptr;
+        // The renderer before went while its lender was kept (deleted in its last frame): nothing of it is lent now.
+        if (kg.base != nullptr) {
+            kg.base = nullptr;
+            kg.zombieFree = kg.zombie.data != nullptr;
+            for (uint32_t j = 0; KG_SLOTS > j; j++) {
+                if (kg.keep[j].data != nullptr) C3D_TexDelete(&kg.keep[j]);
+                kg.keep[j].data = nullptr;
+            }
+        }
+    }
+    if (kg.zombieFree) {
+        // Outside the frame; the allocator holds the memory until the GPU has run what read it.
+        __real_C3D_TexDelete(&kg.zombie);
+        kg.zombie.data = nullptr;
+        kg.zombieFree = false;
+    }
+    kg.r = r;
+    kg.frame = r->frame;
+    for (uint32_t j = 0; KG_SLOTS > j; j++) {
+        if (kg.dead[j] != nullptr) C3D_RenderTargetDelete(kg.dead[j]);
+        kg.dead[j] = nullptr;
+    }
+    RendererVtable* vt = renderer->vtable;
+    if (vt->surfaceFree != kgSurfaceFree && (kg.table == nullptr || kg.table->surfaceFree != kgSurfaceFree)) {
+        kg.prev = vt->surfaceFree;
+        vt->surfaceFree = kgSurfaceFree;
+        kg.table = vt;
+    }
+    if (vt->createSurface != kgCreateSurface && (kg.ctable == nullptr || kg.ctable->createSurface != kgCreateSurface)) {
+        kg.cprev = vt->createSurface;
+        vt->createSurface = kgCreateSurface;
+        kg.ctable = vt;
+    }
+    if (kg.spare.target != nullptr) {
+        C3D_RenderTargetDelete(kg.spare.target);
+        C3D_TexDelete(&kg.spare.tex);
+        kg.spare.target = nullptr;
+    }
+    __real_CtrRenderer_beginFrame(renderer);
+    CtrSurface* app = kgLender(r);
+    if (app == nullptr || (kg.base != nullptr && app->tex.data != kg.base)) {
+        // Given back already when its full texture was cleared (__wrap_C3D_FrameBufClear), or when the lender's texture
+        // went by its delete. In the frame, so any copies out go ahead of anything drawn.
+        kgGiveBack(r);
+        return;
+    }
+    if (kg.base == nullptr) {
+        uint32_t slot = ((uint32_t) app->tex.size + 127u) & ~127u;
+        if ((KG_SLOTS + 1u) * slot > (uint32_t) r->appView.tex.size) return;
+        kg.base = (uint8_t*) app->tex.data;
+        kg.slotSize = slot;
+        KG_LOG(kgLendText, (unsigned) KG_SLOTS);
+    }
+    kgKeepCheck(r);
+    for (uint32_t i = 1; KG_SLOTS >= i; i++) {
+        uint8_t* at = kg.base + i * kg.slotSize;
+        if (!kgSlotFree(r, at)) continue;
+        int32_t id = kgCandidate(r);
+        if (0 > id || !kgPromote(r, id, at)) break;
+    }
+    // One trade a frame with an idle VRAM surface (L-B), while another hot one stays spilled.
+    int32_t id = kgCandidate(r);
+    if (0 <= id) kgSwap(r, id);
+}
+
+void __wrap_C3D_TexDelete(C3D_Tex* tex) KG_LATE;
+void __wrap_C3D_TexDelete(C3D_Tex* tex) {
+    // Lent memory needs no care: no VRAM block starts in a slot, and libctru's vramFree ignores such an address.
+    if (kg.base != nullptr && tex->data == kg.base) {
+        // In a frame ended early (reclaimVram, remakeNativeSurfaces or a probe: the application surface resized while
+        // VRAM is full, the deferred frees run) the GPU has run everything so far (C3D_RenderTargetDelete waited for
+        // it), so the slots go back as outside a frame: copies run at once, and releaseIdleScratches stores without
+        // stopping a frame that is stopped already (knightldrev's F2). The lender's VRAM is then free for what
+        // the reclaim is for, as without lending: kept, the application surface found no room for its new texture and
+        // was made anew, which game state saw (knightgpu's Azahar test, kg_rsz_a-c). In a frame going on (no such
+        // delete is known) the lender is kept, its memory and the slots in it as they are, until the next
+        // KnightGpu_beginFrame gives them back (it no longer lends what the application surface draws in) and frees it
+        // at the begin after.
+        CtrRenderer* r = kg.r;
+        bool stopped = r != nullptr && r->inFrame && gpuCmdBuf == nullptr;
+        if (r != nullptr && r->inFrame && !stopped && kg.zombie.data == nullptr) {
+            kg.zombie = *tex;
+            return;
+        }
+        // The lender goes: what is in its slots first. That may grow the array tex points into.
+        C3D_Tex copy = *tex;
+        if (stopped) r->inFrame = false;
+        kgGiveBack(r);
+        if (stopped) r->inFrame = true;
+        __real_C3D_TexDelete(&copy);
+        return;
+    }
+    __real_C3D_TexDelete(tex);
+}
+#endif
+
+// ===[ Steady text glyphs (credfix T1; UNDERTALE only) ]===
+//
+// drawTextImpl draws each glyph through emitPageRegion, emitPageRegionDirect, emitPageRegionVisible, emitPageTiles,
+// emitQuad and reserveBatch; the credits' turned names alone are 700-750 glyphs a frame. For a glyph drawn while
+// nothing special is on, that chain comes down to the view test, Smart's linear fallback (its half-pixel move and
+// premultiplied colour, when Smart emits), one tile's part of the region and four vertices added to the batch already
+// open. utxEmitPageRegion (the define above drawTextImpl points that call here) does just that, with the same sums,
+// and anything else, or anything it can't tell for sure, goes the full way (emitPageRegion). It changes nothing before
+// that answer, so the full way starts from the same state:
+// - emitPageRegion's own tests come to nothing: a data page, no shader effect, no recording (no dialogue redirection;
+//   a render target bound to a surface).
+// - emitPageRegionVisible: gridHold is set (drawTextImpl's own), so no grid placement; no pattern kept on the bound
+//   surface. When Smart emits: no smart copy, smartEmitAveraged's first tests fail (a turned or skewed glyph; an
+//   upright one goes the full way, as it may be averaged), smartNoteGate returns at once (native drawing on the
+//   application surface, no screenshot asked for), and gridActive is a read (gridMap follows the bound surface).
+// - emitPageTiles: no palette (no plan), one tile whose use ensureTilesBut would change nothing (utkTileDone), one
+//   colour (the premultiplied one is then one colour too).
+// - emitQuad and reserveBatch: as utkEmitRun's tests (a batch of quads already begun with room, this texture in it,
+//   nothing held or put off); a clear colour goes the full way (transparentDrawIsNoop is not called from here).
+// UTX_SHADOW (test builds only, never committed on) works the answer out, then lets the full way draw and compares.
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_RENDER_TIMING)
+#if defined(UTX_SHADOW)
+static uint32_t utxsFast, utxsOut, utxsFull, utxsBad __attribute__((section(".bss.utext_late")));
+#endif
+// quadPosition, inlined here (a call would give quadPosition an out-of-line copy in the early text).
+static inline __attribute__((always_inline)) void utxQuadPosition(const float* px, const float* py, float s, float t, float* outX, float* outY) {
+    float topX = px[0] + (px[1] - px[0]) * s;
+    float topY = py[0] + (py[1] - py[0]) * s;
+    float botX = px[3] + (px[2] - px[3]) * s;
+    float botY = py[3] + (py[2] - py[3]) * s;
+    *outX = topX + (botX - topX) * t;
+    *outY = topY + (botY - topY) * t;
+}
+static __attribute__((noinline, noclone, section(".text.utext_late"))) void utxEmitPageRegion(CtrRenderer* r, CtrPage* page, float sx0,
+                                                                                             float sy0, float sx1, float sy1,
+                                                                                             const float* px, const float* py,
+                                                                                             const CtrColor* c) {
+    const float* ax = px;
+    const float* ay = py;
+    if (!(page >= r->textures.pages && page < r->textures.pages + r->textures.pageCount) || r->shaderFx != SHADER_FX_NONE || r->dlg.armed ||
+        r->boundTarget == nullptr) {
+        goto full;
+    }
+    if (quadOutsideView(r, px, py)) {
+#if defined(UTX_SHADOW)
+        utxsOut++;
+        emitPageRegion(r, page, sx0, sy0, sx1, sy1, ax, ay, c);
+        return;
+#else
+        return;
+#endif
+    }
+    {
+        CtrSurface* bound = 0 <= r->boundSurface ? &r->surfaces[r->boundSurface] : nullptr;
+        if (r->gridHold == 0 || r->palKind != PAL_NONE || (bound != nullptr && bound->pattern.version == bound->version)) goto full;
+        uint32_t cw[4];
+        memcpy(cw, c, sizeof cw);
+        if (cw[0] != cw[1] || cw[0] != cw[2] || cw[0] != cw[3] || c[0].a == 0) goto full;
+        CtrColor cc = c[0];
+        float gx[4], gy[4];
+        if (r->smart.emitting) {
+#if defined(CTRPORT_SMART_BOXES)
+            goto full;
+#endif
+            const C3D_Mtx* m = &r->projection;
+            if (r->smart.copy != nullptr ||
+                !(!r->gameProjection || m->r[0].y != 0.0f || m->r[1].x != 0.0f || m->r[3].x != 0.0f || m->r[3].y != 0.0f || m->r[3].w != 1.0f ||
+                  px[0] != px[3] || px[1] != px[2] || py[0] != py[1] || py[2] != py[3])) {
+                goto full;
+            }
+            int32_t app = r->base.runner->applicationSurfaceId;
+            if (!(!r->screenshotRequested && 0 <= app && r->boundSurface == app && r->surfaces[app].shift > 0) ||
+                r->gridMap.surface != r->boundSurface) {
+                goto full;
+            }
+            if (r->gridMap.on) {
+                float dx = r->smart.vertical ? 0.0f : -0.5f * r->gridMap.invKx, dy = r->gridMap.y ? -0.5f * r->gridMap.invKy : 0.0f;
+                for (int32_t i = 0; 4 > i; i++) {
+                    gx[i] = px[i] + dx;
+                    gy[i] = py[i] + dy;
+                }
+                px = gx;
+                py = gy;
+            }
+            if (!r->smart.straight) {
+                // (v * a + 127) / 255 for bytes v and a: t / 255 is (t + 1 + (t >> 8)) >> 8 for t up to 65534 (here t <= 65152).
+                uint32_t a = cc.a, tr = cc.r * a + 127u, tg = cc.g * a + 127u, tb = cc.b * a + 127u;
+                cc = (CtrColor) { (uint8_t) ((tr + 1u + (tr >> 8)) >> 8), (uint8_t) ((tg + 1u + (tg >> 8)) >> 8),
+                                  (uint8_t) ((tb + 1u + (tb >> 8)) >> 8), cc.a };
+            }
+        }
+        // reserveBatch's tests that don't need the texture, before the tile's sums (the cast roll's batches often fail them).
+        if (r->addHold.mode == ADD_HOLD_HELD || !r->inFrame || (bound != nullptr && (bound->skipRec != nullptr || bound->lazy != nullptr)) ||
+            r->spillLoadPending || r->vertexCount + 6 > r->vertexLimit || !r->batchQuads || r->vertexCount == r->batchStart) {
+            goto full;
+        }
+        float tileW = (float) page->tileW;
+        float tileH = (float) page->tileH;
+        CtrTile* tile;
+        float qx[4], qy[4], uv[4];
+        if (page->tilesX == 1 && page->tilesY == 1) {
+            goto full;
+        } else {
+            float w = sx1 - sx0;
+            float h = sy1 - sy0;
+            if (w == 0.0f || h == 0.0f) goto full;
+            float minX = sx0 < sx1 ? sx0 : sx1, maxX = sx0 < sx1 ? sx1 : sx0;
+            float minY = sy0 < sy1 ? sy0 : sy1, maxY = sy0 < sy1 ? sy1 : sy0;
+            int32_t tx0 = (int32_t) (minX / tileW), tx1 = (int32_t) ((maxX - 0.001f) / tileW);
+            int32_t ty0 = (int32_t) (minY / tileH), ty1 = (int32_t) ((maxY - 0.001f) / tileH);
+            if (0 > tx0) tx0 = 0;
+            if (0 > ty0) ty0 = 0;
+            if (tx1 >= page->tilesX) tx1 = page->tilesX - 1;
+            if (ty1 >= page->tilesY) ty1 = page->tilesY - 1;
+            if (tx0 != tx1 || ty0 != ty1) goto full;
+            tile = &page->tiles[ty0 * page->tilesX + tx0];
+            float s[4];
+            if (!utkTileDone(r, tile) || !regionTilePart(sx0, sy0, w, h, minX, minY, maxX, maxY, tileW, tileH, tx0, ty0, s, uv)) goto full;
+            utxQuadPosition(px, py, s[0], s[1], &qx[0], &qy[0]);
+            utxQuadPosition(px, py, s[2], s[1], &qx[1], &qy[1]);
+            utxQuadPosition(px, py, s[2], s[3], &qx[2], &qy[2]);
+            utxQuadPosition(px, py, s[0], s[3], &qx[3], &qy[3]);
+        }
+        C3D_Tex* tex = CtrTextures_drawTex(tile);
+        float u0 = uv[0], v0 = uv[1], u1 = uv[2], v1 = uv[3];
+        bool multiSafe = v0 >= MULTI_MIN_V && v1 >= MULTI_MIN_V && 1.0f >= v0 && 1.0f >= v1;
+        // utkBatchUnit's finding half: the texture already in the batch (one texture, or a unit of a multi-texture batch).
+        // A texture the batch would have to take in goes the full way.
+        uint32_t unit = 0;
+        if (tex == &r->white) goto full;
+        if (r->batchTexCount == 1) {
+            if (tex != r->batchTex || r->palNextB != r->batchTexB) goto full;
+        } else {
+            if (!multiSafe || !utkMultiAllowed(r)) goto full;
+            while (r->batchTexCount > unit && r->batchTexes[unit] != tex) unit++;
+            if (unit == r->batchTexCount) goto full;
+        }
+#if defined(UTX_SHADOW)
+        {
+            // The answer, then the full way from the same state (nothing above changed it).
+            uint32_t texCount1 = r->batchTexCount, at = r->vertexCount, serial = r->contentSerial;
+            bool multiOk = r->batchMultiOk && multiSafe;
+            float z = depthDisparity(r) + MULTI_UNIT_Z * (float) unit;
+            CtrVertex mine[4];
+            setVertex(&mine[0], qx[0], qy[0], z, u0, v0, cc);
+            setVertex(&mine[1], qx[1], qy[1], z, u1, v0, cc);
+            setVertex(&mine[2], qx[2], qy[2], z, u1, v1, cc);
+            setVertex(&mine[3], qx[3], qy[3], z, u0, v1, cc);
+            emitPageRegion(r, page, sx0, sy0, sx1, sy1, ax, ay, c);
+            bool same = r->vertexCount == at + 4 && memcmp(&r->vertices[at], mine, sizeof mine) == 0 && floatBits(r->vertexZ) == floatBits(z) &&
+                        r->batchTexCount == texCount1 && r->batchMultiOk == multiOk && r->contentSerial == serial + (bound != nullptr ? 1u : 0u) &&
+                        r->palNextB == nullptr;
+            if (!same && 20 > utxsBad) {
+                logInfo("utx shadow: MISMATCH f%u at %u -> %u, z %08x/%08x, units %u/%u\n", (unsigned) r->frame, (unsigned) at,
+                        (unsigned) r->vertexCount, (unsigned) floatBits(z), (unsigned) floatBits(r->vertexZ), (unsigned) texCount1,
+                        (unsigned) r->batchTexCount);
+            }
+            utxsBad += !same;
+            if (++utxsFast % 20000 == 0) {
+                logInfo("utx shadow: %u fast, %u out of view, %u full, %u mismatched\n", (unsigned) utxsFast, (unsigned) utxsOut,
+                        (unsigned) utxsFull, (unsigned) utxsBad);
+            }
+            return;
+        }
+#endif
+        if (!multiSafe) r->batchMultiOk = false;
+        CtrVertex* v = &r->vertices[r->vertexCount];
+        r->vertexCount += 4;
+        r->vertexUsed += 4;
+        r->boundTargetDrawn = true;
+        r->clearedTarget = nullptr;
+        r->drawnSinceSplit = true;
+        if (bound != nullptr) {
+            bound->drawnSinceSplit = true;
+            bound->version = ++r->contentSerial;
+        }
+        if (0 <= r->spillBound) r->spillDirty = true;
+        r->vertexZ = depthDisparity(r) + MULTI_UNIT_Z * (float) unit;
+        float z = r->vertexZ;
+        setVertex(&v[0], qx[0], qy[0], z, u0, v0, cc);
+        setVertex(&v[1], qx[1], qy[1], z, u1, v0, cc);
+        setVertex(&v[2], qx[2], qy[2], z, u1, v1, cc);
+        setVertex(&v[3], qx[3], qy[3], z, u0, v1, cc);
+        r->palNextB = nullptr;
+        return;
+    }
+full:
+#if defined(UTX_SHADOW)
+    utxsFull++;
+#endif
+    emitPageRegion(r, page, sx0, sy0, sx1, sy1, ax, ay, c);
 }
 #endif

@@ -1,5 +1,14 @@
 #include "ctr_textures.h"
 #include "ctr_array.h"
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS) // utold c112dtm: UNDERTALE on Old 3DS only (this file's end)
+static void utoldDtmMark(CtrTextureCache* cache);
+static void utoldDtmWrite(CtrTileReader* stopping);
+#define UTOLD_DTM_SAVE utoldDtmMark
+#define UTOLD_DTM_STOP utoldDtmWrite
+#else
+#define UTOLD_DTM_SAVE saveRoomMemory
+#define UTOLD_DTM_STOP CtrTileReader_stop
+#endif
 #line 2
 
 #include <malloc.h>
@@ -1783,7 +1792,7 @@ static void finishRecording(CtrTextureCache* cache, bool whole) {
         }
     }
     arrsetlen(cache->recording, 0);
-    if (changed) saveRoomMemory(cache);
+    if (changed) UTOLD_DTM_SAVE(cache);
 }
 
 // ===[ Interface ]===
@@ -1855,7 +1864,7 @@ void CtrTextures_stopWorker(CtrTextureCache* cache) {
         finishRecording(cache, false);
         releaseReads(cache);
         collectWholeRead(cache, true);
-        CtrTileReader_stop(cache->reader);
+        UTOLD_DTM_STOP(cache->reader);
         cache->reader = nullptr;
     }
 }
@@ -3408,3 +3417,41 @@ uint32_t CtrTextures_flowendLoads(void) {
     const CtrTextureCache* cache = readerGameCache;
     return cache == nullptr ? 0 : cache->fromRam.count + cache->fromFile.count + cache->fromRead.count + cache->fromImage.count;
 }
+
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+// ===[ utold c112dtm: rooms.dtm only at a room change or the reader's stop (UNDERTALE on Old 3DS) ]===
+//
+// A changed record (finishRecording) is only marked here. Handed to the reader in play, its write (the cache folder,
+// the .tmp file, the write and the rename: 0.4-0.6 s on an Old 3DS's SD card) made the game thread's next SD read
+// wait behind it (c0r112's frame 60). The room change writes it instead, after the room's load and before its first
+// frame (one write per transition, whatever is pending), and so does the reader's stop (exit; DELTARUNE's chapter
+// change). The game thread writes it itself: it hands the record over above the reader's priority, takes it back and
+// writes it, so the room is ready only once the file is. One texture cache at a time: the mark is the live one's (it
+// is cleared before that cache's reader stops). Late code, named outside .text.late.*; one 4 B pointer.
+#define UTOLD_DTM_TEXT __attribute__((noipa, section(".text.utolddtm_late")))
+// ctr_tile_reader.c's end.
+void CtrTileReader_writeNow(CtrTileReader* reader, void (*save)(CtrTextureCache*), CtrTextureCache* cache);
+void CtrRoomload_prefetchRoom(CtrTextureCache* cache, Runner* runner); // z_roomload.c (wrapped where it is)
+void CtrTextures_dtmPrefetch(CtrTextureCache* cache, Runner* runner); // ctr_argui.c's call
+
+static CtrTextureCache* utoldDtmDirty __attribute__((section(".bss.utolddtm_late")));
+
+UTOLD_DTM_TEXT static void utoldDtmMark(CtrTextureCache* cache) {
+    if (cache->reader != nullptr) utoldDtmDirty = cache;
+}
+
+// The marked record, written now; then the reader stopping, if any (CtrTextures_stopWorker's call).
+UTOLD_DTM_TEXT static void utoldDtmWrite(CtrTileReader* stopping) {
+    CtrTextureCache* cache = utoldDtmDirty;
+    if (cache != nullptr) {
+        utoldDtmDirty = nullptr;
+        CtrTileReader_writeNow(cache->reader, saveRoomMemory, cache);
+    }
+    CtrTileReader_stop(stopping);
+}
+
+UTOLD_DTM_TEXT void CtrTextures_dtmPrefetch(CtrTextureCache* cache, Runner* runner) {
+    CtrRoomload_prefetchRoom(cache, runner);
+    utoldDtmWrite(nullptr);
+}
+#endif

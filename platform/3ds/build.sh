@@ -19,6 +19,8 @@
 #                              [adpcmtestmtime] (TEST ONLY, requires adpcmmusic; emulator unknown-mtime gate)
 #                              [adpcmpack|adpcmpack=off] (UT mono sound effects as DSP-ADPCM from the builder's
 #                              adpcm-sfx.dtsp; default in UNDERTALE Old builds)
+#                              [adpcmfault=tail|seam|pool|ring] (TEST ONLY, needs the pack: that linear allocation
+#                              of the sound feeder or the pack fails; separate directory)
 #                              [audio-convert] (private DSP-ADPCM objects and SD indexes; runtime adapter selection pending)
 #                              [surfcensus] (logs how every game surface is made, bound and drawn out; separate build directory)
 #                              [offdraw] (offdraw: instance census and offdraw.txt kill/hash-skip experiments; separate build directory)
@@ -137,6 +139,7 @@ adpcmsfx=OFF
 adpcmmusic=OFF
 adpcmtestmtime=OFF
 adpcmpack=     # ON, OFF, or empty: the default (ON in UNDERTALE Old, OFF elsewhere)
+adpcmfault=0   # TEST ONLY: 1 tail, 2 seam, 3 pool, 4 ring (the allocation that fails)
 audio_convert=OFF
 surfcensus=OFF
 offdraw=OFF
@@ -210,6 +213,10 @@ for arg in "$@"; do
         adpcmtestmtime) adpcmtestmtime=ON ;;
         adpcmpack) adpcmpack=ON ;;
         adpcmpack=off) adpcmpack=OFF ;;
+        adpcmfault=tail) adpcmfault=1 ;;
+        adpcmfault=seam) adpcmfault=2 ;;
+        adpcmfault=pool) adpcmfault=3 ;;
+        adpcmfault=ring) adpcmfault=4 ;;
         audio-convert) audio_convert=ON ;;
         surfcensus) surfcensus=ON ;;
         offdraw) offdraw=ON ;;
@@ -417,6 +424,13 @@ if [ -z "$adpcmpack" ]; then
     adpcmpack=$adpcmpack_default
 elif [ "$adpcmpack" != "$adpcmpack_default" ]; then
     if [ "$adpcmpack" = ON ]; then build="$build-adpcmpack"; else build="$build-noadpcmpack"; fi
+fi
+if [ "$adpcmfault" != 0 ]; then
+    if [ "$adpcmpack" != ON ]; then
+        echo "ERROR: adpcmfault requires the sound pack (adpcmpack); test builds only" >&2
+        exit 2
+    fi
+    build="$build-adpcmfault$adpcmfault"
 fi
 if [ "$adpcmtestmtime" = ON ]; then
     if [ "$adpcmmusic" != ON ]; then
@@ -892,6 +906,7 @@ cmake -S "$here" -B "$build" -G "Unix Makefiles" \
     -DCTRPORT_ADPCM_MUSIC="$adpcmmusic" \
     -DCTRPORT_ADPCM_TEST_UNKNOWN_MTIME="$adpcmtestmtime" \
     -DCTRPORT_ADPCM_SFXPACK="$adpcmpack" \
+    -DCTRPORT_ADPCM_FAULT="$adpcmfault" \
     -DCTRPORT_SURFACE_CENSUS="$surfcensus" \
     -DCTRPORT_OFFDRAW="$offdraw" \
     -DCTRPORT_HALF_CENSUS="$halfcensus" -DCTRPORT_HALFART_FILE="$halfart_file" \

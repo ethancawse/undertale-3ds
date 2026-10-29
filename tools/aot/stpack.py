@@ -21,6 +21,12 @@ glyph's leftmost ink column from the pen minus 2 * (left + the bitmap's first in
 smalltext_carry.nominal_x), then `rows` u16 row masks (bit x = column x from the glyph's left), then per PC row i8
 leftmost and i8 rightmost ink column from the pen (127, -128 for an empty row): the extents "carry" spacing tests
 contact on (smalltext_carry.py).
+Optional UNDERTALE ATX1 trailer (stasrtext.py): u32 font index, u32 text length,
+128 u8 alternate-entry indices (entry + 1), two i8 row shifts, u8 first affected
+line, u8 reserved, then that many bytes of preprocessed draw text. Variant 4
+entries are selected only for an exact match and only after the first line.
+Optional ASY1 extension: u32 font index, u32 text length, then original writer
+text. Only that writer's first line uses original PC y in carry's PC-contact test.
 Keys (z_smalltext.c, ini names): 1 crisp_ut_dialogue (fnt_plain), 2 crisp_dr_dialogue (fnt_dotumche), 3 crisp_ut_hud
 (fnt_curs), 4 crisp_sans (fnt_comicsans), 5 crisp_papyrus (fnt_papyrus).
 
@@ -116,14 +122,22 @@ def pack(path, quiet=False, game=None, keep=None):
     names = [n for n in FONT_KEYS if n in dw.fonts() and not (deltarune and n in UT_ONLY)]
     w = dw.win
     out = bytearray(MAGIC + struct.pack('<IIIQI', VERSION, w.size, w.game_id, w.timestamp, len(names)))
+    import stasrtext
+    stacked = None if deltarune else stasrtext.source(path, dw)
+    stacked_rule = None
     for name in names:
         rows, glyphs, pc_rows, adv = font_glyphs(dw, name, DR_LIKE.get(name) if deltarune else None)
         if keep is not None:
             keep[name] = (rows, glyphs, pc_rows, adv)
+        # Additional entries are ignored by the default lookup and menu preview.
+        # Only an exact match of this private pack's draw text selects them.
+        shift = sg.row_shifts(glyphs)
+        if name == 'fnt_plain' and stacked is not None:
+            extra, stacked_rule = stasrtext.variants(dw, glyphs, rows, adv, stacked[1])
+            glyphs = glyphs + extra
         width = max((sg.width(g) for _, _, g, _, _ in glyphs), default=0)
         if width > 16 or rows > 16 or len(glyphs) > 255 or pc_rows > 32 or adv > 255:
             raise SystemExit(f'smalltext: {name}: {width}x{rows} glyphs ({len(glyphs)}) do not fit the pack')
-        shift = sg.row_shifts(glyphs)
         out += name.encode('ascii')[:23].ljust(24, b'\0') + struct.pack('<BBBBBBbb', FONT_KEYS[name], rows, width,
                                                                           len(glyphs), pc_rows, adv, shift[0], shift[1])
         for ch, variant, g, left, ext in glyphs:
@@ -148,6 +162,8 @@ def pack(path, quiet=False, game=None, keep=None):
             kr = ', KR label' if any(v == VARIANT_KR for _, v, _, _, _ in glyphs) else ''
             print(f'smalltext: {name}: {len(glyphs)} glyphs, {rows} rows, cell {width}, '
                   f'row shift {shift[0]}/{shift[1]}, corrections {fixes or "none"}{kr}')
+    if stacked_rule is not None:
+        out += stasrtext.trailer(stacked[0], stacked[1], stacked_rule, stasrtext.motion(path, dw))
     return bytes(out), names
 
 
@@ -158,7 +174,7 @@ def generator_stamp():
     split-out tables were outside the stamp, so an edit there kept a stale pack)."""
     here = os.path.dirname(os.path.abspath(__file__))
     gen = hashlib.sha1()
-    for f in ('stpack.py', 'stglyphs.py', 'fontverdict.py', 'stmenu.py'):
+    for f in ('stpack.py', 'stglyphs.py', 'fontverdict.py', 'stmenu.py', 'stasrtext.py'):
         with open(os.path.join(here, f), 'rb') as fh:
             gen.update(fh.read())
     tables = repr((sorted(sg.DEFAULT_PARAMS.items()), sorted(sg.FONT_PARAMS.items()), sorted(sg.PATCHES.items()),

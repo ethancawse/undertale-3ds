@@ -565,7 +565,18 @@ static inline void RValue_free(RValue* val) {
 // RValue_toReal and RValue_toInt32 for what isn't a real. Their whole switch
 // is too big for GCC to inline into a file the size of vm_builtins.c, which
 // made every builtin argument a call; kept apart, the usual real is a load.
-MAYBE_UNUSED static NOINLINE GMLReal RValue_toRealOther(RValue val) {
+// freebytes: RVALUE_OTHER_GLOBAL makes this file's two copies global (collision_gm14.c, UNDERTALE); RVALUE_OTHER_EXTERN
+// declares them only, so a file calls those (alarm_gm14.c and colline_gm14.c, UNDERTALE). Neither: as before.
+#if defined(RVALUE_OTHER_EXTERN) || defined(RVALUE_OTHER_GLOBAL)
+GMLReal RValue_toRealOther(RValue val);
+int32_t RValue_toInt32Other(RValue val);
+#define RVALUE_OTHER_LINKAGE NOINLINE
+#else
+#define RVALUE_OTHER_LINKAGE MAYBE_UNUSED static NOINLINE
+#endif
+#ifndef RVALUE_OTHER_EXTERN
+#line 568
+RVALUE_OTHER_LINKAGE GMLReal RValue_toRealOther(RValue val) {
     switch (val.type) {
         case RVALUE_REAL:   return val.real;
         case RVALUE_INT32:  return (GMLReal) val.int32;
@@ -583,13 +594,17 @@ MAYBE_UNUSED static NOINLINE GMLReal RValue_toRealOther(RValue val) {
         default:            return 0.0;
     }
 }
+#endif
+#line 586
 
 static inline GMLReal RValue_toReal(RValue val) {
     if (val.type == RVALUE_REAL) return val.real;
     return RValue_toRealOther(val);
 }
 
-MAYBE_UNUSED static NOINLINE int32_t RValue_toInt32Other(RValue val) {
+#ifndef RVALUE_OTHER_EXTERN
+#line 592
+RVALUE_OTHER_LINKAGE int32_t RValue_toInt32Other(RValue val) {
     switch (val.type) {
         case RVALUE_REAL:   return (int32_t) val.real;
         case RVALUE_INT32:  return val.int32;
@@ -607,6 +622,8 @@ MAYBE_UNUSED static NOINLINE int32_t RValue_toInt32Other(RValue val) {
         default:            return 0;
     }
 }
+#endif
+#line 610
 
 static inline int32_t RValue_toInt32(RValue val) {
     if (val.type == RVALUE_REAL) return (int32_t) val.real;

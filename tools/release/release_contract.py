@@ -112,9 +112,11 @@ def record_public_source(files, public_tree, game, version, digest, revision='HE
     This verifies local corresponding source; publication remains the owner's release step.
     """
     root = Path(public_tree).resolve()
-    def git(*args):
-        return subprocess.check_output(['git', '-C', str(root), *args], stdin=subprocess.DEVNULL,
-                                       stderr=subprocess.PIPE, timeout=30)
+    def git(*args, input=None):
+        return subprocess.run(['git', '-C', str(root), *args], input=input,
+                              stdin=subprocess.DEVNULL if input is None else None,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              check=True, timeout=30).stdout
     try:
         top = Path(git('rev-parse', '--show-toplevel').decode().strip()).resolve()
         if top != root:
@@ -126,6 +128,9 @@ def record_public_source(files, public_tree, game, version, digest, revision='HE
         blobs = {}
         for entry in filter(None, entries):
             header, name = entry.split(b'\t', 1)
+            # Repository administration is not part of the builder's source payload.
+            if name.startswith(b'.github/'):
+                continue
             mode, kind, oid = header.split()
             if mode not in (b'100644', b'100755') or kind != b'blob':
                 raise ValueError('Public export contains a nonregular file.')
@@ -138,11 +143,20 @@ def record_public_source(files, public_tree, game, version, digest, revision='HE
         algorithm = git('rev-parse', '--show-object-format').decode().strip()
         if algorithm != 'sha1':
             raise ValueError('Descriptor schema 1 needs SHA-1 Git commit IDs.')
+        # Consult the selected commit, not mutable working-tree attributes. Only
+        # explicitly CRLF text may differ in line endings; all other bytes stay exact.
+        attributes = git('check-attr', '--source=' + commit, '-z', '--stdin', 'eol',
+                         input=b''.join(name.encode('utf-8') + b'\0' for name in blobs)).split(b'\0')
+        crlf = {attributes[i].decode('utf-8') for i in range(0, len(attributes) - 1, 3)
+                if attributes[i + 2] == b'crlf'}
         for name, oid in blobs.items():
             data = files[name]
             actual = hashlib.new(algorithm, b'blob ' + str(len(data)).encode('ascii') + b'\0' + data,
                                  usedforsecurity=False).hexdigest()
             if actual != oid:
+                if name in crlf and data.replace(b'\r\n', b'\n') == \
+                        git('cat-file', 'blob', oid).replace(b'\r\n', b'\n'):
+                    continue
                 raise ValueError('Public commit differs from export: changed=' + name)
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValueError('Cannot read the public export commit.') from exc

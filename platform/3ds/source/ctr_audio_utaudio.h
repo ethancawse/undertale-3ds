@@ -108,6 +108,16 @@ __attribute__((noinline, noipa, optimize("Os"), section(".text.flowpitch_late"))
 #define CtrDecoder_seek(dec, frame) utaDecSeek(dec, frame)
 #define CtrNotice_missing(kind, path) utaNoticeMissing(kind, path)
 
+// A wave buffer the feeder doesn't take goes to the DSP as it is. The ADPCM builds redefine UTA_RAW_ADD to drop one
+// that would carry compressed bytes (adSfxPacked). UTA_FAULT_ALLOC: the feeder's and the pack's linear allocations;
+// the test-only build word adpcmfault makes one of them fail (1 tail, 2 seam, 3 piece pool, 4 a voice's ring).
+#define UTA_RAW_ADD(p, buf) UTA_PHYS_ADD(p, buf)
+#ifdef CTRPORT_ADPCM_FAULT
+#define UTA_FAULT_ALLOC(k, n) ((k) == CTRPORT_ADPCM_FAULT ? NULL : linearAlloc(n))
+#else
+#define UTA_FAULT_ALLOC(k, n) linearAlloc(n)
+#endif
+
 // utstall5 (UNDERTALE): a silent play (no DSP: no dspfirm.cdc, or Azahar without it) asks for the sound's length,
 // and soundLength read a small embedded sound's whole blob for it on the game thread (a text sound, 302 KB: 56.8 ms on
 // Azahar Old at every battle's first frame). utsSilentLength, late code at the end of ctr_audio_system.c, reads only
@@ -117,6 +127,22 @@ __attribute__((noinline, noipa, optimize("Os"), section(".text.flowpitch_late"))
 UTS_LATE static float utsSilentLength(CtrAudioSystem* ca, int32_t soundIndex);
 #else
 #define utsSilentLength(ca, soundIndex) soundLength(ca, soundIndex)
+#endif
+
+// flowend burst (UNDERTALE): the vtable's playSound and update entries, late code at the end of ctr_audio_system.c
+// (flowendPlaySound: a step's plays past the first FLOWEND_BURST_FIRST start at the frame's audio update).
+// DELTARUNE keeps ctrPlaySound and pcmWaitUpdate.
+#if defined(ENABLE_WAD16)
+#define FLOWEND_BURST_DECL __attribute__((noinline, optimize("Os"), section(".text.flowburst_late"))) static int32_t \
+    flowendPlaySound(AudioSystem* audio, int32_t soundIndex, int32_t priority, bool loop); \
+    __attribute__((noinline, optimize("Os"), section(".text.flowburst_late"))) static void \
+    flowendBurstUpdate(AudioSystem* audio, float deltaTime);
+#define CTR_PLAY_ENTRY flowendPlaySound
+#define CTR_UPDATE_ENTRY flowendBurstUpdate
+#else
+#define FLOWEND_BURST_DECL
+#define CTR_PLAY_ENTRY ctrPlaySound
+#define CTR_UPDATE_ENTRY pcmWaitUpdate
 #endif
 
 #endif

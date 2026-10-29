@@ -1,4 +1,34 @@
 // Shared production feeder pieces, leases and tails. No file I/O in callbacks.
+// True for an address inside a resident ADPCM payload: compressed bytes, which reach the DSP only as decoded pieces.
+// UTA_RAW_ADD drops (and counts) a raw wave buffer that would carry one. Game thread, as every change to the metas.
+// How a decoded piece leaves the CPU's data cache. DSP_FlushDataCache asks the dsp service (a sysmodule on the system
+// core) to make the same process cache flush for us: an IPC round trip that waits behind core 1, about 2 ms a piece
+// on o3ds in busy scenes, paid in the ndsp callback and the play call (cand25 Old 3DS rows). The direct SVC has the
+// same meaning without the trip. CIA exheaders grant it (cia/*.rsf); under the Homebrew Launcher only Luma3DS
+// (answering system info 0x10000) opens it, as for the renderer's kernelFlushAllowed. Elsewhere it would end the
+// process, so the service stays the fallback, also after any SVC failure.
+#define AD_FLUSH_SVC 1
+#define AD_FLUSH_DSP 2
+#define AD_FLUSH_DSP_AFTER_SVC 3
+AS_CODE static void adFlush(const void* data, uint32_t bytes) {
+    if (!adSfx.flush) {
+        s64 luma = 0;
+        adSfx.flush = !envIsHomebrew() || R_SUCCEEDED(svcGetSystemInfo(&luma, 0x10000, 0)) ? AD_FLUSH_SVC : AD_FLUSH_DSP;
+    }
+    if (adSfx.flush == AD_FLUSH_SVC) {
+        if (R_SUCCEEDED(svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)data, bytes))) return;
+        adSfx.flush = AD_FLUSH_DSP_AFTER_SVC; // logged by the game thread, never here
+    }
+    DSP_FlushDataCache(data, bytes);
+}
+
+AS_CODE static bool adSfxPacked(const void* data) {
+    uintptr_t a = (uintptr_t)data;
+    for (AdSfxMeta* m = adSfx.metas; m; m = m->next)
+        if (a - (uintptr_t)m->data < m->initial.bytes) { adSfx.rawDropped++; return true; }
+    return false;
+}
+
 AS_CODE static AdSfxMeta* adMeta(const CachedSfx* c) {
     for (AdSfxMeta* m = adSfx.metas; m; m = m->next)
         if (m->cache == c && m->data == c->pcm && m->initial.bytes == c->bytes) return m;
@@ -71,7 +101,7 @@ AS_CODE static void adSfxReserve(int p, float rate) {
     if (!ring) { adSfx.ringFailures++; return; }
     ring->frames = (need + 31u) & ~31u;
     ring->bytes = UTA_RING * ring->frames * AS_FRAME_BYTES;
-    ring->data = linearAlloc(ring->bytes);
+    ring->data = UTA_FAULT_ALLOC(4, ring->bytes);
     if (!ring->data) { free(ring); adSfx.ringFailures++; return; }
     ring->next = adSfx.rings;
     adSfx.rings = ring;
@@ -146,7 +176,7 @@ AS_CODE static const uint8_t* adSfxPiece(int p, const UtaChan* c, const UtaSeg* 
         if (utaLive(&CtrAdpcm_sfxView.buffers[p][slot])) continue;
         uint8_t* dst = data + slot * capacity * AS_FRAME_BYTES;
         if (!adRead(a, a->start[c->cur] + c->off, *frames, (int16_t*)dst, c->chans)) return NULL;
-        DSP_FlushDataCache(dst, *frames * c->bytes);
+        adFlush(dst, *frames * c->bytes);
         return dst;
     }
     // No overwrite of PCM still owned by the DSP. The feeder retries next callback.

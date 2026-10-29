@@ -1549,7 +1549,7 @@ void VMBuiltins_setVariable(VMContext* ctx, Instance* inst, int16_t builtinVarId
 #endif
 
                 inst->alarm[arrayIndex] = newValue;
-                if (newValue > 0) inst->activeAlarmMask |= (uint16_t) (1u << arrayIndex);
+                if (UTEXACT_ALARM_ACTIVE(newValue)) inst->activeAlarmMask |= (uint16_t) (1u << arrayIndex);
                 else inst->activeAlarmMask &= (uint16_t) ~(1u << arrayIndex);
             }
             return;
@@ -14941,7 +14941,7 @@ static RValue builtin_action_set_alarm(VMContext* ctx, MAYBE_UNUSED RValue* args
 #endif
 
         inst->alarm[alarmIndex] = steps;
-        if (steps > 0) inst->activeAlarmMask |= (uint16_t) (1u << alarmIndex);
+        if (UTEXACT_ALARM_ACTIVE(steps)) inst->activeAlarmMask |= (uint16_t) (1u << alarmIndex);
         else inst->activeAlarmMask &= (uint16_t) ~(1u << alarmIndex);
     }
 
@@ -14967,7 +14967,7 @@ static RValue builtin_alarm_set(VMContext* ctx, MAYBE_UNUSED RValue* args, MAYBE
 #endif
 
         inst->alarm[alarmIndex] = value;
-        if (value > 0) inst->activeAlarmMask |= (uint16_t) (1u << alarmIndex);
+        if (UTEXACT_ALARM_ACTIVE(value)) inst->activeAlarmMask |= (uint16_t) (1u << alarmIndex);
         else inst->activeAlarmMask &= (uint16_t) ~(1u << alarmIndex);
     }
 
@@ -25241,8 +25241,8 @@ GAME_FPS_TARGET_CODE static double gameFpsRealTarget(Runner* runner) {
 // until the VM is freed, and every map is freed before that. UNDERTALE builds its two language text maps (16,455
 // entries each) from Push.s constants: 1.8 MB of copied values and 0.7 MB of copied keys in 65,820
 // heap blocks. A borrowed value doesn't own its string (RValue_free leaves it), and a borrowed key is never freed:
-// every map key is freed through FreewinsMap_freeKey. The strings btnprompt rewrites in place (its five slots) are
-// still copied, so a map keeps the text a slot had when it was added, as before.
+// every map key is freed through FreewinsMap_freeKey. Button-letter replacements are copied; the two title values
+// borrow the live labels so a Controls remap reaches both language maps (UT-037, z_btnprompt.c).
 #if defined(PLATFORM_3DS) && defined(__GNUC__)
 #define FREEWINS_MAP_LATE __attribute__((noinline, section(".text.late.freewins3")))
 #else

@@ -3067,11 +3067,11 @@ static bool ctrDestroyStream(AudioSystem* audio, int32_t streamIndex) {
 
 // ===[ Creation ]===
 
-__attribute__((noinline, section(".text.pcmwait_late"))) static void pcmWaitUpdate(AudioSystem* audio, float deltaTime); static AudioSystemVtable ctrAudioSystemVtable = {
+__attribute__((noinline, section(".text.pcmwait_late"))) static void pcmWaitUpdate(AudioSystem* audio, float deltaTime); FLOWEND_BURST_DECL static AudioSystemVtable ctrAudioSystemVtable = {
     .init = ctrInit,
     .destroy = ctrDestroy,
-    .update = pcmWaitUpdate,
-    .playSound = ctrPlaySound,
+    .update = CTR_UPDATE_ENTRY,
+    .playSound = CTR_PLAY_ENTRY,
     .setSoundSpatial = ctrSetSoundSpatial,
     .setSoundEmitterGain = ctrSetSoundEmitterGain,
     .setListenerPosition = ctrSetListenerPosition,
@@ -3438,6 +3438,9 @@ AS_CODE static bool adSfxOffsets(const UtaChan* c, float out[2]);
 AS_CODE static const int16_t* adSfxSeamPcm(int p, const UtaChan* c, const UtaSeg* g, uint32_t frames, int16_t* dst);
 AS_CODE static void adSfxCaptureTail(int p, const UtaChan* c);
 AS_CODE static const uint8_t* adSfxTailSample(int p, const UtaChan* c, const UtaSeg* g, uint32_t j);
+AS_CODE static bool adSfxPacked(const void* data);
+#undef UTA_RAW_ADD
+#define UTA_RAW_ADD(p, buf) do { if (!adSfxPacked((buf)->data_vaddr)) UTA_PHYS_ADD(p, buf); } while (0)
 #endif
 UTA_LATE static int utaPhys(int id) {
 #line 3389
@@ -3829,7 +3832,7 @@ UTA_LATE static void utaChnWaveBufAdd(int id, ndspWaveBuf* buf) {
     Voice* v = utaActive && id >= 0 && id < UTA_CHANNELS ? &utaCa->voices[id] : NULL;
     if (v == NULL || v->kind != VOICE_SFX || v->sfx == NULL || (buf != &v->wb[0] && buf != &v->wb[1]) || p < 0 ||
         p >= UTA_CHANNELS) {
-        UTA_PHYS_ADD(p, buf);
+        UTA_RAW_ADD(p, buf);
         return;
     }
     int chans = v->sfx->format & 3, encoding = (v->sfx->format >> 2) & 3;
@@ -3853,7 +3856,7 @@ UTA_LATE static void utaChnWaveBufAdd(int id, ndspWaveBuf* buf) {
     if (c->state == UTA_IDLE && c->segs == 0) {
         if (chans < 1 || chans > 2 || encoding > 1 || utaTailPcm == NULL || utaSeamPcm == NULL) {
             LightLock_Unlock(&utaLock);
-            UTA_PHYS_ADD(p, buf); // not fed here: played and cut as before
+            UTA_RAW_ADD(p, buf); // not fed here: played and cut as before
             return;
         }
         c->state = UTA_FEED;
@@ -3869,7 +3872,7 @@ UTA_LATE static void utaChnWaveBufAdd(int id, ndspWaveBuf* buf) {
     }
     if (c->state != UTA_FEED || c->segs >= 2) {
         LightLock_Unlock(&utaLock);
-        UTA_PHYS_ADD(p, buf);
+        UTA_RAW_ADD(p, buf);
         return;
     }
     UtaSeg* g = &c->seg[c->segs];
@@ -4078,8 +4081,8 @@ UTA_LATE static void utaSetCallback(ndspCallback callback, void* data) {
     LightLock_Init(&utaLock);
     memset(utaChan, 0, sizeof(utaChan));
     memset(utaWb, 0, sizeof(utaWb));
-    if (utaTailPcm == NULL) utaTailPcm = (uint8_t*) linearAlloc(UTA_CHANNELS * UTA_TAIL_MAX * 4);
-    if (utaSeamPcm == NULL) utaSeamPcm = (uint8_t*) linearAlloc(UTA_CHANNELS * UTA_SEAM_MAX * 4);
+    if (utaTailPcm == NULL) utaTailPcm = (uint8_t*) UTA_FAULT_ALLOC(1, UTA_CHANNELS * UTA_TAIL_MAX * 4);
+    if (utaSeamPcm == NULL) utaSeamPcm = (uint8_t*) UTA_FAULT_ALLOC(2, UTA_CHANNELS * UTA_SEAM_MAX * 4);
     utaEngineCallback = callback;
     utaActive = true;
     UTA_PHYS_CALLBACK(utaFrameCallback, data);
@@ -5175,7 +5178,7 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) int32_t
 }
 
 #ifdef ENABLE_WAD16
-#include "ctr_wrap_chain.h" // shedSfx: flowend -> utflowey2 (UNDERTALE Old) -> real
+#include "ctr_wrap_chain.h" // shedSfx: flowend -> flowburst -> utflowey2 (UNDERTALE Old) -> real
 // ===[ flowend: the room's planned sounds stay out of the texture cache's shedding (late code, UNDERTALE only) ]===
 // The sound plan copies a scene's sounds at the room change (z_utsfx.c), but keepLinearFloor's shedSfx then took the
 // largest cheap-to-reload sound first, so a planned sound played once and then left idle for a while was the first
@@ -5318,6 +5321,277 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) uint32_
     uint32_t shed = CTR_SHEDSFX_AFTER_FLOWEND(bytes);
     for (uint32_t i = n; i-- > 0;) ca->sfxCache[(uint16_t) flowendKeep[i]].lastPlayTick = played[i];
     return shed;
+}
+
+// ===[ flowend burst: a step's plays past the first few start at the frame's audio update (late code, UNDERTALE) ]===
+// Photoshop Flowey's finale makes 61-63 plays in a single step, about 21 voices are free, and claimVoice gives
+// each later play the oldest voice: about 40 voices were started (DSP channel set up, the feeder's first three DSP
+// frames queued; with the SFX pack, decoded and flushed) and stopped again (a tail) inside the same step, none of
+// them heard past a blip. 22-29 ms of a 41.8 ms step went into the plays (o3ds row flowend-fd2-o3ds-1A, flowdiag2).
+// From the step's FLOWEND_BURST_FIRST+1th play of a cached sound on, the voice is claimed and filled in exactly as
+// playSoundImpl does, but left VOICE_PENDING, as a sound still being read is: the frame's audio update (after the
+// draw, before the frame is shown) starts it with the same startVoiceSource, and a pending voice taken by a later
+// play is only freed. The voices left after the step are the same ones (claimVoice ranks a pending voice as an SFX
+// voice), so the game sees the same instances, gains, pauses and positions. A step with at most FLOWEND_BURST_FIRST
+// plays (every ordinary one, and the options menu's sounds: a paused frame runs no step) is unchanged.
+#define FLOWEND_BURST_FIRST 4u
+static uint32_t flowendBurstPlays __attribute__((section(".bss.flowburst_late")));
+// The voices left pending this way, one bit each (VOICE_COUNT 24). sfxInUse counts VOICE_SFX voices only, so
+// until a pending voice starts, evictSfx could free its sound (c26rev r4 F2). Only buildSfx (a cache miss's play)
+// and collectPreps (in the update's startPendingVoices) evict, and keepLinearFloor's shed frees an unused sound
+// played over SFX_SHED_RECENT_MS ago (c26rev r11d), so they are started first: before any play this code hands to
+// ctrPlaySound, at the update before ctrUpdate runs (main.c: the room-change preload comes after the update), and in
+// the shed's wrap chain. The sound is then in the cache and in use, as on the old path, and starts without a read.
+static uint32_t flowendDeferred __attribute__((section(".bss.flowburst_late")));
+
+// Late copies of claimVoice and nextInstanceId (the same code): calling those from here would take them out of
+// ctrPlaySound, where they are inlined, and grow early text. voiceLive and stopVoice are out of line already.
+__attribute__((noinline, optimize("Os"), section(".text.flowburst_late"))) static int flowendClaimVoice(CtrAudioSystem* ca, int32_t priority) {
+    int active = 0;
+    int freeIndex = -1;
+    for (int i = 0; i < VOICE_COUNT; i++) {
+        if (voiceLive(ca, i)) active++;
+        else if (freeIndex < 0) freeIndex = i;
+    }
+    if (freeIndex >= 0 && active < ca->voiceLimit) return freeIndex;
+    int victim = -1;
+    for (int i = 0; i < VOICE_COUNT; i++) {
+        Voice* v = &ca->voices[i];
+        if (v->kind == VOICE_FREE || v->priority > priority) continue;
+        if (victim < 0) {
+            victim = i;
+            continue;
+        }
+        Voice* best = &ca->voices[victim];
+        if (v->priority != best->priority) {
+            if (v->priority < best->priority) victim = i;
+        } else if ((v->kind == VOICE_STREAM) != (best->kind == VOICE_STREAM)) {
+            if (v->kind != VOICE_STREAM) victim = i;
+        } else if (v->serial < best->serial) {
+            victim = i;
+        }
+    }
+    if (victim < 0) return -1;
+    stopVoice(ca, victim);
+    return victim;
+}
+
+__attribute__((noinline, optimize("Os"), section(".text.flowburst_late"))) static int32_t flowendNextInstanceId(CtrAudioSystem* ca) {
+    for (;;) {
+        int32_t id = SOUND_INSTANCE_ID_BASE + (int32_t) (ca->instanceCounter++ % INSTANCE_ID_SPAN);
+        bool used = false;
+        for (int i = 0; i < VOICE_COUNT; i++) {
+            if (ca->voices[i].kind != VOICE_FREE && ca->voices[i].instanceId == id) used = true;
+        }
+        if (!used) return id;
+    }
+}
+
+// startVoiceSource (out of line already) through a table the compiler can't see into, as ctr_adpcm_pack.inc's
+// CtrAdpcm_musicLegacy does: a direct call from here changes the order GCC emits the uta functions it calls in
+// (late text moves; check_layout).
+typedef struct {
+    bool (*start)(CtrAudioSystem*, int, VoiceSource*);
+} FlowendLegacy;
+extern const FlowendLegacy CtrAudio_flowendLegacy;
+__asm__(".pushsection .rodata.flowburst_in_text,\"a\",%progbits\n.p2align 2\n.global CtrAudio_flowendLegacy\n"
+        ".type CtrAudio_flowendLegacy,%object\nCtrAudio_flowendLegacy:\n.word startVoiceSource\n"
+        ".size CtrAudio_flowendLegacy, .-CtrAudio_flowendLegacy\n.popsection\n");
+
+__attribute__((noinline, optimize("Os"), section(".text.flowburst_late"))) static void flowendStartDeferred(CtrAudioSystem* ca) {
+    uint32_t m = flowendDeferred;
+    flowendDeferred = 0;
+    if (!ca->ndspReady) return; // left pending: startPendingVoices takes them when the DSP is back
+    for (int vi = 0; m != 0; vi++, m >>= 1) {
+        Voice* v = &ca->voices[vi];
+        // A bit whose voice was stolen or stopped since (now free, or another play's) is skipped.
+        if (!(m & 1u) || v->kind != VOICE_PENDING || v->waitStream || ca->sfxCache[v->soundIndex].pcm == NULL) continue;
+        VoiceSource src;
+        memset(&src, 0, sizeof(src));
+        src.sfx = &ca->sfxCache[v->soundIndex];
+        CtrAudio_flowendLegacy.start(ca, vi, &src);
+    }
+}
+
+// The shedSfx chain's link after flowend's kept-plan one (ctr_wrap_chain.h): a texture allocation on the game thread
+// (keepLinearFloor) may shed in the step or the draw, before the update has started the deferred voices.
+__attribute__((noinline, noipa, optimize("Os"), section(".text.flowburst_late"))) uint32_t CtrAudioSystem_chainFlowburst(uint32_t bytes) {
+    CtrAudioSystem* ca = gShutdownTarget;
+    if (ca != NULL && flowendDeferred != 0) flowendStartDeferred(ca);
+    return CTR_SHEDSFX_AFTER_FLOWBURST(bytes);
+}
+
+__attribute__((noinline, optimize("Os"), section(".text.flowburst_late"))) static int32_t flowendPlaySound(AudioSystem* audio,
+                                                                                                         int32_t soundIndex,
+                                                                                                         int32_t priority, bool loop) {
+    CtrAudioSystem* ca = (CtrAudioSystem*) audio;
+    if (FLOWEND_BURST_FIRST >= ++flowendBurstPlays || !ca->initialized || !ca->ndspReady || 0 > soundIndex ||
+        (uint32_t) soundIndex >= ca->soundCount || ca->sfxCache[soundIndex].pcm == NULL) {
+        if (flowendDeferred != 0) flowendStartDeferred(ca); // a miss here may evict (buildSfx)
+        return ctrPlaySound(audio, soundIndex, priority, loop);
+    }
+    u64 t0 = svcGetSystemTick();
+    ca->windowPlays++;
+    int32_t id = -1;
+    int vi = flowendClaimVoice(ca, priority);
+    if (vi >= 0) {
+        const Sound* sound = &ca->base.audioGroups[0]->sond.sounds[soundIndex];
+        CachedSfx* c = &ca->sfxCache[soundIndex];
+        Voice* v = &ca->voices[vi];
+        rampRelease(ca, vi);
+        memset(v, 0, sizeof(*v));
+        id = v->instanceId = flowendNextInstanceId(ca);
+        v->soundIndex = soundIndex;
+        v->priority = priority;
+        v->serial = ca->serialCounter++;
+        v->loop = loop;
+        v->gain = sound->volume;
+        v->fadeTarget = sound->volume;
+        v->pitch = sound->pitch > 0.0f ? sound->pitch : 1.0f;
+        v->emitterGain = 1.0f;
+        v->ctx = -1;
+        v->kind = VOICE_PENDING;
+        flowendDeferred |= 1u << vi;
+        // As played now for the cache's shedding and eviction until the update starts it (sfxInUse counts SFX voices).
+        c->lastUse = ++ca->useClock;
+        c->lastPlayTick = svcGetSystemTick();
+    }
+    ca->frameTicks += svcGetSystemTick() - t0;
+    return id;
+}
+
+#ifdef FLOWEND_BURST_TEST
+// Gate build only (FLOWEND_BURST_TEST, never shipped): once, about 20 s in, with the cache pushed over its cap (a fake
+// CTR_SFX_CACHE_BYTES added to cacheBytes, so every eviction pass frees all it may), a deferred play of a cached sound X:
+// (1) then a cache miss's play of a small embedded sound Y (read here, built under the cap: buildSfx's evictSfx), and
+// (2) the update's order (flowendStartDeferred, then evictSfx as collectPreps does, also forced). Each time X must stay
+// cached and its voice must be VOICE_SFX on X's entry at once: started, without a read. (3) Control: a deferred play,
+// then evictSfx with no start first, frees X (the c26rev r4 F2 mechanism, so the test can fail).
+static uint32_t flowendTestFrames __attribute__((section(".bss.flowburst_late")));
+__attribute__((noinline, section(".text.flowburst_test"))) static int flowendTestVoice(CtrAudioSystem* ca, int32_t id) {
+    for (int i = 0; i < VOICE_COUNT; i++) {
+        if (ca->voices[i].kind != VOICE_FREE && ca->voices[i].instanceId == id) return i;
+    }
+    return -1;
+}
+__attribute__((noinline, section(".text.flowburst_test"))) static bool flowendTestStarted(CtrAudioSystem* ca, int32_t id, int32_t x) {
+    int vi = flowendTestVoice(ca, id);
+    return vi >= 0 && ca->sfxCache[x].pcm != NULL && ca->voices[vi].kind == VOICE_SFX && ca->voices[vi].sfx == &ca->sfxCache[x];
+}
+__attribute__((noinline, section(".text.flowburst_test"))) static bool flowendTestPending(CtrAudioSystem* ca, int32_t id) {
+    int vi = flowendTestVoice(ca, id);
+    return vi >= 0 && ca->voices[vi].kind == VOICE_PENDING && (flowendDeferred & (1u << vi)) != 0;
+}
+__attribute__((noinline, section(".text.flowburst_test"))) static void flowendBurstTest(CtrAudioSystem* ca) {
+    if (flowendTestFrames == 0xFFFFFFFFu || !ca->initialized || !ca->ndspReady || 600u > ++flowendTestFrames) return;
+    int32_t x = -1, y = -1;
+    for (uint32_t i = 0; i < ca->soundCount; i++) {
+        const Sound* sound = &ca->base.audioGroups[0]->sond.sounds[i];
+        if (ca->sfxCache[i].pcm != NULL) {
+            if (x < 0 && !sfxInUse(ca, &ca->sfxCache[i])) x = (int32_t) i;
+        } else if (y < 0 && soundIsInAudo(sound) && !loadInFlight(ca, (int32_t) i)) {
+            DataWin* group = NULL;
+            AudioEntry* entry = audoEntryFor(ca, sound, &group);
+            if (entry != NULL && entry->present && entry->dataSize > 64u && entry->dataSize < 64u * 1024u) y = (int32_t) i;
+        }
+    }
+    if (x < 0 || y < 0) return; // next frame
+    flowendTestFrames = 0xFFFFFFFFu;
+    uint32_t savedPlays = flowendBurstPlays;
+    // (1) a miss at the cap after a deferred play
+    flowendBurstPlays = FLOWEND_BURST_FIRST;
+    int32_t id1 = flowendPlaySound(&ca->base, x, 0, false);
+    bool pend1 = flowendTestPending(ca, id1);
+    bool nbr = ca->noBackgroundRead[y];
+    ca->noBackgroundRead[y] = true;
+    uint32_t loads = ca->windowCacheLoads, bytes0 = ca->cacheBytes;
+    ca->cacheBytes += CTR_SFX_CACHE_BYTES;
+    int32_t idy = flowendPlaySound(&ca->base, y, 0, false);
+    ca->cacheBytes -= CTR_SFX_CACHE_BYTES;
+    ca->noBackgroundRead[y] = nbr;
+    bool ok1 = pend1 && flowendTestStarted(ca, id1, x);
+    logInfo("flowend burst test 1 (miss at the cap): %s; x %ld pending %d, y %ld id %ld, cache loads +%lu, cache %lu -> %lu B\n",
+            ok1 ? "PASS" : "FAIL", (long) x, (int) pend1, (long) y, (long) idy, (unsigned long) (ca->windowCacheLoads - loads),
+            (unsigned long) bytes0, (unsigned long) ca->cacheBytes);
+    // (2) the update's order: start the deferred voices, then collectPreps' eviction passes
+    if (ca->sfxCache[x].pcm != NULL) {
+        flowendBurstPlays = FLOWEND_BURST_FIRST;
+        int32_t id2 = flowendPlaySound(&ca->base, x, 0, false);
+        bool pend2 = flowendTestPending(ca, id2);
+        flowendStartDeferred(ca);
+        bytes0 = ca->cacheBytes;
+        ca->cacheBytes += CTR_SFX_CACHE_BYTES;
+        evictSfx(ca, 1u, false);
+        while (evictSfx(ca, 1u, true)) {}
+        ca->cacheBytes -= CTR_SFX_CACHE_BYTES;
+        bool ok2 = pend2 && flowendTestStarted(ca, id2, x);
+        logInfo("flowend burst test 2 (update order, evict at the cap): %s; pending %d, cache %lu -> %lu B\n", ok2 ? "PASS" : "FAIL",
+                (int) pend2, (unsigned long) bytes0, (unsigned long) ca->cacheBytes);
+        ctrStopSound(&ca->base, id2);
+    }
+    ctrStopSound(&ca->base, id1);
+    if (idy >= 0) ctrStopSound(&ca->base, idy);
+    // (3) control: no start before the eviction
+    if (ca->sfxCache[x].pcm != NULL) {
+        flowendBurstPlays = FLOWEND_BURST_FIRST;
+        int32_t id3 = flowendPlaySound(&ca->base, x, 0, false);
+        bool pend3 = flowendTestPending(ca, id3);
+        ca->cacheBytes += CTR_SFX_CACHE_BYTES;
+        evictSfx(ca, 1u, false);
+        ca->cacheBytes -= CTR_SFX_CACHE_BYTES;
+        bool lost = ca->sfxCache[x].pcm == NULL;
+        logInfo("flowend burst test 3 (control, no start first): %s; pending %d, x freed %d\n", pend3 && lost ? "PASS" : "FAIL",
+                (int) pend3, (int) lost);
+        ctrStopSound(&ca->base, id3);
+        flowendDeferred = 0;
+    } else {
+        logInfo("flowend burst test 3 (control): FAIL; x not cached after test 2\n");
+    }
+    // (4) the shed path: Y (embedded, read again now if test 3 freed it) deferred, its play time aged past
+    // SFX_SHED_RECENT_MS, outside the kept plan, then keepLinearFloor's call with the cache pushed past the shed floor.
+    // Its voice must be started (VOICE_SFX on Y) and Y still cached. (5) Control: the same, but the chain's next link
+    // called directly (no drain): Y is freed.
+    uint32_t keep = flowendKeepCount;
+    flowendKeepCount = 0;
+    if (ca->sfxCache[y].pcm == NULL) {
+        ca->noBackgroundRead[y] = true;
+        int32_t idr = ctrPlaySound(&ca->base, y, 0, false);
+        ca->noBackgroundRead[y] = nbr;
+        if (idr >= 0) ctrStopSound(&ca->base, idr);
+    }
+    int ran = 0;
+    for (int t = 4; t <= 5 && ca->sfxCache[y].pcm != NULL; t++, ran++) {
+        flowendBurstPlays = FLOWEND_BURST_FIRST;
+        int32_t id4 = flowendPlaySound(&ca->base, y, 0, false);
+        bool pend4 = flowendTestPending(ca, id4);
+        ca->sfxCache[y].lastPlayTick -= 11ULL * SYSCLOCK_ARM11;
+        bytes0 = ca->cacheBytes;
+        ca->cacheBytes += 2u * SFX_SHED_KEEP_BYTES;
+        uint32_t shed = t == 4 ? __wrap_CtrAudioSystem_shedSfx(2u * SFX_SHED_KEEP_BYTES)
+                               : CTR_SHEDSFX_AFTER_FLOWBURST(2u * SFX_SHED_KEEP_BYTES);
+        ca->cacheBytes -= 2u * SFX_SHED_KEEP_BYTES;
+        bool cached = ca->sfxCache[y].pcm != NULL;
+        bool ok = t == 4 ? pend4 && flowendTestStarted(ca, id4, y) : pend4 && !cached;
+        logInfo("flowend burst test %d (shed, aged %s): %s; y %ld pending %d, y cached %d, shed %lu B, cache %lu -> %lu B\n", t,
+                t == 4 ? "via the chain" : "control, no drain", ok ? "PASS" : "FAIL", (long) y, (int) pend4, (int) cached,
+                (unsigned long) shed, (unsigned long) bytes0, (unsigned long) ca->cacheBytes);
+        ctrStopSound(&ca->base, id4);
+    }
+    if (ran < 2) logInfo("flowend burst test 4/5: FAIL; only %d ran (y not cached)\n", ran);
+    flowendKeepCount = keep;
+    flowendDeferred = 0;
+    flowendBurstPlays = savedPlays;
+}
+#endif
+
+__attribute__((noinline, optimize("Os"), section(".text.flowburst_late"))) static void flowendBurstUpdate(AudioSystem* audio,
+                                                                                                         float deltaTime) {
+#ifdef FLOWEND_BURST_TEST
+    flowendBurstTest((CtrAudioSystem*) audio);
+#endif
+    flowendBurstPlays = 0;
+    flowendStartDeferred((CtrAudioSystem*) audio); // before ctrUpdate's collectPreps (it may evict)
+    pcmWaitUpdate(audio, deltaTime);
 }
 #endif
 
@@ -5615,16 +5889,25 @@ double flowpitchVideoUl2d(u64 ticks) {
 // as before. A block that may be read is never freed and nothing waits. Whether it may be read:
 // - uta running (utaActive): a scan of the channels under the uta lock. If the lock is taken (the frame callback, a
 //   reset, adpcm's reaper freeing its rings under it), the answer is "may be read": the block waits for the next check.
+//   A clear or a reset (ndspChnWaveBufClear, ndspChnReset) only stages the cut: libctru marks the buffers done and
+//   the NDSP thread hands the change to the DSP after a later frame callback, so the DSP may still read what the
+//   uta layer has just forgotten (utaClearPhys and utaChnReset forget the channel's pieces at once). Every block
+//   therefore may be read while a clear or reset is under way and until PCMWAIT_CUT_CALLBACKS frame callbacks have
+//   run since the latest one was staged (both are wrapped, CMakeLists.txt: the wrap counts the calls under way and,
+//   after the call, notes utaCb, the frame callbacks so far, keeping the latest; ~20 ms).
 // - uta shut down but the DSP still on (shutdownAudio between ndspSetCallback(NULL) and ndspExit: the channels' states
 //   are no longer kept, the DSP still plays what was queued): every block may be read, so every free waits.
-// - DSP off (no audio system, or its ndspReady false: after ndspExit in shutdownAudio, or a silent start): nothing
+// - DSP off (before the uta callback is set, or after ndspExit: both wrapped, a flag of this code's own, so no
+//   check reads the audio system, which UNDERTALE's detached sound-plan worker or a texture worker can outlive): nothing
 //   reads linear memory, so the whole list is freed and every free is at once. shutdownAudio's frees after ndspExit
 //   (the stream buffers, then the cached sounds) so drain the list after ndspChnReset and ndspExit, at UNDERTALE's exit
 //   and at DELTARUNE's game change (nothing waiting lives on into the next chapter).
 // The list has no size limit and is lock-free (a note is pushed with a compare-and-swap; a flush takes the whole list
 // with an exchange and pushes back what is still read), so any thread may use it, under any lock. Notes come from a
 // fixed pool (PCMWAIT_NOTES, more than the blocks the channels can read at once), then the heap without relief; with
-// neither the block is kept for good (logged), never freed under the DSP.
+// neither the block is kept for good (logged, its bytes counted against the cache for good), never freed under the DSP.
+// A scan re-checks utaActive under the lock, and the wrapped ndspSetCallback(NULL) (shutdownAudio's first step, after
+// utaActive goes false) takes and drops the lock once, so no scan still reads adpcm's metadata when shutdown frees it.
 // The list is flushed by every free in this file, by the audio update, by this file's linearSpaceFree (a file-local
 // alias like linearFree's: the sound plan's floor checks) and by any linear allocation that fails, in any file
 // (ctr_memory_lock.c's linearAlloc entry calls CtrMemory_linearAllocOnce, which CMakeLists.txt wraps: on failure the
@@ -5669,6 +5952,18 @@ void* __real_CtrMemory_linearAllocOnce(size_t size);
 void* __wrap_CtrMemory_linearAllocOnce(size_t size);
 void CtrAudio_pcmWaitFree(void* mem);
 u32 CtrAudio_pcmWaitSpaceFree(void);
+void __real_ndspChnReset(int id);
+void __real_ndspChnWaveBufClear(int id);
+void __real_ndspSetCallback(ndspCallback callback, void* data);
+void __real_ndspExit(void);
+void __wrap_ndspChnReset(int id);
+void __wrap_ndspChnWaveBufClear(int id);
+void __wrap_ndspSetCallback(ndspCallback callback, void* data);
+void __wrap_ndspExit(void);
+#define PCMWAIT_CUT_CALLBACKS 4u // staged in one NDSP frame, sent the next, the DSP's frame after; one more to spare
+static uint32_t pcmWaitCutCb PCMWAIT_BSS; // utaCb at the latest clear or reset staged (it only moves forward)
+static uint32_t pcmWaitCutting PCMWAIT_BSS; // clears and resets under way (entered, not yet stamped)
+static volatile uint8_t pcmWaitDspOn PCMWAIT_BSS; // the uta callback set and ndspExit not yet returned
 // this file's linearFree and linearSpaceFree calls (and only this file's)
 __asm__(".set linearFree, CtrAudio_pcmWaitFree\n.set linearSpaceFree, CtrAudio_pcmWaitSpaceFree\n");
 
@@ -5678,12 +5973,14 @@ typedef struct {
     LightLock* lock;
     volatile bool* active;
     CtrAudioSystem* volatile* target;
+    volatile uint32_t* callbacks;
+    CtrAudioSystem* volatile* uta;
 } PcmWaitUtaView;
 extern const PcmWaitUtaView ctrPcmWaitUta;
 __asm__(".pushsection .rodata.pcmwait_in_text,\"a\",%progbits\n"
         ".p2align 2\n.global ctrPcmWaitUta\n"
         ".type ctrPcmWaitUta,%object\nctrPcmWaitUta:\n"
-        ".word utaChan, utaWb, utaLock, utaActive, gShutdownTarget\n"
+        ".word utaChan, utaWb, utaLock, utaActive, gShutdownTarget, utaCb, utaCa\n"
         ".size ctrPcmWaitUta, .-ctrPcmWaitUta\n.popsection\n");
 static const char pcmWaitLog[] __attribute__((section(".rodata.pcmwait_in_text"))) =
     "Audio (pcm wait): a cached sound's PCM (%lu KB) is still read by a stopped channel; its free waits (%lu so far)\n";
@@ -5692,46 +5989,58 @@ static const char pcmWaitKeptLog[] __attribute__((section(".rodata.pcmwait_in_te
 
 enum { PCMWAIT_SCAN, PCMWAIT_KEEP, PCMWAIT_DSP_OFF };
 // What a check can know: uta running (scan its channels), uta shut down with the DSP still on (keep everything), or
-// the DSP off (nothing reads linear memory).
+// the DSP off (nothing reads linear memory). Reads only statics: the audio system may be gone.
 PCMWAIT_TEXT static int pcmWaitState(void) {
-    const PcmWaitUtaView* v = &ctrPcmWaitUta;
-    if (*v->active) return PCMWAIT_SCAN;
-    CtrAudioSystem* ca = *v->target;
-    return ca != NULL && ca->ndspReady ? PCMWAIT_KEEP : PCMWAIT_DSP_OFF;
+    if (*ctrPcmWaitUta.active) return PCMWAIT_SCAN;
+    return pcmWaitDspOn ? PCMWAIT_KEEP : PCMWAIT_DSP_OFF;
+}
+
+// A clear or reset under way, or one staged fewer than PCMWAIT_CUT_CALLBACKS frame callbacks ago (under the uta lock:
+// the callback count is written under it). The count of those under way is read first: once it reads 0, the stamp of
+// every clear that has left is seen.
+PCMWAIT_TEXT static bool pcmWaitCutPending(const PcmWaitUtaView* v) {
+    if (__atomic_load_n(&pcmWaitCutting, __ATOMIC_ACQUIRE) != 0) return true;
+    return PCMWAIT_CUT_CALLBACKS > *v->callbacks - __atomic_load_n(&pcmWaitCutCb, __ATOMIC_RELAXED);
 }
 
 // Whether the uta layer may still read [pcm, pcm + size): a stopped channel's segments (PENDING: its tail is built from
 // them next; TAILING: what it queued before the tail still plays), any queued or playing DSP buffer in the block, or
-// (DSP-ADPCM) a channel's decoder reading the cached copy. Can't tell (the lock taken, uta shut down with the DSP on):
-// true.
-PCMWAIT_TEXT static bool pcmWaitBusy(const uint8_t* pcm, size_t size) {
+// (DSP-ADPCM) a channel's decoder reading the cached copy: 1. Can't tell (the lock taken, uta shut down with the DSP
+// on, a clear or reset not yet seen by the DSP): 2. Not read: 0.
+PCMWAIT_TEXT static int pcmWaitBusy(const uint8_t* pcm, size_t size) {
     const PcmWaitUtaView* v = &ctrPcmWaitUta;
     int state = pcmWaitState();
-    if (state != PCMWAIT_SCAN) return state == PCMWAIT_KEEP;
-    if (pcm == NULL || size == 0) return false;
+    if (state != PCMWAIT_SCAN) return state == PCMWAIT_KEEP ? 2 : 0;
+    if (pcm == NULL || size == 0) return 0;
     // Under the lock the frame callback doesn't run, and once a voice is stopped it moves its channel only toward idle
     // (PENDING to TAILING after its tail is copied out, buffers QUEUED to PLAYING to DONE); uta shut down after the
     // check above only freezes the states it saw.
-    if (LightLock_TryLock(v->lock) != 0) return true;
-    bool busy = false;
+    if (LightLock_TryLock(v->lock) != 0) return 2;
+    if (!*v->active) { // shut down since the check above: the DSP is still on (the wrapped ndspSetCallback(NULL) waits
+        LightLock_Unlock(v->lock); // for this lock), and adpcm's metadata may go once the lock is dropped
+        return 2;
+    }
+    int busy = 0;
     for (int p = 0; UTA_CHANNELS > p && !busy; p++) {
         const UtaChan* c = &v->channels[p];
         if (c->state == UTA_PENDING || c->state == UTA_TAILING) {
             for (int i = 0; c->segs > i && 2 > i; i++) {
                 const uint8_t* d = c->seg[i].data;
-                if (d >= pcm && pcm + size > d) busy = true;
+                if (d >= pcm && pcm + size > d) busy = 1;
             }
         }
         for (int k = 0; UTA_RING > k && !busy; k++) {
             const ndspWaveBuf* w = &v->buffers[p][k];
             const uint8_t* d = (const uint8_t*) w->data_vaddr;
-            if ((w->status == NDSP_WBUF_QUEUED || w->status == NDSP_WBUF_PLAYING) && d >= pcm && pcm + size > d) busy = true;
+            if ((w->status == NDSP_WBUF_QUEUED || w->status == NDSP_WBUF_PLAYING) && d >= pcm && pcm + size > d) busy = 1;
         }
 #if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
         const AdSfxMeta* m = adSfx.physical[p].meta;
-        if (m != NULL && m->data != NULL && m->data >= pcm && pcm + size > m->data) busy = true;
+        if (m != NULL && m->data != NULL && m->data >= pcm && pcm + size > m->data) busy = 1;
 #endif
     }
+    // Not seen read, but a cut the DSP may not have taken yet.
+    if (!busy && pcmWaitCutPending(v)) busy = 2;
     LightLock_Unlock(v->lock);
     return busy;
 }
@@ -5793,13 +6102,17 @@ PCMWAIT_TEXT void CtrAudio_pcmWaitFree(void* mem) {
     int state = pcmWaitState();
     if (state == PCMWAIT_DSP_OFF) __atomic_fetch_add(&pcmWaitOff, 1, __ATOMIC_RELAXED);
     size_t size = pcm != NULL && state != PCMWAIT_DSP_OFF ? linearGetSize(pcm) : 0;
-    if (size != 0 && pcmWaitBusy(pcm, size)) {
-        uint32_t ever = __atomic_add_fetch(&pcmWaitEver, 1, __ATOMIC_RELAXED);
-        if (16 >= ever || (ever & (ever - 1)) == 0) // the first 16, then 32, 64...
-            logInfo(pcmWaitLog, (unsigned long) (size / 1024u), (unsigned long) ever);
+    int busy = size != 0 ? pcmWaitBusy(pcm, size) : 0;
+    if (busy != 0) {
+        if (busy == 1) { // a channel is seen to read it (not a cut the DSP may not have taken yet)
+            uint32_t ever = __atomic_add_fetch(&pcmWaitEver, 1, __ATOMIC_RELAXED);
+            if (16 >= ever || (ever & (ever - 1)) == 0) // the first 16, then 32, 64...
+                logInfo(pcmWaitLog, (unsigned long) (size / 1024u), (unsigned long) ever);
+        }
         PcmWaitNote* n = pcmWaitNew();
         if (n == NULL) {
             logInfo(pcmWaitKeptLog, (unsigned long) (size / 1024u));
+            __atomic_fetch_add(&pcmWaitBytes, size, __ATOMIC_RELAXED); // lost for good: it counts against the cache
             return;
         }
         n->pcm = pcm;
@@ -5829,6 +6142,55 @@ PCMWAIT_TEXT void* __wrap_CtrMemory_linearAllocOnce(size_t size) {
     return p;
 }
 
+// The cut stamp moves only forward: a clear that read the count and was held up before storing it can't put back an
+// older count over a later clear's (that later clear's wait would end early). The count is read after the stamp it
+// replaces, so it is never older than that stamp's (a later stamp makes the swap fail and the count is read again).
+// No comparison of counts: a stamp of any age is replaced (none is too old to compare, flushrev F2).
+PCMWAIT_TEXT static void pcmWaitStampCut(void) {
+    uint32_t cur = __atomic_load_n(&pcmWaitCutCb, __ATOMIC_ACQUIRE);
+    uint32_t now;
+    do {
+        now = *ctrPcmWaitUta.callbacks;
+    } while (!__atomic_compare_exchange_n(&pcmWaitCutCb, &cur, now, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+}
+
+// Every clear and reset (any file; CMakeLists.txt's wraps): the DSP takes the cut a few frame callbacks after libctru
+// stages it. Under way (counted from entry, so however long the caller is held up before or inside the call) every
+// block may be read; after it the stamp is a count read once it is staged, so the wait starts there.
+PCMWAIT_TEXT static void pcmWaitCut(void (*real)(int), int id) {
+    __atomic_fetch_add(&pcmWaitCutting, 1, __ATOMIC_SEQ_CST);
+    real(id);
+    pcmWaitStampCut();
+    __atomic_fetch_sub(&pcmWaitCutting, 1, __ATOMIC_RELEASE);
+}
+
+PCMWAIT_TEXT void __wrap_ndspChnReset(int id) {
+    pcmWaitCut(__real_ndspChnReset, id);
+}
+
+PCMWAIT_TEXT void __wrap_ndspChnWaveBufClear(int id) {
+    pcmWaitCut(__real_ndspChnWaveBufClear, id);
+}
+
+// The uta callback set: the DSP is on. Taken away (shutdownAudio, utaActive already false): once every scan that saw
+// uta running is done (the lock taken and dropped), shutdown goes on.
+PCMWAIT_TEXT void __wrap_ndspSetCallback(ndspCallback callback, void* data) {
+    const PcmWaitUtaView* v = &ctrPcmWaitUta;
+    if (callback != NULL) {
+        pcmWaitDspOn = 1;
+    } else if (*v->uta != NULL) { // the lock is set up (utaSetCallback)
+        LightLock_Lock(v->lock);
+        LightLock_Unlock(v->lock);
+    }
+    __real_ndspSetCallback(callback, data);
+}
+
+// The DSP off once ndspExit returns (its NDSP thread joined).
+PCMWAIT_TEXT void __wrap_ndspExit(void) {
+    __real_ndspExit();
+    pcmWaitDspOn = 0;
+}
+
 // Game thread: the bytes still waiting count against the cache's cap (evictSfx, the sound plan) until they are freed.
 // A new audio system, or frees made with the DSP off since (shutdownAudio's), start the count afresh.
 PCMWAIT_TEXT static void pcmWaitCount(void) {
@@ -5852,3 +6214,484 @@ PCMWAIT_TEXT static void pcmWaitUpdate(AudioSystem* audio, float deltaTime) {
     MENUPAUSE_OPAQUE(&ctrUpdate)(audio, deltaTime);
 }
 
+#ifdef ENABLE_WAD16
+// ===[ usstop: the sound plan's worker is idle before the audio system's memory goes (UT-002, credfix 2026-10-29) ]===
+//
+// The copy worker above is detached and never stopped. At the exit it could still be inside an FS read into linear
+// memory (usw.piece, a copy's PCM) while shutdownAudio freed the sound cache and libctru's __libctru_exit unmapped the
+// linear heap and the heap (its stack) before svcExitProcess: memory freed under a thread still in the kernel, the
+// class of the o2DS end-of-run kernel panics (docs/3ds-hardware.md). shutdownAudio's one CtrReadAhead_shutdown call
+// comes after the decode threads are joined and before ndspChnReset, ndspExit and the frees; UNDERTALE's link wraps
+// it (CMakeLists.txt), so shutdownAudio keeps its code. The stop holds the worker (usw.held, under its lock: it takes
+// no new job) and waits up to 2 s for a copy under way to finish (one sound). The worker then waits on its event, a
+// static address, with no read in flight and no memory of its own in use; the process ends it there. (Holding rather
+// than ending it leaves the worker and every existing function byte for byte as they are.)
+//
+// A copy still under way after 2 s (an SD read that does not come back) must not have memory unmapped under it, and
+// the exit must still end (no wait without an end: a read that never returns would leave the player on a frozen
+// screen). So the wait only records the request (usWant), and the thread that really owns the exit decides, at its
+// own aptExit, from what it can see there (rev 3, after c26rev round 10):
+// - The owner is the one thread past z_leavekeep.c's CTR_EXIT_ONCE: main returning from main, or a filesRecover or
+//   lab leave thread (CtrLeavekeep_exit). Only the owner runs __appExit and its aptExit (a lab leave also calls
+//   aptExit itself, earlier, before the gate: see the return address below).
+// - It keeps the heap when main asked (usWant) or when its own exit is already a keep exit (lkKeepHeap = itself: a
+//   filesRecover owner keeps it whether main's wait has run out yet or not). CtrLeavekeep_ownerKeep adds the owner
+//   to lkEntered, so __wrap_svcControlMemory's "a second thread is in the exit" test holds: a count that only grows,
+//   so no other thread can undo the keep (rev 2 overwrote lkKeepHeap with main's id, and a filesRecover owner's
+//   frees then went through; c26rev r10 F1).
+// - The keep needs no return address at the frees. The first thread into this aptExit records, once (an atomic
+//   compare-and-swap, before it calls the real aptExit), whether the loader gave a return address: no aptExit has
+//   run before that, so the address it reads is the loader's. Every later entry, the owner's too, uses that record:
+//   a lab leave's own aptExit (ctr_lab.c, before it reaches the exit gate) may have set aptExit's address already, so
+//   reading the address again at the owner would take it for a loader's (rev 4, c26rev r11b). When the loader gave
+//   none and aptExit set its own (aptExitProcess, for an application that is not chainloading: a .3dsx on Azahar, a
+//   CIA), the address goes aside until svcExitProcess, where libctru's __libctru_exit would have called it (after
+//   envDestroyHandles and __sync_fini). Main never reads the return address. A loader that gave an address of its
+//   own keeps the old exit: it gets its memory back as before.
+// - svcExitProcess's wrap lets only the owner take the set-aside address, with an atomic exchange: the 15 s waiter in
+//   CTR_EXIT_ONCE and main.c's out-of-memory exit go straight to svcExitProcess as before (c26rev r10 F4).
+bool CtrLeavekeep_ownerKeep(bool want);
+#define USSTOP_TEXT __attribute__((noinline, section(".text.usstop_late")))
+#define USSTOP_RO __attribute__((section(".rodata.usstop_in_text")))
+#define USSTOP_BSS __attribute__((section(".bss.usstop_late")))
+extern void (*__system_retAddr)(void);
+static bool usWant USSTOP_BSS;            // the wait ran out with a copy still under way
+static void (*usExitTo)(void) USSTOP_BSS; // aptExit's return address, set aside by the owner until svcExitProcess
+static u32 usLoader USSTOP_BSS;           // 0 before the first aptExit, then 1: the loader gave none, 2: it gave one
+#ifdef CTRPORT_EXITTRAIL
+// The provoke test (exit trail builds only, --ini usprovoke=N, or N in the game folder's usprovoke.txt for Azahar,
+// which passes no arguments): a thread like the worker (its core, priority and stack size) holds a job slot BUSY and
+// reads the data file in 32 KB pieces into usw.piece, back to back, so an FS read is in flight when the exit frees
+// memory. 1: the stop is skipped (cand25's exit: the reads run until the process ends). 2: the stop holds it; the
+// reader ends its job at the next piece, as the worker would after its copy. 3 to 10: the reader never ends its job
+// (a copy whose read does not come back), so the wait runs out:
+// 3: main owns the exit; the heap is kept (rev 3).
+// 4: as 3 without the keep (099bfe4c4's exit, the control arm: the heap is unmapped under the reader).
+// 5: c26rev r10 F1's order on rev 3: 5 ms into the wait a thread G takes the exit as filesRecover does
+//    (CtrLeavekeep_exit: keep = owner = G) and stops before aptExit until main's wait has run out and marked; main
+//    then sleeps 8 s (still in its teardown, before its own _exit) while G's exit runs on.
+// 6: as 5 with rev 2's mark and srvExit (542eaccb4: keep = main, the return address set aside at srvExit), the
+//    control arm for F1.
+// 7: c26rev r10 F4 on rev 3: as 3, plus a thread W that calls svcExitProcess (as the 15 s waiter and main.c's
+//    out-of-memory exit do) while the owner holds the loaded set-aside address in svcExitProcess's wrap.
+// 8: as 7 with rev 2's take (load, clear, call: no owner test, no exchange), the control arm for F4.
+// 9: c26rev r11b F1 on rev 4: as 5, and after main has marked, a thread L calls aptExit as a lab leave does before
+//    the exit gate (ctr_lab.c) and returns (it is the first aptExit: the real one sets aptExitProcess as the return
+//    address); only then does G go into its aptExit.
+// 10: as 9 with rev 3's own read of the return address at G's aptExit, the control arm for r11b.
+// The exit's log is closed before atexit runs shutdownAudio, so the test's lines go to the boot trail (labboot.txt,
+// lab runs), to usstop.txt in the game folder, and to Azahar's log (svcOutputDebugString; usSay makes Azahar flush).
+// With usprovoke.txt (Azahar), the run also leaves after its bench as --exit-after would.
+// The test's code and constants go in the ordinary .text and .rodata (test builds only: the late code reserve
+// has no room for them).
+#define USSTOP_TTEXT __attribute__((noinline, section(".text.usstop_test")))
+#define USSTOP_TRO __attribute__((section(".rodata.usstop_test")))
+#include <stdio.h>
+#include "ctr_launch_args.h"
+CtrLaunchArgs* CtrBenchIo_launch(void);
+void CtrLeavekeep_state(u32* out);
+void CtrLeavekeep_rev2Keep(void);
+void CtrLeavekeep_exit(int status) __attribute__((noreturn));
+static const char usProvokeKey[] USSTOP_TRO = "usprovoke=";
+static const char usProvokeFile[] USSTOP_TRO = "sdmc:/3ds/undertale-3ds/usprovoke.txt";
+static const char usProvokeFileMode[] USSTOP_TRO = "r";
+static const char usKeptLog[] USSTOP_TRO = "usstop: a copy is still under way: the heap is kept for the exit\n";
+static const char usUnkeptLog[] USSTOP_TRO = "usstop: a copy is still under way: control arm, the heap is NOT kept\n";
+static const char usRev2Log[] USSTOP_TRO = "usstop: a copy is still under way: rev 2's mark (control arm)\n";
+static int usMode USSTOP_BSS;
+static const char usTrailPath[] USSTOP_TRO = "sdmc:/3ds/undertale-3ds/usboot.txt";
+static volatile uint32_t usStackAt USSTOP_BSS; // a word of the stalled reader's stack (heap)
+static const char usExitBoth[] USSTOP_TRO = "usstop: after the heap frees: the copy's buffer and its stack are still mapped";
+static const char usExitGone[] USSTOP_TRO = "usstop: after the heap frees: the copy's buffer and its stack are UNMAPPED";
+static const char usExitMixed[] USSTOP_TRO = "usstop: after the heap frees: the copy's buffer or its stack is UNMAPPED";
+static volatile uint32_t usSpinCount USSTOP_BSS;
+static const char usExitRan[] USSTOP_TRO = "usstop: after it the stalled copy went on writing its buffer and stack for 50 ms";
+static const char usExitStill[] USSTOP_TRO = "usstop: after it the stalled copy did NOT run";
+static const char usRetLog[] USSTOP_TRO = "usstop: loader return address 0x%08lx\n";
+static const char usNotePath[] USSTOP_TRO = "sdmc:/3ds/undertale-3ds/usstop.txt";
+static const char usNoteMode[] USSTOP_TRO = "a";
+static char usNoteText[160] USSTOP_BSS;
+static volatile uint32_t usG USSTOP_BSS;      // 5, 6, 9, 10: G's thread id + 1
+static volatile uint32_t usMarked USSTOP_BSS; // 5, 6, 9, 10: main's wait has run out and marked
+static volatile uint32_t usW USSTOP_BSS;      // 7, 8: W's thread id + 1
+static volatile uint32_t usWGo USSTOP_BSS;    // 7, 8: the owner holds the loaded address
+static volatile uint32_t usWDone USSTOP_BSS;  // 7, 8: W has taken it or gone past
+static bool usR2Keep USSTOP_BSS;              // 6: rev 2's decision (return address NULL at the timeout)
+static volatile uint32_t usLDone USSTOP_BSS;  // 9, 10: L's aptExit has returned
+#define US_G(m) ((m) == 5 || (m) == 6 || (m) >= 9) // the modes with G
+#define US_W(m) ((m) == 7 || (m) == 8)             // the modes with W
+#include <stdarg.h>
+#include "ctr_boot_trail.h"
+USSTOP_TTEXT static u32 usSelf(void) {
+    u32 id = 0;
+    svcGetThreadId(&id, CUR_THREAD_HANDLE);
+    return id + 1;
+}
+// Azahar's log: the line, then a failing svcOpenThread (an Error entry) so Azahar flushes the log to the file.
+USSTOP_TTEXT static void usSay(const char* text) {
+    svcOutputDebugString(text, (s32) strlen(text));
+    Handle none;
+    svcOpenThread(&none, CUR_PROCESS_HANDLE, 0xFFFFFFF0u);
+}
+USSTOP_TTEXT static void usNote(const char* format, ...) {
+    va_list list;
+    va_start(list, format);
+    vsnprintf(usNoteText, sizeof(usNoteText), format, list);
+    va_end(list);
+    svcOutputDebugString(usNoteText, (s32) strlen(usNoteText));
+    CtrBootTrail_mark(usNoteText);
+    FILE* f = fopen(usNotePath, usNoteMode);
+    if (f != NULL) {
+        fputs(usNoteText, f);
+        fclose(f);
+    }
+}
+// z_leavekeep.c's state, hex, no stdio: keep, owner, entered, retAddr, frees skipped, frees passed on.
+USSTOP_TTEXT static void usState(const char* head, u32* state) {
+    CtrLeavekeep_state(state);
+    static char line[112] USSTOP_BSS;
+    static const char hex[] USSTOP_TRO = "0123456789abcdef";
+    u32 n = 0;
+    for (const char* c = head; *c != '\0'; c++) line[n++] = *c;
+    for (int i = 0; 6 > i; i++) {
+        line[n++] = ' ';
+        for (int s = 28; s >= 0; s -= 4) line[n++] = hex[(state[i] >> s) & 15u];
+    }
+    line[n] = '\0';
+    usSay(line);
+    CtrBootTrail_mark(line);
+}
+// 3 to 10: right after __libctru_exit's heap frees (its next call is envDestroyHandles; svcExitProcess follows), is
+// the stalled copy's memory still there? svcQueryMemory says, deterministically; the boot trail (its file system
+// session still open here) and Azahar's log carry it. No stdio or heap: in 4, 6 and 10 the heap is gone.
+static const char usAfterHead[] USSTOP_TRO = "usstop: after the frees: leavekeep state";
+void __real_envDestroyHandles(void);
+void __wrap_envDestroyHandles(void);
+USSTOP_TTEXT void __wrap_envDestroyHandles(void) {
+    if (usMode >= 3) {
+        MemInfo info;
+        PageInfo page;
+        uint32_t stack = usStackAt;
+        bool buffer = R_SUCCEEDED(svcQueryMemory(&info, &page, (u32) (uintptr_t) usw.piece)) && info.state != MEMSTATE_FREE;
+        bool stacked = stack != 0 && R_SUCCEEDED(svcQueryMemory(&info, &page, stack)) && info.state != MEMSTATE_FREE;
+        const char* text = buffer && stacked ? usExitBoth : !buffer && !stacked ? usExitGone : usExitMixed;
+        usSay(text);
+        CtrBootTrail_mark(text);
+        u32 state[6];
+        usState(usAfterHead, state);
+        // Give the stalled copy 50 ms to run (it writes its buffer and stack every 1 ms): in 4, 6 and 10 Azahar logs each
+        // write to the unmapped memory as an error (a console faults on the first).
+        uint32_t spins = usSpinCount;
+        svcSleepThread(50000000LL);
+        text = usSpinCount != spins ? usExitRan : usExitStill;
+        usSay(text);
+        CtrBootTrail_mark(text);
+    }
+    __real_envDestroyHandles();
+}
+// srvExit, after z_exittrail.c's wrap (exit trail builds only): 6 does rev 2's srvExit (a return address aptExit set
+// goes aside when rev 2's timeout saw none); 3 to 10 say, before __libctru_exit's frees, what z_leavekeep.c's test
+// will decide (it runs on the same values next).
+static const char usBeforeHead[] USSTOP_TRO = "usstop: before the frees: leavekeep state";
+static const char usWillSkip[] USSTOP_TRO = "usstop: before the frees: the heap frees will be SKIPPED";
+static const char usWillFree[] USSTOP_TRO = "usstop: before the frees: the heap frees will go THROUGH";
+void __real_srvExit(void);
+void CtrSrvExit_chainUsstop(void);
+USSTOP_TTEXT void CtrSrvExit_chainUsstop(void) {
+    __real_srvExit();
+    if (usMode == 6 && usR2Keep && __system_retAddr != NULL) {
+        usExitTo = __system_retAddr;
+        __system_retAddr = NULL;
+    }
+    if (usMode >= 3) {
+        u32 s[6];
+        usState(usBeforeHead, s);
+        usSay(s[3] == 0 && ((s[0] != 0 && s[0] == s[1]) || s[2] > 1) ? usWillSkip : usWillFree);
+    }
+}
+int __real_CtrLaunchArgs_sendFilesMB(const CtrLaunchArgs* args);
+int __wrap_CtrLaunchArgs_sendFilesMB(const CtrLaunchArgs* args);
+USSTOP_TTEXT int __wrap_CtrLaunchArgs_sendFilesMB(const CtrLaunchArgs* args) {
+    FILE* f = fopen(usProvokeFile, usProvokeFileMode);
+    if (f != NULL) {
+        ((CtrLaunchArgs*) args)->exitAfter = true;
+        fclose(f);
+    }
+    return __real_CtrLaunchArgs_sendFilesMB(args);
+}
+static const char usProvokeLog[] USSTOP_TRO = "usstop: provoke %d, %lu reads before the stop\n";
+static const char usStopLog[] USSTOP_TRO = "usstop: idle after %lu ms (%s), %lu reads\n";
+static const char usIdle[] USSTOP_TRO = "idle";
+static const char usTimedOut[] USSTOP_TRO = "TIMED OUT";
+USSTOP_TTEXT static void usProvokeMain(void* arg) {
+    UtSfxJob* job = (UtSfxJob*) arg;
+    int fd = open(usw.path, O_RDONLY);
+    uint32_t at = 0;
+    for (;;) {
+        if (fd >= 0 && usReadAt(fd, at, usw.piece, UTSFX_PIECE)) at += UTSFX_PIECE;
+        else at = 0;
+        usSpinCount = usSpinCount + 1u;
+        LightLock_Lock(&usw.lock);
+        bool stop = usw.held && 3 > usMode;
+        if (stop) job->state = UTSFX_JOB_FAILED;
+        LightLock_Unlock(&usw.lock);
+        if (stop) break;
+        if (usw.held) {
+            // 3 to 10: the read that does not come back. The job stays BUSY and the thread goes on using its stack
+            // and usw.piece (heap and linear heap), 1 ms apart, until the process ends it or an unmap faults it.
+            volatile uint32_t mark[8];
+            usStackAt = (uint32_t) (uintptr_t) &mark[0];
+            for (uint32_t n = 0;; n++) {
+                mark[n & 7u] = n;
+                usw.piece[n & (UTSFX_PIECE - 1u)] = (uint8_t) mark[n & 7u];
+                usSpinCount = usSpinCount + 1u;
+                svcSleepThread(1000000LL);
+            }
+        }
+    }
+    if (fd >= 0) close(fd);
+}
+USSTOP_TTEXT static int usProvoke(void) {
+    int mode = 0;
+    CtrLaunchArgs* args = CtrBenchIo_launch();
+    for (int i = 0; args != NULL && args->iniCount > i; i++) {
+        if (strncmp(args->ini[i], usProvokeKey, sizeof(usProvokeKey) - 1) == 0) mode = atoi(args->ini[i] + sizeof(usProvokeKey) - 1);
+    }
+    if (mode == 0) {
+        FILE* f = fopen(usProvokeFile, usProvokeFileMode);
+        if (f != NULL) {
+            int c = fgetc(f);
+            int d = fgetc(f);
+            if (c >= '1' && c <= '9') mode = c - '0';
+            if (mode != 0 && d >= '0' && d <= '9') mode = mode * 10 + (d - '0');
+            fclose(f);
+        }
+    }
+    if (1 > mode || mode > 10) return 0;
+    usMode = mode;
+    UtSfxJob* job = NULL;
+    LightLock_Lock(&usw.lock);
+    for (int i = 0; UTSFX_JOBS > i && job == NULL; i++) {
+        if (usw.jobs[i].state == UTSFX_JOB_FREE) job = &usw.jobs[i];
+    }
+    if (job != NULL) job->state = UTSFX_JOB_BUSY;
+    LightLock_Unlock(&usw.lock);
+    if (job == NULL) return 0;
+    CtrAudioSystem* ca = gShutdownTarget;
+    s32 priority = 0x30;
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    priority += 2;
+    if (priority > 0x3F) priority = 0x3F;
+    int core = ca == NULL || ca->threadCore == 0 ? -2 : ca->threadCore;
+    if (threadCreate(usProvokeMain, job, UTSFX_STACK, priority, core, true) == NULL) {
+        job->state = UTSFX_JOB_FREE;
+        return 0;
+    }
+    svcSleepThread(200000000LL); // reading by now
+    usNote(usProvokeLog, mode, (unsigned long) usSpinCount);
+    // 3 to 10: the loader's return address (NULL on Luma3DS's hb:ldr and on Azahar; aptExit may set its own later).
+    if (mode >= 3) {
+        // The boot trail outlives fsExit (z_exittrail.c); a lab run has it open already (labboot.txt).
+        CtrBootTrail_open(usTrailPath);
+        usNote(usRetLog, (unsigned long) (uintptr_t) __system_retAddr);
+    }
+    return mode;
+}
+// 5, 6, 9, 10: G, a thread that takes the exit as filesRecover does (ctr_exit_files.c: CtrLeavekeep_exit).
+static const char usGTakes[] USSTOP_TRO = "usstop: G takes the exit (CtrLeavekeep_exit, as filesRecover)";
+static const char usGWaits[] USSTOP_TRO = "usstop: G owns the exit and waits before aptExit for main's timeout";
+static const char usGGoes[] USSTOP_TRO = "usstop: G goes on with aptExit";
+static const char usMainMarked[] USSTOP_TRO = "usstop: main's wait ran out and marked; main sleeps 8 s before its own _exit";
+static const char usNoThread[] USSTOP_TRO = "usstop: the test thread did not start";
+USSTOP_TTEXT static void usGMain(void* arg) {
+    (void) arg;
+    usG = usSelf();
+    usSay(usGTakes);
+    CtrLeavekeep_exit(1);
+}
+// 7, 8: W, a second thread into svcExitProcess while the owner holds the loaded address.
+USSTOP_TTEXT static void usWMain(void* arg) {
+    (void) arg;
+    usW = usSelf();
+    for (int ms = 0; 30000 > ms && !usWGo; ms++) svcSleepThread(1000000LL);
+    svcExitProcess();
+}
+// 9, 10: L, a lab leave's aptExit before the exit gate (ctr_lab.c leave: aptExit, then CtrExitFiles_labExit). L is
+// not the exit's owner; after its aptExit it stays parked (a leave would wait at the gate behind G).
+static const char usLCalls[] USSTOP_TRO = "usstop: L calls aptExit before the exit gate (as a lab leave)";
+static const char usLAfter[] USSTOP_TRO = "usstop: L's aptExit returned; return address now 0x%08lx\n";
+static const char usLReturned[] USSTOP_TRO = "usstop: L's aptExit is done; main marks next, then G goes into its aptExit";
+static const char usLStuck[] USSTOP_TRO = "usstop: L's aptExit did NOT return in 5 s";
+USSTOP_TTEXT static void usLMain(void* arg) {
+    (void) arg;
+    usSay(usLCalls);
+    aptExit();
+    usNote(usLAfter, (unsigned long) (uintptr_t) __system_retAddr);
+    usLDone = 1;
+    for (;;) svcSleepThread(1000000000LL);
+}
+USSTOP_TTEXT static void usStartTest(ThreadFunc main) {
+    s32 priority = 0x30;
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    if (priority > 0x18) priority -= 1;
+    if (threadCreate(main, NULL, 0x8000, priority, -2, true) == NULL) usSay(usNoThread);
+}
+USSTOP_TTEXT static void usAfterMark(int mode) {
+    if (mode >= 9) {
+        usStartTest(usLMain);
+        for (int ms = 0; 5000 > ms && !usLDone; ms++) svcSleepThread(1000000LL);
+        usSay(usLDone ? usLReturned : usLStuck);
+    }
+    if (US_G(mode)) {
+        usSay(usMainMarked);
+        usMarked = 1;
+        svcSleepThread(8000000000LL);
+    }
+    if (US_W(mode)) usStartTest(usWMain);
+}
+// svcExitProcess's hooks (7, 8): the owner, holding the loaded address, lets W in and waits for it (up to 500 ms).
+static const char usClaimOwner[] USSTOP_TRO = "usstop: svcExitProcess: the exit's owner takes the set-aside return address";
+static const char usClaimSecond[] USSTOP_TRO = "usstop: svcExitProcess: a SECOND caller takes the set-aside return address";
+static const char usDirectSecond[] USSTOP_TRO = "usstop: svcExitProcess: the second caller does not own the exit: straight to svcExitProcess";
+USSTOP_TTEXT static void usLoaded(void) {
+    if (US_W(usMode) && usSelf() != usW) {
+        usWGo = 1;
+        for (int ms = 0; 500 > ms && !usWDone; ms++) svcSleepThread(1000000LL);
+    }
+}
+USSTOP_TTEXT static void usClaimed(void) {
+    bool second = usW != 0 && usSelf() == usW;
+    usSay(second ? usClaimSecond : usClaimOwner);
+    if (second) {
+        usWDone = 1;
+        svcSleepThread(1000000000LL);
+    }
+}
+USSTOP_TTEXT static void usDirect(void) {
+    if (US_W(usMode) && usW != 0 && usSelf() == usW) {
+        usSay(usDirectSecond);
+        usWDone = 1;
+        svcSleepThread(3000000000LL);
+    }
+}
+// 6 and 8: rev 2's take (542eaccb4): load, clear, call.
+USSTOP_TTEXT static void usRev2ExitTo(void) {
+    void (*to)(void) = usExitTo;
+    if (to != NULL) {
+        usLoaded();
+        usExitTo = NULL;
+        usClaimed();
+        to();
+    }
+}
+#endif
+void __real_CtrReadAhead_shutdown(void);
+void __wrap_CtrReadAhead_shutdown(void);
+USSTOP_TEXT void __wrap_CtrReadAhead_shutdown(void) {
+    if (usw.started) {
+#ifdef CTRPORT_EXITTRAIL
+        int mode = usProvoke();
+        u64 t0 = svcGetSystemTick();
+        if (mode != 1) {
+#endif
+        bool busy = true;
+        for (int ms = 0; 2000 > ms; ms++) {
+            busy = false;
+            LightLock_Lock(&usw.lock);
+            usw.held = true;
+            for (int i = 0; UTSFX_JOBS > i; i++) {
+                if (usw.jobs[i].state == UTSFX_JOB_BUSY) busy = true;
+            }
+            LightLock_Unlock(&usw.lock);
+            if (!busy) break;
+#ifdef CTRPORT_EXITTRAIL
+            if (ms == 5 && US_G(mode)) usStartTest(usGMain);
+#endif
+            svcSleepThread(1000000LL);
+        }
+#ifdef CTRPORT_EXITTRAIL
+        usNote(usStopLog, (unsigned long) ((svcGetSystemTick() - t0) / CPU_TICKS_PER_MSEC), busy ? usTimedOut : usIdle,
+                (unsigned long) usSpinCount);
+        if (busy) usNote(mode == 4 ? usUnkeptLog : mode == 6 ? usRev2Log : usKeptLog);
+        if (busy && mode == 6) {
+            usR2Keep = __system_retAddr == NULL;
+            CtrLeavekeep_rev2Keep();
+        }
+        if (mode != 4 && mode != 6)
+#endif
+        // Only the request: the exit's owner acts on it at its aptExit (below).
+        if (busy) __atomic_store_n(&usWant, true, __ATOMIC_RELEASE);
+#ifdef CTRPORT_EXITTRAIL
+        if (busy) usAfterMark(mode);
+        }
+#endif
+    }
+    __real_CtrReadAhead_shutdown();
+}
+// aptExit (exit trail builds: after z_exittrail.c's wrap). Only the exit's owner gets a keep from
+// CtrLeavekeep_ownerKeep; the lab leave's own earlier aptExit call (ctr_lab.c, not the owner yet) passes through, but
+// it may be the first entry, and then it is the one that records the loader's return address.
+#ifdef CTRPORT_EXITTRAIL
+#define USSTOP_APT_EXIT CtrAptExit_chainUsstop
+#else
+#define USSTOP_APT_EXIT __wrap_aptExit
+#endif
+void __real_aptExit(void);
+void USSTOP_APT_EXIT(void);
+USSTOP_TEXT void USSTOP_APT_EXIT(void) {
+#ifdef CTRPORT_EXITTRAIL
+    if (US_G(usMode) && usSelf() == usG) {
+        usSay(usGWaits);
+        for (int ms = 0; 6000 > ms && !usMarked; ms++) svcSleepThread(1000000LL);
+        usSay(usGGoes);
+    }
+#endif
+    // The loader's return address, recorded by the first entry only (1: none, 2: one of its own); once recorded,
+    // usLoader never changes, so the load after the compare-and-swap gives every entry the first entry's record.
+    u32 seen = 0;
+    __atomic_compare_exchange_n(&usLoader, &seen, 1u + (__system_retAddr != NULL), false, __ATOMIC_ACQ_REL,
+            __ATOMIC_ACQUIRE);
+    bool none = __atomic_load_n(&usLoader, __ATOMIC_ACQUIRE) == 1u;
+#ifdef CTRPORT_EXITTRAIL
+    if (usMode == 10) none = __system_retAddr == NULL; // rev 3's own read (control arm)
+#endif
+    __real_aptExit();
+#ifdef CTRPORT_EXITTRAIL
+    if (usMode != 6)
+#endif
+    if (none && CtrLeavekeep_ownerKeep(__atomic_load_n(&usWant, __ATOMIC_ACQUIRE))) {
+        void (*to)(void) = __system_retAddr;
+        if (to != NULL) {
+            __atomic_store_n(&usExitTo, to, __ATOMIC_RELEASE);
+            __system_retAddr = NULL;
+        }
+    }
+}
+void __real_svcExitProcess(void) __attribute__((noreturn));
+void __wrap_svcExitProcess(void) __attribute__((noreturn));
+USSTOP_TEXT void __wrap_svcExitProcess(void) {
+#ifdef CTRPORT_EXITTRAIL
+    if (usMode == 6 || usMode == 8) usRev2ExitTo();
+#endif
+    if (__atomic_load_n(&usExitTo, __ATOMIC_ACQUIRE) != NULL) {
+#ifdef CTRPORT_EXITTRAIL
+        usLoaded();
+#endif
+        // Only the exit's owner takes it, once (CtrLeavekeep_ownerKeep(true) is true only there); any other caller
+        // ends the process straight away, as before.
+        if (CtrLeavekeep_ownerKeep(true)) {
+            void (*to)(void) = __atomic_exchange_n(&usExitTo, NULL, __ATOMIC_ACQ_REL);
+            if (to != NULL) {
+#ifdef CTRPORT_EXITTRAIL
+                usClaimed();
+#endif
+                to(); // aptExitProcess sends APT_CloseApplication and returns; the process ends next, as in libctru
+            }
+        }
+    }
+#ifdef CTRPORT_EXITTRAIL
+    usDirect();
+#endif
+    __real_svcExitProcess();
+}
+#endif

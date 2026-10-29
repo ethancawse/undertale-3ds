@@ -3025,8 +3025,8 @@ static void bfStatFill(void) {
 // SLOW_ROOM_LINES (16) a room visit, and its count starts again only at a room change. A scene whose room intro
 // already spent them (all four drsweep22 Knight logs: 16 lines by frame 60-63, before the window) logged no per-frame
 // line inside its measured window. While the bench measures, each frame now starts with utpolish's count at zero, so
-// every frame over 33.4 ms in a window gets its line, up to BF_WINDOW_LINES a room visit in that window (20 s of
-// frames over 33.4 ms is at most 599; a sweep's window spans its rows, so the budget is per room visit). After the
+// every late frame (>= 41.8 ms, slowlog; legacy prefix unchanged) gets its line, up to BF_WINDOW_LINES a room visit
+// in that window (20 s is at most 599 frames; a sweep spans its rows, so the budget is per room visit). After the
 // window, utpolish's own count comes back as it was, so lines outside windows are as before. The line is utpolish's
 // (same text, same place: CtrBench_beginFrameTimed, right after this wrapper returns), queued to the log writer as
 // before. This call runs first in CtrBench_beginFrameTimed, so a frame whose interval arrives while the phase is
@@ -3067,7 +3067,7 @@ static void bfWindowLines(double frameMs) {
         return;
     }
     // utpolish's test for a line (its runner, renderer and CtrBench_running() checks hold whenever the phase is MEASURE).
-    if (utSlowFrame.valid && frameMs > 33.4) bfWin.lines++;
+    if (utSlowFrame.valid && frameMs >= 41.8) bfWin.lines++;
     utSlowFrame.lines = 0;
 }
 

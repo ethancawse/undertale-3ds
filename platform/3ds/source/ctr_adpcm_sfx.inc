@@ -50,9 +50,10 @@ static struct {
     uint64_t ticks, calls, decodedFrames, maxTicks;
     uint64_t lastLog;
     uint32_t cores, gameFrames;
-    uint32_t ringBytes, ringPeak, ringFailures;
+    uint32_t ringBytes, ringPeak, ringFailures, rawDropped;
     uint32_t lastMemoryCache, lastMemoryRings, peakOriginalLinear;
     bool coreUnavailable;
+    uint8_t flush, flushLogged; // AD_FLUSH_*: how pieces reach the DSP (pieces.inc adFlush)
     char root[512], dataDir[512];
 } adSfx AS_BSS;
 static char adDigest[65] AS_BSS, adWin[512] AS_BSS;

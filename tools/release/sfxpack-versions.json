@@ -10,24 +10,24 @@
       "data": "Steam Windows 1.08",
       "data_size": 62921978,
       "data_sha256": "b718f8223a5bb31979ffeed10be6140c857b882fc0d0462b89d6287ae38c81c7",
-      "size": 1714616,
-      "sha256": "e897647c6028ffa84c50adff49f197e4dcb9e2e7c71b332c4c4d53baf2b46c44",
+      "size": 1714956,
+      "sha256": "9a98f8052fc11bca4305565fae1e465c50603a07b42311898f20d16ee61c9d32",
       "sounds": 85
     },
     {
       "data": "Steam macOS 1.08 (game.ios)",
       "data_size": 62956178,
       "data_sha256": "91a8acf1f40bd7c45d0bdb978de55187e7fb2cd76a1e2cda41c078dd44d3565e",
-      "size": 1714616,
-      "sha256": "9c7669cbc2ef1dad204ead4d0859ba54d302637f13cd47030864e783aee4a2b3",
+      "size": 1714956,
+      "sha256": "81b58c63556d8c204f1086dabcd6b02e88f673be8275a69887416cdc5b230541",
       "sounds": 85
     },
     {
       "data": "GOG 1.08",
       "data_size": 62951906,
       "data_sha256": "946c738c6d6182f683431320a0e32470bc3deb50f3e8887e61998df0c4e3abc8",
-      "size": 1714616,
-      "sha256": "9a917376c2a0918295bbcf3e7de3104542ea5e0afe500f2ddac212aa32439540",
+      "size": 1714956,
+      "sha256": "7877f721303d4b7f620af3a4f481fb3476f1d4a3081d357e8d7e309c07a4c743",
       "sounds": 85
     }
   ]

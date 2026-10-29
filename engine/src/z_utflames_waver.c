@@ -70,17 +70,17 @@ static const char utfWaverLogOn[32] = "utflames: heat shimmer native\n";
 
 #define UTF_WAVER_LENGTH 312u
 #define UTF_WAVER_DIGEST 0x4F15EF07u
-
-static uint32_t utfDigest(const uint8_t* bytes, uint32_t length) UTF_LATE_W;
-static uint32_t utfDigest(const uint8_t* bytes, uint32_t length) {
+#define utfDigest UtFlames_waverDigest // also z_utkill_waver.c's (freebytes)
+__attribute__((noipa)) uint32_t utfDigest(const uint8_t* bytes, uint32_t length) UTF_LATE_W;
+uint32_t utfDigest(const uint8_t* bytes, uint32_t length) {
     uint32_t h = 0x811C9DC5u;
     for (uint32_t i = 0; length > i; i++) h = (h ^ bytes[i]) * 0x01000193u;
     return h;
 }
 
-// The varID of the variable the Push.v or Pop.v operand at off names (patched to its index at load).
-static int32_t utfOperandVar(VMContext* ctx, const uint8_t* bytes, uint32_t off) UTF_LATE_W;
-static int32_t utfOperandVar(VMContext* ctx, const uint8_t* bytes, uint32_t off) {
+#define utfOperandVar UtFlames_waverOperandVar // the varID the Push.v/Pop.v operand at off names; z_utkill_waver.c's too
+__attribute__((noipa)) int32_t utfOperandVar(VMContext* ctx, const uint8_t* bytes, uint32_t off) UTF_LATE_W;
+int32_t utfOperandVar(VMContext* ctx, const uint8_t* bytes, uint32_t off) {
     uint32_t w = (uint32_t) bytes[off] | (uint32_t) bytes[off + 1] << 8 | (uint32_t) bytes[off + 2] << 16 |
                  (uint32_t) bytes[off + 3] << 24;
     uint32_t index = w & 0x07FFFFFFu;
@@ -88,10 +88,9 @@ static int32_t utfOperandVar(VMContext* ctx, const uint8_t* bytes, uint32_t off)
     return ctx->dataWin->vari.variables[index].varID;
 }
 
-static RValue* utfFind(Instance* inst, int32_t varID) UTF_LATE_W;
-static RValue* utfFind(Instance* inst, int32_t varID) {
-    return IntRValueHashMap_findSlot(&inst->selfVars, varID);
-}
+#define utfFind UtFlames_slot // z_utflames.c's IntRValueHashMap_findSlot copy: one for every UNDERTALE late file
+RValue* utfFind(Instance* inst, int32_t varID); // (freebytes: each file had its own byte-identical 108 B copy)
+#line 95
 
 static bool utfOwns(Instance* inst, int32_t varID) UTF_LATE_W;
 static bool utfOwns(Instance* inst, int32_t varID) {

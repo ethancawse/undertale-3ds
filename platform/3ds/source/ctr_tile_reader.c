@@ -634,3 +634,39 @@ UTSTALL8_TEXT double __wrap_CtrTileReader_wait(CtrTileReader* reader, CtrTileRea
     }
     return (double) (nowNanos() - start) / 1e6;
 }
+
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+// utold c112dtm (ctr_textures.c's end; UNDERTALE on Old 3DS): save hands the texture cache's rooms.dtm to this reader
+// (CtrTileReader_writeFile) while the game thread runs above the reader thread, so on its core the reader cannot take
+// it first; the game thread takes it back, with its path and size, under the reader's lock, and writes it itself.
+// The boost keeps the reader from preempting the game thread, not off the SD card: while the game thread waits in
+// the file system the reader may run, and its queued reads interleave with the write. All of it is behind the room's
+// load. If the reader did take the file first (only a New 3DS's second core can let it), it writes it as before.
+#include "log.h"
+#include "ctr_textures.h"
+void CtrTileReader_writeNow(CtrTileReader* reader, void (*save)(CtrTextureCache*), CtrTextureCache* cache);
+static const char writeNowLog[] __attribute__((section(".rodata.utolddtm_late"))) = "rooms.dtm: %u ms\n";
+
+__attribute__((noinline, section(".text.utolddtm_late"))) void CtrTileReader_writeNow(CtrTileReader* reader, void (*save)(CtrTextureCache*), CtrTextureCache* cache) {
+    uint32_t start = (uint32_t) osGetTime();
+    s32 priority;
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    // The reader thread runs one above the game thread, on its core (CtrTileReader_start): two above, the game thread
+    // keeps the file from it and is never preempted by it; the reader runs only while the game thread waits on the SD.
+    svcSetThreadPriority(CUR_THREAD_HANDLE, priority - 2);
+    save(cache);
+    char path[sizeof(reader->writePath)];
+    LightLock_Lock(&reader->lock);
+    uint8_t* data = reader->writeData;
+    reader->writeData = nullptr;
+    size_t size = reader->writeSize;
+    memcpy(path, reader->writePath, sizeof(path));
+    LightLock_Unlock(&reader->lock);
+    if (data != nullptr) {
+        writeWhole(path, data, size);
+        free(data);
+        logInfo(writeNowLog, (unsigned) ((uint32_t) osGetTime() - start));
+    }
+    svcSetThreadPriority(CUR_THREAD_HANDLE, priority);
+}
+#endif

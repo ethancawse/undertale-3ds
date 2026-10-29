@@ -66,9 +66,9 @@ PAD_START, PAD_END = 52, 56
 # Rebuild and re-pin whenever any file in `texprep --sources` changes (a release step, builder-status.md).
 PINNED = {
     # MSYS2 UCRT64 gcc 16.1.0, static, UTF-8 paths (2026-10-27).
-    # texprep-src-1:1d5fb803283d665a541af94d6ebc1e0987bdb76ee4fcf8daa09cddd9ba63b8f9
+    # texprep-src-1:0250c5ae0f1337f8a2fe80a5f44def20d484537fcb3356cacaf41f0d2d944a10
     ("win32", "x86_64"): ("texprep-windows-x64.exe", 354294,
-                          "c3b177ed1d13440ba9d33f06d5b9cbe22607dc96ceace34382f75c500455455f"),
+                          "d4dbe6ec7ba7f9a7d69506f479d305000eda4e48f59c1f3517a574e9cb9100d0"),
     # Linux builds locally with the system compiler. The former static glibc 2.39 binary is
     # retired: it lacked a corresponding-source/relink kit and did not fit older Debian hosts.
     # macOS (arm64 and x86_64): texprep-macos-universal, built on an M1 Mac (steps in builder-status.md).
@@ -569,16 +569,18 @@ class Result:
     written: int = 0
     kept: int = 0
     bytes: int = 0
+    files: tuple = ()      # only the explicit cache/receipt paths delivered by this operation
 
 
 def deliver_textures(sd_root, product, folder, work, parts=None, tool=None, fs=None, progress=None,
-                     cancelled=lambda: False, log=print, run=None, halfart=None):
+                     cancelled=lambda: False, log=print, run=None, halfart=None, prepared=None):
     """Prepare on the PC and write to the card. Failures to prepare are not errors (the console prepares); a failed
     card write raises OSError like any other copy."""
     tool = tool or find_tool(work, log=log)
     if not tool.ok:
         return Result(False, "Textures: the 3DS will prepare them the first time (%s)." % tool.message)
-    sets, problems = prepare(tool, product, folder, work, parts, run=run, log=log, halfart=halfart)
+    sets, problems = (prepared if prepared is not None else
+                      prepare(tool, product, folder, work, parts, run=run, log=log, halfart=halfart))
     for pr in problems:
         log("texprep: " + pr)
     if not sets:
@@ -596,7 +598,9 @@ def deliver_textures(sd_root, product, folder, work, parts=None, tool=None, fs=N
     msg = "Textures prepared: %d folder(s) written, %d already up to date." % (written, kept)
     if problems:
         msg += " The 3DS prepares the rest."
-    return Result(True, msg, written, kept, nbytes)
+    files = tuple(cs.sd_dir + '/' + name for cs in sets
+                  for name in [page_name(i) for i in _local_pages(cs)] + [MARKER])
+    return Result(True, msg, written, kept, nbytes, files)
 
 
 def dry_run_lines(product, folder, work, parts=None, tool=None):
@@ -778,7 +782,7 @@ def plan_data_versions(sd_root, product, folder, parts=None, source_root=SOURCE_
         sd_file = sd_cache_dir(product, rel) + "/" + DATA_VERSION
         path = console_data_win_path(product, rel)
         size = os.path.getsize(data_win)
-        card_dw = os.path.join(sd_root, *sd_cache_dir(product, rel).split("/")[:-1], os.path.basename(data_win))
+        card_dw = os.path.join(sd_root, *sd_cache_dir(product, rel).split("/")[:-1], 'data.win')
         dig = digest(data_win)
         checked_digest(data_win, dig)
         revision = data_versions_revision(source_root, dig)
@@ -863,4 +867,5 @@ def deliver_data_versions(sd_root, product, folder, work, parts=None, fs=None, l
     msg = "Version check prepared: %d file(s) written, %d already up to date." % (written, kept)
     if any(p.skip for p in plans):
         msg += " The 3DS checks the rest."
-    return Result(True, msg, written, kept, sum(len(p.data) for p in plans if not p.keep))
+    return Result(True, msg, written, kept, sum(len(p.data) for p in plans if not p.keep),
+                  tuple(p.sd_file for p in plans if not p.skip))

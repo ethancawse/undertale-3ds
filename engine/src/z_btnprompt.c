@@ -201,10 +201,12 @@ static BTN_LATE void btnpromptLoad(VMContext* ctx) {
             glyphs ? btnpromptYes : btnpromptNo);
 }
 
-// vm_builtins.c's ds_map_add (FreewinsMap_key and FreewinsMap_value): a slot's string is rewritten in place, so a map
-// copies it rather than borrowing it. After freewins' other late code (late_reserve.ld).
+// ds_map_add copies the letter replacements. The two title values borrow their live STRG labels, so a Controls
+// remap updates both language maps too (UT-037). After freewins' other late code (late_reserve.ld).
 __attribute__((noinline, section(".text.freewins_r3_late"))) bool Btnprompt_isSlot(const char* s) {
-    for (uint32_t slot = 0; BTNPROMPT_SLOTS > slot; slot++) {
+    // Retain the 56 B loop: GCC otherwise expands three tests into 60 B.
+#pragma GCC unroll 0
+    for (uint32_t slot = 0; BTNPROMPT_SLOT_TITLE > slot; slot++) {
         if (btnpromptSlot[slot] == s) return true;
     }
     return false;

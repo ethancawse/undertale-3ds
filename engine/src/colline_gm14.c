@@ -10,8 +10,10 @@
 
 // rvalue.h's out-of-line RValue_toRealOther and RValue_toInt32Other get a copy in every file that calls them; this
 // file's copies take other names, as collision_gm14.c's do (only RValue_toRealOther is called).
-#define RValue_toRealOther Colline14_toRealOther
-#define RValue_toInt32Other Colline14_toInt32Other
+#define RValue_toRealOther Colflip14_toRealOther // freebytes: collision_gm14.c's copies (identical; one per build)
+#define RValue_toInt32Other Colflip14_toInt32Other
+#define RVALUE_OTHER_EXTERN
+#line 15
 #define COLLINE14_DEFINE
 #include "colline_gm14.h"
 

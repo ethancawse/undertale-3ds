@@ -9,14 +9,17 @@
 #include "ctr_data_version.h"
 #include <stdint.h>
 
-// CtrAudioSystem_shedSfx (UNDERTALE): flowend -> utflowey2 (Old only, CTRPORT_PKLIN) -> real.
+// CtrAudioSystem_shedSfx (UNDERTALE): flowend -> flowburst -> utflowey2 (Old only, CTRPORT_PKLIN) -> real.
 //   flowend (ctr_audio_system.c's end): the room's planned sounds count as just played during the shed.
+//   flowburst (ctr_audio_system.c's end): the step's deferred voices start before the shed picks its victims.
 //   utflowey2 (z_utstall.c's end): after the sound effects' shed, idle linear copies go before any tile.
+#define CTR_SHEDSFX_AFTER_FLOWEND CtrAudioSystem_chainFlowburst
+uint32_t CtrAudioSystem_chainFlowburst(uint32_t bytes);
 #ifdef CTRPORT_PKLIN
-#define CTR_SHEDSFX_AFTER_FLOWEND CtrAudioSystem_chainPklin
+#define CTR_SHEDSFX_AFTER_FLOWBURST CtrAudioSystem_chainPklin
 uint32_t CtrAudioSystem_chainPklin(uint32_t bytes);
 #else
-#define CTR_SHEDSFX_AFTER_FLOWEND __real_CtrAudioSystem_shedSfx
+#define CTR_SHEDSFX_AFTER_FLOWBURST __real_CtrAudioSystem_shedSfx
 #endif
 
 // UNDERTALE's bench-only alternate root precedes the ordinary argument parser.
@@ -243,6 +246,13 @@ void CTR_ENDFRAME_SWKBD(Renderer* renderer);
 #define CTR_ENDFRAME_AFTER_SWKBD CTR_ENDFRAME_FREEBIES
 #ifdef __3DS__
 void CTR_ENDFRAME_FREEBIES(Renderer* renderer);
+#endif
+// CtrRenderer_endFrame, continued: freebies -> nopromo (z_nopromo.c: with no RAM for packed pages, Draw asks no
+// promotions) -> real.
+#define CTR_ENDFRAME_NOPROMO CtrRenderer_chainEndFrameNopromo
+#define CTR_ENDFRAME_AFTER_FREEBIES CTR_ENDFRAME_NOPROMO
+#ifdef __3DS__
+void CTR_ENDFRAME_NOPROMO(Renderer* renderer);
 #endif
 #endif
 
