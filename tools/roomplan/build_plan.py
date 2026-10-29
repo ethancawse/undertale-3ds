@@ -18,8 +18,9 @@ of the pages the rest comes from, rule B). A battle room's room-level scene keep
 fallback groups (all groups unless the record fixes battle_frame_groups to an earlier cohort, preserving the
 first-battle preload as coverage grows);
 its groups are scenes of their own (their code entries; the runtime picks the group at the room change). Each group's
-code also lists its objects' other events and the code SHARED_GROUPS groups ran (battle_code). The same inputs always
-give the same bytes.
+code also lists its objects' other events and the code SHARED_GROUPS groups ran (battle_code). UNDERTALE's scenes then
+list the code their objects can create in play (codeclose.py), and rooms without a record get a code-only scene when
+that adds any. The same inputs always give the same bytes.
 
 Exit status: 0 written, 3 no game data or no record for it (the build goes on without a plan), 2 an error.
 """
@@ -33,6 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, '..', 'aot'))
 import closure as closure_mod  # noqa: E402
+import codeclose  # noqa: E402
 import dwinfo  # noqa: E402
 
 MAGIC = 0x50525444
@@ -200,21 +202,42 @@ def encode_scene(info, room, sub, tiles, code, cap=CAP_BYTES):
     return body
 
 
-def build(info, record, closure=None):
-    """closure: a closure.Closure for UNDERTALE's whole sets, or None (DELTARUNE: the record's tiles only)."""
+def in_play(code_closure, room, plan_code, record_code, battle=False):
+    """UNDERTALE's in-play code closure (codeclose.py): the entries to add after a scene's code, at LATER."""
+    if code_closure is None:
+        return []
+    added, _bytes = code_closure.extras(room, [c for df, c in plan_code if df >= 0], [c for _df, c in record_code],
+                                        battle)
+    return [(LATER, c) for c in added]
+
+
+def build(info, record, closure=None, code_closure=None):
+    """closure: a closure.Closure for UNDERTALE's whole sets, or None (DELTARUNE: the record's tiles only).
+    code_closure: a codeclose.CodeClosure for UNDERTALE's in-play code (each scene's code gains what its objects can
+    create in play; a room with no record scene gets a code-only scene when that adds any), or None."""
     scenes = []
     cap = WHOLE_CAP_BYTES if closure is not None else CAP_BYTES
     by_room = {}
     for s in record['scenes']:
         by_room.setdefault(s['room'], []).append(s)
-    for room in sorted(by_room):
+    rooms = set(by_room)
+    if code_closure is not None:
+        rooms.update(range(min(info.room_count, len(code_closure.insts_by_room))))
+    for room in sorted(rooms):
+        if room not in by_room:
+            extra = in_play(code_closure, room, [], [])
+            if extra:
+                scenes.append(encode_scene(info, room, NO_SUB, [], extra))
+            continue
         group = by_room[room]
         whole = [s for s in group if s['sub'] < 0]
         subs = sorted((s for s in group if s['sub'] >= 0), key=lambda s: s['sub'])
         if whole:
             s = whole[0]
             tiles = scene_tiles(info, s)
-            scenes.append(encode_scene(info, room, NO_SUB, tiles + whole_set(info, closure, room, s, tiles), s['code'], cap))
+            # The whole set reads the record's code (code_create_sprite): the in-play extras go to the code list only.
+            code = s['code'] + ([] if subs else in_play(code_closure, room, s['code'], s['code']))
+            scenes.append(encode_scene(info, room, NO_SUB, tiles + whole_set(info, closure, room, s, tiles), code, cap))
         elif subs:
             # New outlier fights must not shrink an established first-battle preload.
             frame_groups = record.get('battle_frame_groups', {}).get(str(room))
@@ -236,7 +259,8 @@ def build(info, record, closure=None):
                 tiles = scene_tiles(info, s)
                 # Rule A reads the group's whole code list (battle_code): the battle's shared objects' sprites too.
                 whole = whole_set(info, closure, room, dict(s, code=codes[s['sub']]), tiles)
-                scenes.append(encode_scene(info, room, s['sub'], tiles + whole, codes[s['sub']], cap))
+                code = codes[s['sub']] + in_play(code_closure, room, codes[s['sub']], s['code'], battle=True)
+                scenes.append(encode_scene(info, room, s['sub'], tiles + whole, code, cap))
     body = b''.join(scenes)
     head = struct.pack('<II32sIIQIIIIII16s', MAGIC, VERSION, bytes.fromhex(info.sha256), info.size & 0xFFFFFFFF,
                        info.game_id, info.timestamp, dwinfo.TILE_MAX, dwinfo.GRID_VERSION, info.room_count, len(scenes),
@@ -318,7 +342,13 @@ def write_plan(path, records, out, whole=False, halfart=None):
         if not closure.ok:
             print('Room plan: no whole sets (not a GameMaker 1.x data.win this builder can read)')
             closure = None
-    data = build(info, record, closure)
+    code_closure = None
+    if whole:
+        code_closure = codeclose.CodeClosure(path)
+        if not code_closure.ok:
+            print('Room plan: no in-play code closure (not a GameMaker 1.x data.win this builder can read)')
+            code_closure = None
+    data = build(info, record, closure, code_closure)
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     tmp = out + '.tmp'
     with open(tmp, 'wb') as f:

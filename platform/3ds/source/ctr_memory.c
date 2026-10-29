@@ -613,9 +613,18 @@ static inline bool isLinear(const void* p) {
 // The size of the calling thread's last allocation that nothing could satisfy.
 static __thread size_t failedSize;
 
+#if defined(CTRPORT_PKLIN)
+// freewins L1 (UNDERTALE Old): linearAlloc, and on the game thread, idle tiles evicted until the piece fits
+// (z_utstall_l2.c, late code). Only the call's target changes here; the #line below puts every later __LINE__ back.
+void* CtrMemory_overflowLinear(size_t size);
+#define overflowLinearAlloc CtrMemory_overflowLinear
+#else
+#define overflowLinearAlloc linearAlloc
+#endif
+#line 616
 static void* overflowAlloc(size_t size) {
     if (noRelief) return nullptr;
-    void* p = linearAlloc(size);
+    void* p = overflowLinearAlloc(size);
     if (p != nullptr) {
         __atomic_fetch_add(&overflowCount, 1, __ATOMIC_RELAXED);
         __atomic_fetch_add(&overflowBytes, (uint64_t) size, __ATOMIC_RELAXED);
@@ -690,6 +699,13 @@ void CtrMemory_free(void* ptr) {
 // heap's free lists. free() reaches here too, through newlib's own free().
 void __real__free_r(struct _reent* reent, void* ptr);
 
+#ifdef CTRPORT_AUDIO_METRICS
+// The ordinary build inlines this into __wrap__free_r and discards its body.
+// Diagnostic accounting needs an out-of-line call: keep that newly live body
+// late rather than introducing it ahead of every later warm function.
+__attribute__((noinline, noipa, section(".text.late.adpcm")))
+#endif
+#line 745
 void CtrMemory_freeR(struct _reent* reent, void* ptr) {
     if (CtrMemory_freeNode(ptr)) return;
     if (ptr != nullptr && isLinear(ptr)) {
@@ -732,6 +748,18 @@ void* CtrMemory_checkedRealloc(void* ptr, size_t size) {
     return CtrMemory_realloc(ptr, size);
 }
 
+#ifdef CTRPORT_AUDIO_METRICS
+#include "ctr_adpcm_metrics.h"
+#define CtrMemory_checkedMalloc amMalloc
+#define CtrMemory_checkedCalloc amCalloc
+#define CtrMemory_checkedRealloc amRealloc
+#define CtrMemory_free amFree
+#define CtrMemory_freeR amFreeR
+#define AM_MALLOC_BRANCH "b amMalloc\n"
+#else
+#define AM_MALLOC_BRANCH "b CtrMemory_checkedMalloc\n"
+#endif
+#line 788
 #ifndef CTRPORT_HEAP_PROFILE
 void* __wrap_malloc(size_t size);
 void* __wrap_calloc(size_t count, size_t size);
@@ -743,7 +771,7 @@ void __wrap_free(void* ptr);
 // unused bytes or adding a prologue merely to forward the caller's address.
 __attribute__((naked))
 void* __wrap_malloc(size_t size __attribute__((unused))) {
-    __asm__ volatile("mov r1, lr\nb CtrMemory_checkedMalloc\n.space 212");
+    __asm__ volatile("mov r1, lr\n" AM_MALLOC_BRANCH ".space 212");
 }
 #else
 void* __wrap_malloc(size_t size) {
@@ -759,17 +787,43 @@ void* __wrap_realloc(void* ptr, size_t size) {
     return CtrMemory_checkedRealloc(ptr, size);
 }
 
+#ifdef CTRPORT_AUDIO_METRICS
+// The diagnostic forwards through late accounting, retaining the ARM Release
+// allocator wrappers' original extents (including their inlined free bodies).
+__attribute__((naked))
+void __wrap_free(void* ptr __attribute__((unused))) {
+    __asm__ volatile("b amFree\n.space 148");
+}
+#else
 void __wrap_free(void* ptr) {
     CtrMemory_free(ptr);
 }
+#endif
+#line 818
 
 void __wrap__free_r(struct _reent* reent, void* ptr);
+#ifdef CTRPORT_AUDIO_METRICS
+__attribute__((naked))
+void __wrap__free_r(struct _reent* reent __attribute__((unused)), void* ptr __attribute__((unused))) {
+    __asm__ volatile("b amFreeR\n.space 152");
+}
+#else
 void __wrap__free_r(struct _reent* reent, void* ptr) {
     CtrMemory_freeR(reent, ptr);
 }
 #endif
+#line 823
+#endif
 
 // ===[ Blocks newlib keeps ]===
+#ifdef CTRPORT_AUDIO_METRICS
+#undef CtrMemory_checkedMalloc
+#undef CtrMemory_checkedCalloc
+#undef CtrMemory_checkedRealloc
+#undef CtrMemory_free
+#undef CtrMemory_freeR
+#endif
+#line 826
 
 // Each thread's struct _reent caches number conversion buffers (printf's %f,
 // strtod) on the heap, and libctru frees a thread without them. Threads

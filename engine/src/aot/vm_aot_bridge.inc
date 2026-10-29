@@ -585,13 +585,32 @@ static bool aotMatches(VMContext* ctx, CodeEntry* code, const AotEntry* entry, b
     return true;
 }
 
+// lbind (aotprof): whether entry cannot be code's, tested by its offset and blob length (aotMatches's own first test)
+// before its name, so aotBind's scan makes a strcmp only for the entries that could match (a first run of a code entry
+// with no generated function made one for every entry: 376 on UNDERTALE Old). Late code.
+// On the 3DS it is platform/3ds/source/z_lbind.c's, a unit of its own, so this file's inlining stays as it was.
+#if defined(__3DS__)
+bool aotNameDiffers(const AotEntry* entry, const CodeEntry* code);
+#else
+static bool aotNameDiffers(const AotEntry* entry, const CodeEntry* code) {
+    return entry->offset != code->offset || entry->blobLength != code->length || strcmp(entry->codeName, code->name) != 0;
+}
+#endif
+// With aotBind's strcmp a call to aotNameDiffers, aotDispatch's clone (where aotBind is inlined) is 4 B shorter
+// (0x6c0 -> 0x6bc on all four 3DS targets, GCC 16.1.0). Zero bytes after its code, in a later subsection of its own
+// section and outside its symbol, keep its slot at main's extent; nothing branches there
+// (tools/analysis/check_lbind_slot.py). The pad is made inside aotDispatch's once-per-run set-up, not by a top-level
+// asm: those are output before every function, which would make the clone's section vm.o's first; set-up is the one
+// place in the clone where the statement leaves its code at 0x6bc (in aotBind it made it 0x6c0 or more).
+#define LBIND_PAD "4"
+#line 588 // lbind: main's numbering (the __LINE__ trap)
 static AotFn aotBind(VMContext* ctx, int32_t codeIndex) {
     CodeEntry* code = &ctx->dataWin->code.entries[codeIndex];
     if (!IS_WAD16_OR_HIGHER(ctx) || code->name == nullptr) return nullptr;   // WAD16: WAD 16 and 17 bind
     for (uint32_t e = 0; aotT->entryCount > e; e++) {
         const AotEntry* entry = &aotT->entries[e];
         // A null function was left out of its 3DS module to fit the region (AOT_FN_DECL).
-        if (entry->fn == nullptr || strcmp(entry->codeName, code->name) != 0 || !aotMatches(ctx, code, entry, true)) continue;
+        if (entry->fn == nullptr || aotNameDiffers(entry, code) || !aotMatches(ctx, code, entry, true)) continue;
         aotBindCount++;
         return entry->fn;
     }
@@ -721,6 +740,10 @@ static RValue aotDispatch(VMContext* ctx) {
         aotScriptExecute = DataWin_isVersionAtLeast(ctx->dataWin, 2, 3, 0, 0) ? nullptr : VM_findBuiltin(ctx, "script_execute");
         aotBoundCtx = ctx;
         aotReport(ctx);
+#if defined(__3DS__) && defined(NDEBUG)
+        __asm__(".pushsection .text.aotDispatch.constprop.0, 1\n.space " LBIND_PAD "\n.popsection"); // lbind's retained tail
+#endif
+#line 724 // lbind: main's numbering (the __LINE__ trap)
     }
     if (0 > codeIndex || (uint32_t) codeIndex >= aotBoundCount) return executeLoop(ctx);
     AotFn fn = aotBound[codeIndex];

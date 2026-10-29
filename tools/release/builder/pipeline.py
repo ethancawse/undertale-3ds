@@ -24,15 +24,18 @@ import products
 import toolchain
 import home_art
 import chapters
+import sfx_encoder
 from processes import hidden_options
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))     # repo root (or the export's root)
 # What build.sh and CMake read, relative to the source root.
 SOURCE_DIRS = ("engine/src", "engine/vendor", "engine/compat", "platform/3ds", "tools/aot", "tools/buildcache", "tools/deps/openh264",
-               "tools/texprep", "tools/roomplan", "tools/release/licenses", "tools/analysis")
+               "tools/texprep", "tools/roomplan", "tools/audio", "tools/release/licenses", "tools/analysis")
 SOURCE_FILES = ("engine/LICENSE", "VERSION", "LICENSE", "THIRD_PARTY_NOTICES",
                 "docs/release/build-contract.json", "docs/release/builder-version-receipts.md", "tools/release/prepare_legal.py",
+                # tools/aot/credits.py reads this port's credits for the options menu's Credits page (build.sh runs it).
+                "docs/release/credits-port.txt", "tools/release/sfxpack-versions.json",
                 # CMake's renderer launcher imports both helpers, including on builds that delegate unchanged.
                 "tools/analysis/vine_old_observer_compile.py", "tools/analysis/vine_old_parent.py",
                 "tools/analysis/vine_extract.py")
@@ -109,6 +112,9 @@ def source_wanted(relative, game=None):
         return False
     if parts[:2] == ["engine", "src"]:
         if len(parts) == 3:
+            # simplefix's board-grid front (CMake compiles it for DELTARUNE New only; Policy E).
+            if parts[-1] == "z_boardgrid.c":
+                return game != "undertale"
             return parts[-1] != "loop.c"
         sub = parts[2:]
         if sub[0] == "cli":
@@ -153,6 +159,7 @@ def source_wanted(relative, game=None):
         return game != "undertale"
     if parts[:2] == ["tools", "roomplan"]:
         # The room plan's build step (build.sh runs build_plan.py) and this game's committed records.
+        # codeclose.py: build_plan.py imports it (UNDERTALE's in-play code closure; codeclose).
         # records/sounds/: the sound plan records (build_sfxplan.py, UNDERTALE).
         if parts[2] == "records" and (len(parts) == 4 or (len(parts) == 5 and parts[3] == "sounds")):
             return game is None or parts[-1].startswith(game + "-")
@@ -167,7 +174,8 @@ def source_wanted(relative, game=None):
         # build_flowcode.py: build.sh's flowcode step (flowfull's chapter-5 code plan, DELTARUNE New, default off).
         if len(parts) == 3 and parts[-1] == "build_flowcode.py":
             return game != "undertale"
-        return len(parts) == 3 and parts[-1] in ("build_phases.py", "build_plan.py", "build_sfxplan.py", "closure.py", "dwinfo.py", "records.py",
+        return len(parts) == 3 and parts[-1] in ("build_phases.py", "build_plan.py", "build_sfxplan.py", "closure.py", "codeclose.py", "dwinfo.py",
+                                                 "records.py",
                                                  "source_plan.py")
     if parts[:2] == ["platform", "3ds"]:
         if parts == ["platform", "3ds", "source", "z_builderx_old.c"] and game == "undertale":
@@ -179,6 +187,12 @@ def source_wanted(relative, game=None):
             return game != "undertale"
         # credfix's dodge list front (CMake compiles it for UNDERTALE Old only; Policy E).
         if parts[2:] == ["source", "z_dodgefront.c"]:
+            return game != "deltarune"
+        # simplefix's centred-text fronts (CMake compiles it for UNDERTALE Old only; Policy E).
+        if parts[2:] == ["source", "z_textfront.c"]:
+            return game != "deltarune"
+        # freebies' dialogue writer front (CMake compiles it for UNDERTALE Old only; Policy E).
+        if parts[2:] == ["source", "z_writerfront.c"]:
             return game != "deltarune"
         # credfix's exit trail (build.sh exittrail): an o2DS panic diagnosis build, never a release.
         if parts == ["platform", "3ds", "source", "z_exittrail.c"]:
@@ -534,6 +548,57 @@ class Artifact:
     sha256: str
 
 
+def prepare_sfx_pack(job, data_dir):
+    """Run the exported packer against the exact data.win selected for this build.
+
+    Publish only after its digest-specific release-table check succeeds. The
+    source game is read-only; encodes and the generated pack stay in work/.
+    """
+    out = Path(job.work) / 'out/data/adpcm-sfx.dtsp'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    temporary = out.with_name(out.name + '.builder-part')
+    audio = Path(job.work) / 'src/tools/audio'
+    # Encodes made before a compiler-policy/source fix must not survive in the
+    # object cache (for example M1 FMA encodes from before -ffp-contract=off).
+    identity = hashlib.sha256(b'\0'.join((audio / name).read_bytes() for name in
+        ('dspadpcm.c', 'dspadpcm.py', 'mono_sfx.py', 'sfxpack.py'))).hexdigest()
+    argv = [toolchain.python_exe(), '-I', '-B',
+            str(Path(job.work) / 'src/tools/audio/sfxpack.py'), '--data-win',
+            str(Path(data_dir) / 'data.win'), '--out', str(temporary),
+            '--work', str(Path(job.work) / 'sfx-cache' / identity)]
+    if sys.platform == 'win32':
+        library = sfx_encoder.validate(Path(job.source_root) / sfx_encoder.RELATIVE,
+                                       Path(job.work) / 'src')
+        argv += ['--dsp-library', str(library)]
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
+    options = hidden_options(group=True)
+    if sys.platform != 'win32':
+        options['start_new_session'] = True
+    try:
+        with open(job.log_path, 'a', encoding='utf-8', newline='\n') as log:
+            log.write('builder: preparing UNDERTALE sound pack\n')
+            with job._lock:
+                if job.cancelled:
+                    raise BuildFailed('The build was cancelled.', job.log_path)
+                job.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
+                    env=env, **options)
+            for line in job.proc.stdout:
+                log.write(line)
+                job.on_line(line.rstrip('\r\n'))
+            code = job.proc.wait()
+            if code or job.cancelled or not temporary.is_file() or not temporary.stat().st_size:
+                log.write('builder: sfxpack exit code %d\n' % code)
+                raise BuildFailed(FAILED, job.log_path)
+        os.replace(temporary, out)
+    except OSError as error:
+        job.on_line('builder: sfxpack: ' + str(error))
+        raise BuildFailed(FAILED, job.log_path) from error
+    finally:
+        temporary.unlink(missing_ok=True)
+    return Artifact('shared', 'sfxpack', str(out), out.stat().st_size, sha256_file(out))
+
+
 def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -561,7 +626,7 @@ class Build:
 
     def __init__(self, product, tc, work, target, data_dir, outputs=("3dsx",), openh264=False, on_line=None,
                  on_progress=None, popen=subprocess.Popen, source_root=SOURCE_ROOT, clock=time.monotonic,
-                 art_generator=home_art.generate, store="steam", parts=None):
+                 art_generator=home_art.generate, store="steam", parts=None, sfx_builder=prepare_sfx_pack):
         self.product, self.tc, self.work, self.target = product, tc, work, target
         if not str(work).isascii() or any(c in str(work) for c in '%\t\r\n'):
             raise BuildFailed('Choose a work folder with plain letters, numbers and spaces. Leave out % and control characters.')
@@ -571,6 +636,7 @@ class Build:
         self.popen = popen
         self.source_root = source_root
         self.art_generator = art_generator
+        self.sfx_builder = sfx_builder
         self.store = store
         self.parts = parts
         self.progress = Progress(product, target, clock)
@@ -704,6 +770,20 @@ class Build:
         except BuildFailed as e:
             raise BuildFailed(str(e), self.log_path)
         arts = self.collect()
+        # The Old model alone reads the pack; building both runs this step once.
+        if self.product.key == 'undertale' and self.target == 'o3ds':
+            try:
+                pack = self.sfx_builder(self, data_dir)
+            except Exception as error:
+                if self.cancelled:
+                    raise BuildFailed('The build was cancelled.', self.log_path) from error
+                message = 'Sound pack could not be prepared. The game will use the original sounds.'
+                with open(self.log_path, 'a', encoding='utf-8', newline='\n') as log:
+                    log.write(message + '\n' + 'builder: sfxpack: ' + str(error) + '\n')
+                self.on_line(message)
+                pack = None
+            if pack is not None:
+                arts.append(pack)
         record = {"game": self.product.key, "target": self.target, "version": version, "build_id": bid,
                   "chapters": getattr(self, 'chapter_record', None),
                   "home_menu_art": art,

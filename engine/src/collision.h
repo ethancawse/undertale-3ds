@@ -68,8 +68,20 @@ static inline void Collision_angleTrig(GMLReal angle, GMLReal* cs, GMLReal* sn) 
     *sn = slot->sn;
 }
 
+// Collision_computeBBox's edge rounding (simplefix, 2026-10-28). Where CTRPORT_BBOX_ROUND is defined (runner.c and
+// vm_builtins.c on the 3DS, CMakeLists.txt), z_bboxround.c's Collision_bboxRound gives GMLReal_bankersRound's bits
+// without newlib's floor, and Collision_computeBBox stays out of line there, as GCC already emitted it (its callers
+// compile as before; the slot is kept at each file's end). Everywhere else nothing changes.
+#if defined(__3DS__) && !defined(USE_FLOAT_REALS) && defined(CTRPORT_BBOX_ROUND)
+__attribute__((const)) GMLReal Collision_bboxRound(GMLReal v);
+#define COLLISION_BBOX_STORAGE static __attribute__((noinline, unused))
+#else
+#define Collision_bboxRound GMLReal_bankersRound
+#define COLLISION_BBOX_STORAGE static inline
+#endif
+
 // Computes the axis-aligned bounding box for an instance using its collision sprite
-static inline InstanceBBox Collision_computeBBox(Runner* runner, Instance* inst) {
+COLLISION_BBOX_STORAGE InstanceBBox Collision_computeBBox(Runner* runner, Instance* inst) {
     InstanceBBox ret;
     Sprite* spr = Collision_getSprite(runner->dataWin, inst);
     if (spr == nullptr) {
@@ -128,10 +140,10 @@ static inline InstanceBBox Collision_computeBBox(Runner* runner, Instance* inst)
     }
 
     if (runner->collisionCompatibilityMode) {
-        left   = GMLReal_bankersRound(left);
-        top    = GMLReal_bankersRound(top);
-        right  = GMLReal_bankersRound(right);
-        bottom = GMLReal_bankersRound(bottom);
+        left   = Collision_bboxRound(left);
+        top    = Collision_bboxRound(top);
+        right  = Collision_bboxRound(right);
+        bottom = Collision_bboxRound(bottom);
     }
 
     ret.left = left;

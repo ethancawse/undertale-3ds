@@ -300,6 +300,6 @@ CODE static void openKeyboard(void) {
 }
 
 CODE void CTR_ENDFRAME_SWKBD(Renderer* renderer) {
-    __real_CtrRenderer_endFrame(renderer);
+    CTR_ENDFRAME_AFTER_SWKBD(renderer);
     if (phase == SWKBD_PENDING) openKeyboard();
 }

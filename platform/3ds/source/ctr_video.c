@@ -998,7 +998,7 @@ static void tickClock(CtrVideo* v) {
         return;
     }
     u64 now = svcGetSystemTick();
-    double dt = ticksToSeconds(now - v->lastTick);
+    double __attribute__((const, pcs("aapcs"))) flowpitchVideoUl2d(u64 ticks); double dt = flowpitchVideoUl2d(now - v->lastTick) / TICKS_PER_SECOND;
     v->lastTick = now;
     if (!v->resumed || v->paused || v->suspended) return;
     if (v->clockStarted) {

@@ -102,7 +102,7 @@ def read_identifier_policy(path):
         if kind == 'roomplan-tool' and member not in (
                 'tools/roomplan/records.py', 'tools/roomplan/build_plan.py', 'tools/roomplan/dwinfo.py',
                 'tools/roomplan/build_phases.py', 'tools/roomplan/build_tracks.py', 'tools/roomplan/build_flowcode.py',
-                SFX_TOOL):
+                'tools/roomplan/codeclose.py', SFX_TOOL):
             raise ValueError('not a roomplan build tool: ' + member)
     return policy
 
@@ -429,6 +429,19 @@ def export_product(manifest, game):
     return manifest, game
 
 
+def public_source_digest(payload, files, mapped, wanted):
+    """The builder's source digest of an export, as package_builder and release_source() compute it from the exported
+    tree: package_builder.inputs()'s bytes (`payload`; it sets builder.py's FIXED_GAME) over the builder payload names
+    (`wanted`), except that a member the manifest maps (`mapped`, from its #map lines) has the bytes the export
+    carries (`files`). Hashing the monorepo's own copy of a mapped member breaks the descriptor (DELTARUNE's
+    drawskip_deltarune.txt, argstage59 F-5.1)."""
+    missing = sorted(name for name in wanted if name not in (files if name in mapped else payload))
+    if missing:
+        raise ValueError('builder source payload names files the export lacks: ' + ', '.join(missing[:5]))
+    return release_contract.payload_digest({name: files[name] if name in mapped else payload[name]
+                                            for name in wanted})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest',
@@ -477,9 +490,8 @@ def main():
         files = {name: safe_local(sources.get(name, name)).read_bytes() for name in names}
         if args.public_source:
             import package_builder
-            payload = package_builder.inputs(ROOT, game)
-            digest = release_contract.payload_digest({name: payload[name]
-                for name in package_builder.pipeline.source_payload(ROOT, game)})
+            digest = public_source_digest(package_builder.inputs(ROOT, game), files, sources,
+                                          package_builder.pipeline.source_payload(ROOT, game))
             descriptor = release_contract.record_public_source(files, args.public_source, game,
                 release_contract.read(ROOT)['version'], digest, args.public_commit)
             files[release_contract.DESCRIPTOR] = (json.dumps(descriptor, indent=2) + '\n').encode('utf-8')

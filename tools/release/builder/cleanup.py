@@ -14,7 +14,7 @@ import tempfile
 
 JOURNAL = 'builder-installed.json'
 CATEGORIES = ('build', 'downloads', 'tools')
-WORK_AREAS = {'build': ('src', 'ccache', 'data', 'chapter-data', 'texcache', 'bin'),
+WORK_AREAS = {'build': ('src', 'ccache', 'data', 'chapter-data', 'texcache', 'sfx-cache', 'bin'),
               'downloads': (), 'tools': ()}
 
 

@@ -161,8 +161,9 @@ def plan_sd_copy(sd_root, product: products.Product, artifacts, game_folder, par
         raise DeliverError(NO_3DS_FOLDER_MESSAGE)
     check_sd_writable(sd_root)
     items = []
-    for a in artifacts:
-        rel = ("cia/" if a.kind == "cia" else product.sd_app_dir() + "/") + os.path.basename(a.path)
+    for a in unique_artifacts(artifacts):
+        rel = ("cia/" if a.kind == "cia" else product.sd_data_dir + "/" if a.kind == 'sfxpack'
+               else product.sd_app_dir() + "/") + os.path.basename(a.path)
         items.append(CopyItem(a.path, rel, a.size))
     for src, rel, size in products.sd_files(product, game_folder, parts):
         if "cache_exact" in rel.casefold().split("/"):
@@ -170,7 +171,7 @@ def plan_sd_copy(sd_root, product: products.Product, artifacts, game_folder, par
         items.append(CopyItem(src, product.sd_data_dir + "/" + rel, size))
     for it in items:
         d = os.path.join(sd_root, *it.dst.split("/"))
-        if os.path.basename(it.src).casefold() == "data.win":
+        if os.path.basename(it.src).casefold() in ("data.win", "adpcm-sfx.dtsp"):
             import texcache
             it.digest = texcache._digest(it.src)
             texcache.checked_digest(it.src, it.digest)
@@ -205,7 +206,8 @@ def copy_items(sd_root, items, progress=None, cancelled=lambda: False):
             raise DeliverError("Copy cancelled.\nClick Copy to card to try again.")
         d = os.path.join(sd_root, *it.dst.split("/"))
         data_win = os.path.basename(it.src).casefold() == "data.win"
-        if data_win:
+        checked_file = data_win or os.path.basename(it.src).casefold() == 'adpcm-sfx.dtsp'
+        if checked_file:
             import texcache
             it.digest = it.digest or texcache._digest(it.src)
             texcache.checked_digest(it.src, it.digest)
@@ -225,14 +227,18 @@ def copy_items(sd_root, items, progress=None, cancelled=lambda: False):
             os.makedirs(os.path.dirname(d), exist_ok=True)
             if data_win:
                 texcache.invalidate_version(d)
+            if checked_file:
                 source_before = texcache.file_identity(os.stat(it.src))
             shutil.copy2(it.src, tmp)
-            if data_win:
+            if os.path.basename(it.src).casefold() == 'adpcm-sfx.dtsp':
+                with open(tmp, 'r+b') as staged:
+                    os.fsync(staged.fileno())
+            if checked_file:
                 if source_before != texcache.file_identity(os.stat(it.src)):
                     raise OSError("Game data changed while copying. Verify the files and try again.")
                 texcache.checked_digest(tmp, it.digest)
             os.replace(tmp, d)
-            if data_win:
+            if checked_file:
                 texcache.checked_digest(d, it.digest)
         except OSError as e:
             try:
@@ -380,10 +386,21 @@ def send_3dslink(threedslink, path, address=None, run=None, log=print):
 def wifi_items(product, artifacts, folder, parts=None):
     items = [CopyItem(src, product.sd_data_dir + '/' + rel, size)
              for src, rel, size in products.sd_files(product, folder, parts)]
-    for artifact in artifacts:
-        directory = 'cia' if artifact.kind == 'cia' else product.sd_app_dir()
+    for artifact in unique_artifacts(artifacts):
+        directory = ('cia' if artifact.kind == 'cia' else product.sd_data_dir
+                     if artifact.kind == 'sfxpack' else product.sd_app_dir())
         items.append(CopyItem(artifact.path, directory + '/' + os.path.basename(artifact.path), artifact.size))
     return items
+
+
+def unique_artifacts(artifacts):
+    """Both model builds return the same shared pack; install it once."""
+    seen = set()
+    for artifact in artifacts:
+        key = (artifact.kind, artifact.path)
+        if key not in seen:
+            seen.add(key)
+            yield artifact
 
 
 def send_ftp(host, items, port=5000, ftp_factory=None, progress=None, log=print):

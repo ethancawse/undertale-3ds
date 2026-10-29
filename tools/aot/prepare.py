@@ -162,11 +162,15 @@ def engine_inputs():
     """What gmlaot.py reads from this tree's engine sources (builtin_audit.py), as text: which builtins are pure
     (direct calls, cached slots kept across them) and the body hashes of the builtins it may inline (INLINE_MATH). An
     engine change that alters either makes different code, so it is part of the fingerprint; other engine changes
-    are not."""
+    are not. The board-grid front's guards (gmlaot.py BOARD_PLACE_BODY, BOARD_SIDES_BODY, BOARD_HIT_BODY) count too:
+    when any hash stops matching, gmlaot.py leaves the call to BoardGrid_fill out."""
     import builtin_audit
     pure = sorted(name for name, why in builtin_audit.audit().items() if why is None)
     hashes = builtin_audit.builtin_body_hashes()
-    return repr(pure) + repr(sorted((name, hashes.get(name)) for name in getattr(gmlaot, "INLINE_MATH", {})))
+    board = (hashes.get("instance_place"), gmlaot.board_sides_body() if hasattr(gmlaot, "board_sides_body") else None,
+             gmlaot.board_hit_body() if hasattr(gmlaot, "board_hit_body") else None)
+    return (repr(pure) + repr(sorted((name, hashes.get(name)) for name in getattr(gmlaot, "INLINE_MATH", {}))) +
+            " board " + repr(board))
 
 
 def fingerprint(game, target, data, selection, chapters=False, runs=(), typed=None):

@@ -6,7 +6,7 @@ You build it from your own copy of UNDERTALE.
 
 ## Status
 
-UNDERTALE 1.0 beta: not out yet, and no download yet. It ships when every scene runs at a steady 30 fps on the older models too, inside the normal 64 MB .3dsx, and has had a final check.
+UNDERTALE 1.0 beta: not out yet, and no download yet. Today (29 October) I'm playing the hardest scenes myself on an Old 3DS XL. The beta goes out once I can't notice lag in them, after a final check.
 
 DELTARUNE: in progress. It comes after UNDERTALE.
 
@@ -14,7 +14,7 @@ DELTARUNE: in progress. It comes after UNDERTALE.
 
 The goal: every scene running at a locked 30 fps on every model.
 
-The bars count the scenes we measure on real consoles that pass (28 October 2026):
+The bars count the scenes we measure on real consoles that pass (28 October 2026; the newest build is still being measured):
 
 ```
 New 3DS / New 3DS XL / New 2DS XL   ███████████████████░   97%
@@ -22,7 +22,7 @@ New 3DS / New 3DS XL / New 2DS XL   ██████████████�
 Overall                             ████████████████░░░░   80%
 ```
 
-The bars went down since the last update, mainly because the test got stricter. A scene used to pass when its slowest 1% of frames were fast enough. Now every single frame in play must be ready in time, with no dropped frames.
+A scene passes only when every single frame in play is ready in time, with no dropped frames. Some scenes that fail miss by a single frame here and there, which is hard to notice while playing. That's why the beta is judged by playing the worst scenes.
 
 New 3DS: 65 of 67 measured scenes pass. Left: a hitch in the Omega Flowey finale, one credits scene to re-measure, and a final check.
 
@@ -37,14 +37,16 @@ Older models: 45 of 71 measured scenes pass. Left:
 - Six scenes that look fine but still need the stricter measurement
 - A final check of every scene
 
-## What changed since 25 October
+## What changed since 28 October
 
-- Objects at the same depth now draw in the same order as on PC. This fixes Undyne's battle buttons looking dim and the order of Mettaton's smoke.
-- New 3DS: the long pauses entering a battle in Snowdin and at the end of Undyne's bridge are gone.
-- Older models: the Omega Flowey finale no longer keeps reloading its art from the SD card.
-- Opening the Rosalina menu with the other screen off no longer freezes the game.
-- The first-boot "SELECT: Options" hint no longer covers the game.
-- Crisp text now covers Sans's font and the ending credits.
+- Sound fixes: memory used by a sound is now freed only after the 3DS's sound processor has finished with it.
+- Older models: the builder now makes a compressed pack of the game's sound effects, on your computer, from your own copy of the game. If that step fails, the game uses the original sounds.
+- SD cards: cleaning up our test consoles' SD cards showed that a cluttered card slows loading. Weeks of test files had left game files split into many pieces (one data file in 102). After a cleanup, files opened faster and the Homebrew Launcher loaded much faster. For the best loading times, use a freshly formatted SD card with plenty of free space.
+
+## Still open
+
+- Some scenes on the older models still drop frames: the Omega Flowey finale, the ending credits and a few room transitions.
+- A rare crash on the 2DS after the ending credits. We're looking into it.
 
 ## Supported consoles
 
@@ -55,7 +57,7 @@ Older models: 45 of 71 measured scenes pass. Left:
 
 - UNDERTALE 1.08 for PC, from Steam or GOG
 - A Windows, Linux or Mac computer
-- A 3DS that can run homebrew, and an SD card
+- A 3DS that can run homebrew, and an SD card (freshly formatted, with plenty of free space, is best)
 
 ## How it works
 

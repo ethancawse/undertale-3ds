@@ -46,6 +46,8 @@ UTA_LATE static bool utaDecOpenMemory(CtrDecoder* dec, const uint8_t* data, uint
 UTA_LATE static int32_t utaDecRead(CtrDecoder* dec, int16_t* out, uint32_t maxFrames);
 UTA_LATE static bool utaDecSeek(CtrDecoder* dec, uint64_t frame);
 UTA_LATE_R5 static void utaNoticeMissing(const char* kind, const char* path);
+// flowpitch (flowend): late code at the end of ctr_audio_system.c.
+__attribute__((noinline, noipa, optimize("Os"), section(".text.flowpitch_late"))) static void flowpitchChnSetRate(int id, float rate);
 
 // The physical layer: libctru's functions (a parenthesised name is not a function-like macro call), or the capture's.
 #ifdef CTR_AUDIO_CAPTURE_WRAP_H
@@ -91,7 +93,8 @@ UTA_LATE_R5 static void utaNoticeMissing(const char* kind, const char* path);
 #define ndspChnReset(id) utaChnReset(id)
 #define ndspChnSetInterp(id, type) utaChnSetInterp(id, type)
 #define ndspChnSetFormat(id, format) utaChnSetFormat(id, format)
-#define ndspChnSetRate(id, rate) utaChnSetRate(id, rate)
+// flowpitch: every voice at the game's frame clock (ctr_music_clock.h), then utaChnSetRate.
+#define ndspChnSetRate(id, rate) flowpitchChnSetRate(id, rate)
 #define ndspChnSetMix(id, mix) utaChnSetMix(id, mix)
 #define ndspChnSetPaused(id, paused) utaChnSetPaused(id, paused)
 #define ndspChnWaveBufClear(id) utaChnWaveBufClear(id)

@@ -12,6 +12,14 @@
 #                              [statedump=<frame>] (state hash: dump every variable's hash at that frame, separate build directory)
 #                              [audiocap] (records the DSP mix and channel events to the SD card, separate build directory)
 #                              [pcmhash] (logs a hash of every stream's PCM, to compare builds; separate build directory)
+#                              [audiometrics] (decoder allocation bytes and ticks per frame; Release diagnostic directory)
+#                              [adpcmprobe] (UT native DSP block/reference check before audio startup; diagnostic only)
+#                              [adpcmsfx] (compressed SFX cache/PCM feeder prototype; separate directory)
+#                              [adpcmmusic] (native music adapter prototype; separate directory)
+#                              [adpcmtestmtime] (TEST ONLY, requires adpcmmusic; emulator unknown-mtime gate)
+#                              [adpcmpack|adpcmpack=off] (UT mono sound effects as DSP-ADPCM from the builder's
+#                              adpcm-sfx.dtsp; default in UNDERTALE Old builds)
+#                              [audio-convert] (private DSP-ADPCM objects and SD indexes; runtime adapter selection pending)
 #                              [surfcensus] (logs how every game surface is made, bound and drawn out; separate build directory)
 #                              [offdraw] (offdraw: instance census and offdraw.txt kill/hash-skip experiments; separate build directory)
 #                              [halfcensus] (logs the largest scale each texture item is drawn at in one room; test only,
@@ -34,8 +42,16 @@
 #                              spikes.txt at room changes; source/z_spikerec.c; separate build directory, never a release)
 #                              [freewins] (main-loop segment timers and off switches, freewins; source/z_freewins.c;
 #                              separate build directory, never a release)
+#                              [bfprobe] (main-thread waits in a sweep, [bfprobe] log lines; ctr_benchmark.c's end;
+#                              separate build directory, never a release)
+#                              [frametrace] (every frame of a bench window: phases, pacer, GPU waits, SD calls, decodes,
+#                              tile loads, written to frametrace.txt after the window; source/z_frametrace.c;
+#                              separate build directory, never a release)
 #                              [exittrail] (the exit's steps after the last log line, each in labboot.txt with its thread;
 #                              source/z_exittrail.c; o2DS kernel panic diagnosis, separate build directory, never a release)
+#                              [nowriterfront|writerfront-fallback|writerfront-count] (UNDERTALE Old: the dialogue writer's
+#                              hand front off, every Draw through its fallback, or front/fallback counts in the log;
+#                              source/z_writerfront.c; separate build directories, test builds only)
 #                              [typed|typed=off|typed=all|typed=<list>] [typed-stats] [typed-stress=<n>]
 #                              [late-numeric=<entry>|late-numeric=off] (UNDERTALE lava copy on by default)
 #
@@ -115,6 +131,13 @@ gameend=OFF
 statedump=
 audiocap=OFF
 pcmhash=OFF
+audiometrics=OFF
+adpcmprobe=OFF
+adpcmsfx=OFF
+adpcmmusic=OFF
+adpcmtestmtime=OFF
+adpcmpack=     # ON, OFF, or empty: the default (ON in UNDERTALE Old, OFF elsewhere)
+audio_convert=OFF
 surfcensus=OFF
 offdraw=OFF
 halfcensus=OFF
@@ -156,7 +179,10 @@ pacer_csv_diag=OFF
 record_fail_after= # empty: no allocation injection
 spikerec=OFF
 freewins=OFF
+bfprobe=OFF
+frametrace=OFF
 exittrail=OFF
+writerfront=ON
 repack_test= # test builds: a folder of <data.win folder>/ repack files for the RomFS (ctr_repack.inc)
 for arg in "$@"; do
     case "$arg" in
@@ -177,6 +203,14 @@ for arg in "$@"; do
         statedump=*) statedump="${arg#statedump=}" ;;
         audiocap) audiocap=ON ;;
         pcmhash) pcmhash=ON ;;
+        audiometrics) audiometrics=ON ;;
+        adpcmprobe) adpcmprobe=ON ;;
+        adpcmsfx) adpcmsfx=ON ;;
+        adpcmmusic) adpcmmusic=ON ;;
+        adpcmtestmtime) adpcmtestmtime=ON ;;
+        adpcmpack) adpcmpack=ON ;;
+        adpcmpack=off) adpcmpack=OFF ;;
+        audio-convert) audio_convert=ON ;;
         surfcensus) surfcensus=ON ;;
         offdraw) offdraw=ON ;;
         halfcensus) halfcensus=ON ;;
@@ -215,7 +249,12 @@ for arg in "$@"; do
         inputstall=*) input_stall=${arg#inputstall=} ;;
         spikerec) spikerec=ON ;;
         freewins) freewins=ON ;;
+        bfprobe) bfprobe=ON ;;
+        frametrace) frametrace=ON ;;
         exittrail) exittrail=ON ;;
+        nowriterfront) writerfront=OFF ;;
+        writerfront-fallback) writerfront=FALLBACK ;;
+        writerfront-count) writerfront=COUNT ;;
         typed-census) typed_census=ON ;;
         typed-framelog) typed_framelog=ON ;;
         typed) typed=ON ;;
@@ -354,6 +393,41 @@ fi
 if [ "$pcmhash" = ON ]; then
     build="$build-pcmhash"
 fi
+if [ "$audiometrics" = ON ]; then
+    build="$build-audiometrics"
+fi
+if [ "$adpcmprobe" = ON ]; then
+    build="$build-adpcmprobe"
+fi
+if [ "$adpcmsfx" = ON ]; then
+    build="$build-adpcmsfx"
+fi
+if [ "$adpcmmusic" = ON ]; then
+    build="$build-adpcmmusic"
+fi
+# The UNDERTALE sound-effect pack (ctr_adpcm_pack.inc; the builder writes adpcm-sfx.dtsp beside data.win) is part of
+# UNDERTALE Old builds unless "adpcmpack=off" or an ADPCM prototype word (adpcmprobe/adpcmsfx/adpcmmusic, which own
+# the audio factory wrapper) is given; "adpcmpack" adds it to UNDERTALE New. Only a non-default choice names the
+# build directory (-adpcmpack, -noadpcmpack).
+adpcmpack_default=OFF
+if [ "$game" = undertale ] && [ "$target" = o3ds ] && [ "$adpcmprobe$adpcmsfx$adpcmmusic" = OFFOFFOFF ]; then
+    adpcmpack_default=ON
+fi
+if [ -z "$adpcmpack" ]; then
+    adpcmpack=$adpcmpack_default
+elif [ "$adpcmpack" != "$adpcmpack_default" ]; then
+    if [ "$adpcmpack" = ON ]; then build="$build-adpcmpack"; else build="$build-noadpcmpack"; fi
+fi
+if [ "$adpcmtestmtime" = ON ]; then
+    if [ "$adpcmmusic" != ON ]; then
+        echo "ERROR: adpcmtestmtime requires adpcmmusic; test builds only" >&2
+        exit 2
+    fi
+    build="$build-adpcmtestmtime"
+fi
+if [ "$audio_convert" = ON ]; then
+    build="$build-audioconvert"
+fi
 if [ "$surfcensus" = ON ]; then
     build="$build-surfcensus"
 fi
@@ -416,9 +490,20 @@ fi
 if [ "$freewins" = ON ]; then
     build="$build-freewins"
 fi
+if [ "$bfprobe" = ON ]; then
+    build="$build-bfprobe"
+fi
+if [ "$frametrace" = ON ]; then
+    build="$build-frametrace"
+fi
 if [ "$exittrail" = ON ]; then
     build="$build-exittrail"
 fi
+case "$writerfront" in
+    OFF) build="$build-nowriterfront" ;;
+    FALLBACK) build="$build-writerfront-fallback" ;;
+    COUNT) build="$build-writerfront-count" ;;
+esac
 chapters=
 if [ "$aot_mode" = chapters ]; then
     if [ "$game" != deltarune ]; then
@@ -681,6 +766,21 @@ if [ "$roomplan" = ON ] && [ "$game" = undertale ] && [ -n "${python:-}" ]; then
     fi
 fi
 
+if [ "$audio_convert" = ON ]; then
+    if [ -z "$data_dir" ] || [ -z "${python:-}" ]; then
+        echo "audio-convert needs the player's data folder and the builder's Python" >&2
+        exit 2
+    fi
+    audio_out="$repo/build/audio-adpcm-$game"
+    "${python[@]}" -I "$(native_path "$repo/tools/audio/prepare.py")" \
+        --data "$(native_path "$data_dir")" --out "$(native_path "$audio_out")"
+    audio_sd_out="$repo/build/audio-sd-$game/audio-adpcm"
+    "${python[@]}" -I "$(native_path "$repo/tools/audio/stage.py")" \
+        --data "$(native_path "$data_dir")" --prepared "$(native_path "$audio_out")" \
+        --out "$(native_path "$audio_sd_out")"
+    echo "ADPCM assets staged at $audio_sd_out; game adapter selection remains disabled"
+fi
+
 openh264_warn() {
     {
         echo
@@ -786,6 +886,12 @@ cmake -S "$here" -B "$build" -G "Unix Makefiles" \
     -DCTRPORT_STATE_DUMP_FRAME="$statedump" \
     -DCTRPORT_AUDIO_CAPTURE="$audiocap" \
     -DCTRPORT_AUDIO_PCM_HASH="$pcmhash" \
+    -DCTRPORT_AUDIO_METRICS="$audiometrics" \
+    -DCTRPORT_ADPCM_PROBE="$adpcmprobe" \
+    -DCTRPORT_ADPCM_SFX="$adpcmsfx" \
+    -DCTRPORT_ADPCM_MUSIC="$adpcmmusic" \
+    -DCTRPORT_ADPCM_TEST_UNKNOWN_MTIME="$adpcmtestmtime" \
+    -DCTRPORT_ADPCM_SFXPACK="$adpcmpack" \
     -DCTRPORT_SURFACE_CENSUS="$surfcensus" \
     -DCTRPORT_OFFDRAW="$offdraw" \
     -DCTRPORT_HALF_CENSUS="$halfcensus" -DCTRPORT_HALFART_FILE="$halfart_file" \
@@ -809,7 +915,8 @@ cmake -S "$here" -B "$build" -G "Unix Makefiles" \
     -DCTRPORT_ROOMPLAN_FILE="$roomplan_file" -DCTRPORT_SFXPLAN_FILE="$sfxplan_file" -DCTRPORT_PHASEPLAN_FILE="$phaseplan_file" -DCTRPORT_ROOMPLAN_DIR="$roomplan_dir" -DCTRPORT_ROOMPLAN_RECORDER="$roomplan_rec" \
     -DCTRPORT_PHASE_LAYOUT="$phase_layout" \
     -DCTRPORT_SPIKEREC="$spikerec" -DCTRPORT_FREEWINS="$freewins" \
-    -DCTRPORT_EXITTRAIL="$exittrail" \
+    -DCTRPORT_BENCHFIX_PROBE="$bfprobe" -DCTRPORT_FRAMETRACE="$frametrace" \
+    -DCTRPORT_EXITTRAIL="$exittrail" -DCTRPORT_WRITERFRONT_MODE="$writerfront" \
     "${input_cmake[@]}" \
     -DCTRPORT_TYPED_CENSUS="$typed_census" -DCTRPORT_TYPED_FRAMELOG="$typed_framelog" \
     -DCTRPORT_TYPED_AOT="$typed" -DCTRPORT_TYPED_STATS="$typed_stats" -DCTRPORT_TYPED_STRESS="$typed_stress" \

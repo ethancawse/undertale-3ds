@@ -44,7 +44,7 @@ GOG data version remains a separate task. No GOG recognition row is added by thi
 Lab/dev CSV staging uses the same receipt encoder. It invalidates old receipts before upload, completes
 the temporary transfer and rename, freshly hashes the final remote file, checks remote metadata before
 and after, then publishes the receipt last. Remote SIZE alone is not content verification. It requires
-real MLSD modification timestamps; enabling that capability is a lead deployment step, never automatic.
+real MLSD modification timestamps; enabling that capability is a manual deployment step, never automatic.
 
 When a DR receipt is absent or invalid, the cold checker still computes full-file SHA-256. It reads up
 to 1 MiB at a time and groups the same 64 SHA rounds in eights. It reports progress after each 64 KiB

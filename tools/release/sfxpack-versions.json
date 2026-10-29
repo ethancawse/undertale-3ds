@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "notice": "names only: sizes and SHA-256 digests of the builder's adpcm-sfx.dtsp for each verified UNDERTALE data file; no game content",
+  "game": "undertale",
+  "file": "adpcm-sfx.dtsp",
+  "tool": "tools/audio/sfxpack.py",
+  "destination": "sdmc:/3ds/undertale-3ds/adpcm-sfx.dtsp",
+  "packs": [
+    {
+      "data": "Steam Windows 1.08",
+      "data_size": 62921978,
+      "data_sha256": "b718f8223a5bb31979ffeed10be6140c857b882fc0d0462b89d6287ae38c81c7",
+      "size": 1714616,
+      "sha256": "e897647c6028ffa84c50adff49f197e4dcb9e2e7c71b332c4c4d53baf2b46c44",
+      "sounds": 85
+    },
+    {
+      "data": "Steam macOS 1.08 (game.ios)",
+      "data_size": 62956178,
+      "data_sha256": "91a8acf1f40bd7c45d0bdb978de55187e7fb2cd76a1e2cda41c078dd44d3565e",
+      "size": 1714616,
+      "sha256": "9c7669cbc2ef1dad204ead4d0859ba54d302637f13cd47030864e783aee4a2b3",
+      "sounds": 85
+    },
+    {
+      "data": "GOG 1.08",
+      "data_size": 62951906,
+      "data_sha256": "946c738c6d6182f683431320a0e32470bc3deb50f3e8887e61998df0c4e3abc8",
+      "size": 1714616,
+      "sha256": "9a917376c2a0918295bbcf3e7de3104542ea5e0afe500f2ddac212aa32439540",
+      "sounds": 85
+    }
+  ]
+}

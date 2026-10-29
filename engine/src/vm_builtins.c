@@ -27,7 +27,7 @@
 #endif
 
 #include "rvalue.h"
-#include "stb_ds.h"
+#include "freewins_maps.h" // stb_ds.h, and round 5's parked maps
 #include "text_utils.h"
 #include "collision.h"
 #include "ini.h"
@@ -4962,7 +4962,7 @@ char* FreewinsMap_key(RValue key, DataWin* dataWin); RValue FreewinsMap_value(RV
     Runner* runner = ctx->runner;
     int32_t id = RValue_toInt32(args[0]);
     DsMapEntry** mapPtr = dsMapGet(runner, id);
-    if (mapPtr == nullptr) return RValue_makeUndefined();
+    if (mapPtr == nullptr) return RValue_makeUndefined(); FreewinsMap_claim(mapPtr, id); // a parked map's storage
 
     char* key = FreewinsMap_key(args[1], ctx->runner->dataWin); // borrows a static string (at this file's end)
 
@@ -25273,5 +25273,18 @@ FREEWINS_MAP_LATE void FreewinsMap_freeKey(char* key) {
 // subsection 1 of its section (after its code and literal pool, outside its symbol size). DELTARUNE builds already
 // call an outlined RValue_makeIndependent, so theirs keeps its 964 B with no padding.
 #if defined(PLATFORM_3DS) && defined(__GNUC__) && defined(ENABLE_WAD16)
-__asm__(".pushsection .text.dsMapAddCommon,\"ax\",%progbits\n.subsection 1\n.space 316\n.popsection\n");
+__asm__(".pushsection .text.dsMapAddCommon,\"ax\",%progbits\n.subsection 1\n.space " FREEWINS_MAPADD_PAD "\n.popsection\n");
+#endif
+#ifdef FREEWINS_KEEP_MIN
+// Round 5's parked maps (freewins_maps.h): the two big ds_maps' storage between cleanupState and their first ds_map_add.
+FreewinsKeptMap freewinsKeptMaps[2] __attribute__((section(".bss.freewins_r5_late")));
+#endif
+
+// simplefix (2026-10-28): this file's out-of-line Collision_computeBBox rounds its edges through z_bboxround.c's
+// Collision_bboxRound (CTRPORT_BBOX_ROUND, CMakeLists.txt) and shrank from 1,588 to 996 B on every release target
+// (nm -S). It keeps its slot, so that nothing after it moves: the padding is subsection 1 of its own section, after its
+// code and literal pool, outside its symbol size (as Runner_destroyInstance's in runner.c; proven by
+// tools/analysis/check_simplefix_layout.py).
+#if defined(CTRPORT_LAYERFIX_RELEASE_LAYOUT) && defined(CTRPORT_BBOX_ROUND) && defined(__3DS__) && defined(__GNUC__)
+__asm__(".pushsection .text.Collision_computeBBox,\"ax\",%progbits\n.subsection 1\n.space 592\n.popsection\n");
 #endif

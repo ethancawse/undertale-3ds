@@ -26308,3 +26308,27 @@ _Static_assert(sizeof(((CtrSurface*) 0)->used) == 1 && sizeof(((CtrSurface*) 0)-
                sizeof(((CtrSurface*) 0)->height) == 4 && sizeof(((CtrRenderer*) 0)->surfaceCount) == 4,
                "Knight history copy field sizes");
 #endif
+
+// utold Continue transition: append only, preserving every earlier __LINE__.
+#if defined(ENABLE_WAD16) && defined(__3DS__)
+void Utold_continueBlack(Renderer* renderer);
+__attribute__((noinline, optimize("Os"), section(".text.utoldcontblack_late")))
+void Utold_continueBlack(Renderer* renderer) {
+    CtrRenderer* r = (CtrRenderer*)renderer;
+    CtrSuspendedFrame saved;
+    bool active = r->inFrame;
+    if (active) suspendFrame(r, &saved);
+    CtrGpu_waitIdle();
+    gfxScreen_t screen = CtrScreens_onBottom ? GFX_BOTTOM : GFX_TOP;
+    GSPGPU_Event vblank = screen == GFX_TOP ? GSPGPU_EVENT_VBlank0 : GSPGPU_EVENT_VBlank1;
+    while (!CtrPacer_screenReady(screen)) gspWaitForEvent(vblank, true);
+    // Clears the shown buffer in place, so the refresh it lands in can show menu above and black below (a tear
+    // fixed by clearing the back buffer and flipping costs about 100 B more). 1.0 forces 3D off, so the right eye
+    // mirrors this buffer; stereo gets its own unit when it returns.
+    screensClearBuffers(screen);
+    // A fresh boundary, then a full black scan before the blocking load.
+    gspWaitForEvent(vblank, true);
+    gspWaitForEvent(vblank, true);
+    if (active) resumeFrame(r, &saved);
+}
+#endif

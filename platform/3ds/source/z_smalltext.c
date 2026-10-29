@@ -818,24 +818,32 @@ static ST_LATE bool stAtlas(StFont* f) {
     }
     memset(f->tex.data, 0, f->tex.size);
     uint32_t* texels = (uint32_t*) f->tex.data;
+#ifdef ST_DR_UNIT
+    const bool every = false;
+#else
+    const bool every = f == &stCard.font; // the card's atlas writes its pixels without ink too (opaque black)
+#endif
     for (uint32_t e = 0; f->count > e; e++) {
         const uint8_t* g = stEntry(f, e);
         uint32_t cx = (e % ST_ATLAS_COLS) * (uint32_t) pitchX, cy = (e / ST_ATLAS_COLS) * (uint32_t) pitchY;
+        // statlas (aotprof): a row's pixels to write as bits (x below the glyph's width; only those with ink unless
+        // every), taken lowest first: the same texels as a walk of every x, without the walk (Photoshop Flowey's first
+        // text, 12/0, made an atlas in its Draw: about 295k instructions). Columns go 32 at a time; a row's mask has 16
+        // bits, so from x 32 on there are only the card's black pixels (main's mask >> x was 0 there on the ARM).
         for (uint32_t y = 0; f->rows > y; y++) {
             uint32_t mask = (uint32_t) g[6 + 2 * y] | ((uint32_t) g[7 + 2 * y] << 8);
-            for (uint32_t x = 0; g[2] > x; x++) {
-                bool ink = (mask >> x & 1u) != 0;
-#ifdef ST_DR_UNIT
-                if (!ink) continue;
-#else
-                if (!ink && f != &stCard.font) continue;
-#endif
-                uint32_t tx = cx + x, ty = cy + y, mx = tx & 7u, my = ty & 7u;
-                uint32_t morton = (mx & 1u) | ((my & 1u) << 1) | ((mx & 2u) << 1) | ((my & 2u) << 2) | ((mx & 4u) << 2) | ((my & 4u) << 3);
-                texels[(ty >> 3) * (tw / 8u) * 64u + (tx >> 3) * 64u + morton] = ink ? 0xFFFFFFFFu : 0x000000FFu; // opaque black: A is the low byte
+            for (uint32_t x0 = 0; g[2] > x0; x0 += 32u, mask = 0u) {
+                uint32_t left = g[2] - x0, span = left >= 32u ? 0xFFFFFFFFu : (1u << left) - 1u;
+                for (uint32_t todo = every ? span : mask & span; todo != 0u; todo &= todo - 1u) {
+                    uint32_t bit = (uint32_t) __builtin_ctz(todo);
+                    uint32_t tx = cx + x0 + bit, ty = cy + y, mx = tx & 7u, my = ty & 7u;
+                    uint32_t morton = (mx & 1u) | ((my & 1u) << 1) | ((mx & 2u) << 1) | ((my & 2u) << 2) | ((mx & 4u) << 2) | ((my & 4u) << 3);
+                    texels[(ty >> 3) * (tw / 8u) * 64u + (tx >> 3) * 64u + morton] = (mask >> bit & 1u) != 0u ? 0xFFFFFFFFu : 0x000000FFu; // opaque black: A is the low byte
+                }
             }
         }
     }
+#line 839 // statlas: main's numbering
     C3D_TexFlush(&f->tex);
     C3D_TexSetFilter(&f->tex, GPU_NEAREST, GPU_NEAREST);
     C3D_TexSetWrap(&f->tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);

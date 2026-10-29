@@ -28,19 +28,19 @@
 // flips have been shown (and let go here, see CtrPacer_screenReady). Held
 // flips are let go from the top screen's vblank callback.
 // A frame is still shown after its CPU and GPU time together, though.
-// On the Old 3DS a frame can take 30 ms of the CPU and 5 of the
-// GPU: it shows a vblank late, and moving the next slot to that vblank cost
-// the main thread a vblank of its time on every such frame (a third of
-// Waterfall's frames stayed up for three vblanks at 30 fps). Instead, frames
-// are shown a vblank after their slots from then on (the delay) and the slots
-// keep their place, so the GPU has a vblank more for each frame and the main
-// thread's time isn't cut; a frame a little over its slot on the CPU then
-// costs only the time it is over. The delay goes once frames have been done
-// in time without it for a while; that frame stays up a vblank less. It only
-// starts on a second late frame soon after another: a lone late frame (the
-// main thread held up once, by the SD card say) moves the slots as before,
-// since with the delay a light frame's transfers wait a vblank for the last
-// flip, and a hitch of half a slot then makes it late again.
+// Low input delay is invariant (decided 2026-10-28). A missed deadline
+// drops or extends that picture; it never arms an extra vblank for later
+// pictures. Ordinary slots may realign after an actual late flip. Explicit
+// frame-skip and Auto display-rate choices keep their existing schedules.
+
+
+
+
+
+
+
+
+
 
 void __real_gfxScreenSwapBuffers(gfxScreen_t screen, bool hasStereo);
 void __wrap_gfxScreenSwapBuffers(gfxScreen_t screen, bool hasStereo);
@@ -58,7 +58,7 @@ typedef struct {
     uint32_t worstLate;
     // Slots moved to the vblank the last frame showed on, which the GPU finished too late for its own.
     uint32_t shifted;
-    // Frames shown a vblank after their slot (the delay).
+    // Retired adaptive-delay counter: retained for layout/log schema, always zero.
     uint32_t delayed;
     // Late frames that went unshown so the next could catch up.
     uint32_t skipped;
@@ -109,14 +109,14 @@ static struct {
     // each frame's end (at random), and the generator's state.
     uint32_t stressMaxMs;
     uint32_t stressSeed;
-    // Vblanks frames are shown after their slots end (0 or 1), and how many
-    // frames in a row would have been in time without it.
+    // Retired adaptive-delay storage. Kept for layout/log compatibility only;
+    // delay is initialized/reset to zero and never becomes nonzero.
     uint32_t delay;
     uint32_t inTimeRun;
-    // Frames begun so far, and the one whose flip was last late without the delay.
+    // Frames begun so far; a retired field; and whether this step's frame is of its level's cadence (CtrPacer_frameBegun).
     uint32_t frameIndex;
     uint32_t lateFrame;
-    bool lateFrameValid;
+    bool stepInBeat;
     // The vblank the last frame handed to the GPU is shown on without the
     // delay, and the vblank count when the GPU finished it.
     uint32_t frameDue;
@@ -163,10 +163,10 @@ static struct {
     CtrFlipStats flipTotals;
 } pace;
 
-// Frames in a row done in time without the delay before it goes (3 s at 30 fps).
-#define PACER_RECOVERY_LENGTH_FRAMES 90u
-// A late frame starts the delay when the last one was at most this many frames before.
-#define DELAY_TRIGGER_FRAMES 15
+// Adaptive late-flip trigger and recovery thresholds retired. No cushion.
+
+
+
 
 static inline uint32_t vblankCount(void) {
     return C3D_FrameCounter(0);
@@ -342,7 +342,7 @@ void CtrPacer_setFrameRate(float fps) {
     pace.carry = 0.0f;
     pace.delay = 0;
     pace.inTimeRun = 0;
-    pace.lateFrameValid = false;
+    pace.stepInBeat = false;
 }
 
 // A vblank of the 3DS's screens (59.83 Hz) in CPU ticks.
@@ -455,61 +455,61 @@ bool CtrPacer_waitForSlot(bool catchUp, int32_t skipMax) {
     return !pace.skipping;
 }
 
-static void levelCheckFlip(void);
+static void levelCheckFlip(void); static bool levelShows(int32_t level, uint32_t phase);
 
 void CtrPacer_frameBegun(void) {
     if (pace.levelMode) {
+        // The beat holds only level 1's second of two frames shown in a row just after a skipped step (its phase 1), at
+        // 30 fps slots, the last shown frame at level 1 too. A readback or the menu shows every step. Shown steps: lateFrame.
+        pace.lateFrame = pace.lateFrame << 1 | pace.stepShown; pace.stepInBeat = pace.slotLength == 2 && pace.flipLevel == 1 && pace.level == 1 && (pace.lateFrame & 7) == 3;
         levelCheckFlip();
         return;
     }
-    // A frame that isn't shown keeps to the schedule.
     if (pace.skipping) return;
-    // The GPU is done with the last frame, so its flip has been asked for. If
-    // that was too late for the vblank it was due on (this slot's first, or
-    // the one after with the delay), frames get the delay if another frame
-    // was late shortly before, unless the main thread was a vblank or more
-    // late for this slot (one slow frame); past that, the slot starts on the
-    // vblank it shows on instead, so it stays up for a whole slot too.
-    // Catching up, the slots keep to their schedule regardless.
     LightLock_Lock(&pace.lock);
-    uint32_t delay = pace.delay;
-    // Fixed 2:1 overlap: the shown frame before was handed to the GPU at the end of its own slot's step and draw, and
-    // the GPU ran it during the unshown frame and this one. It is late if it flipped after its own slot's end plus
-    // the delay (rather than after this slot's start), and the delay can grow to two slots (one of shown frames).
-    bool deep = pace.overlap && pace.halfSkipped;
-    uint32_t delayMax = deep ? 2 * pace.slotLength : 1;
+    // A real late flip may move the next slot. It cannot change input delay. Late counts from this frame's own slot,
+    // in overlap too (its slot is already past the skipped one), so a done frame is never held past its slot.
     if (pace.lastShownValid) {
-        int32_t late = (int32_t) (pace.lastShown - (deep ? pace.frameDue : pace.slotStart)) - (int32_t) delay;
-        if (late > 0) {
-            pace.inTimeRun = 0;
-            if (delayMax > pace.delay && pace.slotLength >= 2 && !pace.slotLate) {
-                if (pace.lateFrameValid && DELAY_TRIGGER_FRAMES >= pace.frameIndex - pace.lateFrame) {
-                    uint32_t step = delayMax - pace.delay < (uint32_t) late ? delayMax - pace.delay : (uint32_t) late;
-                    pace.delay += step;
-                    late -= (int32_t) step;
-                }
-                pace.lateFrame = pace.frameIndex;
-                pace.lateFrameValid = true;
-            }
-            if (late > 0 && !pace.catchUp) {
-                pace.slotStart += (uint32_t) late;
-                pace.stats.shifted++;
-            }
+        int32_t late = (int32_t) (pace.lastShown - pace.slotStart);
+        if (late > 0 && !pace.catchUp) {
+            pace.slotStart += (uint32_t) late;
+            pace.stats.shifted++;
         }
     }
-    if (pace.doneValid) {
-        pace.doneValid = false;
-        if (delay > 0 && pace.delay > 0) {
-            // Done in time for a vblank less of delay.
-            pace.inTimeRun = 0 > (int32_t) (pace.doneVblank - pace.frameDue - (delay - 1)) ? pace.inTimeRun + 1 : 0;
-            if (pace.inTimeRun >= PACER_RECOVERY_LENGTH_FRAMES) {
-                pace.delay--;
-                pace.inTimeRun = 0;
-            }
-        }
-    }
+    pace.doneValid = false;
     LightLock_Unlock(&pace.lock);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void CtrPacer_frameEnding(void) {
     if (pace.stressMaxMs > 0) {
@@ -522,22 +522,22 @@ void CtrPacer_frameEnding(void) {
     // Anything still held belongs to an earlier frame.
     releaseHeld(vblankCount(), true);
     pace.holding = pace.slotLength >= 2;
-    pace.holdUntil = pace.slotStart + pace.slotLength - 1 + pace.delay;
+    pace.holdUntil = pace.slotStart + pace.slotLength - 1;
     pace.frameDue = pace.slotStart + pace.slotLength;
-    if (pace.delay > 0) pace.stats.delayed++;
+    // No delayed pictures: the retired counter remains zero.
     pace.frameSlotTick = pace.slotTick;
     pace.doneRecorded = false;
     pace.halfSkipped = false;
     if (pace.levelMode) {
-        // Auto's levels: due at the slot's end, but no sooner than the level's beat after the shown frame before.
+        // Auto's levels: due at the slot's end, or one vblank later for a frame of the beat (CtrPacer_frameBegun) due
+        // sooner than the beat after the frame before. Never more than one, so no due carries over to later frames.
         static const uint8_t beat[CTR_LEVEL_COUNT] = { 2, 3, 4, 6 };
-        uint32_t period = pace.slotLength == 2 ? beat[pace.level] : pace.slotLength;
-        uint32_t due = pace.slotStart + pace.slotLength;
-        if (pace.displayDueValid && 0 > (int32_t) (due - (pace.displayDue + period))) due = pace.displayDue + period;
+        uint32_t due = pace.slotStart + pace.slotLength, period = beat[pace.level];
+        if (pace.stepInBeat && pace.displayDueValid && 0 > (int32_t) (due - (pace.displayDue + period))) due++;
         pace.displayDue = due;
         pace.displayDueValid = true;
         pace.frameDue = due;
-        pace.holdUntil = due - 1 + pace.delay;
+        pace.holdUntil = due - 1;
         pace.checkPending = true;
         pace.checkDue = due;
         pace.flipLevel = pace.level;
@@ -619,10 +619,10 @@ void CtrPacer_logStats(void) {
 // Unshown frames measured before their costs replace the priors (a share of the shown frame's).
 #define LEVEL_K_SAMPLES 8
 
-static const uint8_t levelPeriod[CTR_LEVEL_COUNT] = { 1, 3, 2, 3 };
-// The most delay (vblanks) shown frames get at each level: one at level 0 as before; at 1 the next shown frame can
-// begin a slot after one, and would let go of that one's held flip early with more.
-static const uint8_t levelDelayMax[CTR_LEVEL_COUNT] = { 1, 1, 3, 5 };
+static const uint8_t levelPeriod[CTR_LEVEL_COUNT] __attribute__((no_reorder)) = { 1, 3, 2, 3 };
+// Never-read placeholder for the retired Auto delay limits. Keep the same
+// object, bytes and alignment so removing the policy does not move constants.
+static const uint8_t levelDelayMax[CTR_LEVEL_COUNT] __attribute__((used, no_reorder)) = { 1, 1, 3, 5 };
 
 static bool levelShows(int32_t level, uint32_t phase) {
     switch (level) {
@@ -847,37 +847,37 @@ void CtrPacer_levelGpu(float gpuMs) {
     levelAverage(&pace.gpuMs[k], &pace.gpuSamples[k], gpuMs);
 }
 
-// From CtrPacer_frameBegun, the GPU done with the frame before: whether the last shown frame flipped after it was due
-// (with the delay). If so, and another was late shortly before, the delay grows up to the level's most; after
-// PACER_RECOVERY_LENGTH_FRAMES shown frames done a vblank of delay sooner, it shrinks.
+// Auto's display beat is unchanged. Its adaptive delay is retired too.
 static void levelCheckFlip(void) {
+    // Constant placement is declared above; the retired delay table is never read.
     LightLock_Lock(&pace.lock);
-    uint32_t delayMax = pace.slotLength == 2 ? levelDelayMax[pace.level] : 1;
     if (pace.checkPending && pace.lastShownValid) {
         pace.checkPending = false;
-        int32_t late = (int32_t) (pace.lastShown - pace.checkDue) - (int32_t) pace.delay;
-        if (late > 0) {
-            pace.inTimeRun = 0;
-            if (delayMax > pace.delay) {
-                if (pace.lateFrameValid && DELAY_TRIGGER_FRAMES >= pace.frameIndex - pace.lateFrame) {
-                    uint32_t step = delayMax - pace.delay < (uint32_t) late ? delayMax - pace.delay : (uint32_t) late;
-                    pace.delay += step;
-                }
-                pace.lateFrame = pace.frameIndex;
-                pace.lateFrameValid = true;
-            }
-        } else if (pace.doneValid && pace.delay > 0) {
-            pace.inTimeRun = 0 > (int32_t) (pace.doneVblank - pace.checkDue - (pace.delay - 1)) ? pace.inTimeRun + 1 : 0;
-            if (pace.inTimeRun >= PACER_RECOVERY_LENGTH_FRAMES) {
-                pace.delay--;
-                pace.inTimeRun = 0;
-            }
-        }
         pace.doneValid = false;
     }
-    if (pace.delay > delayMax) pace.delay = delayMax;
     LightLock_Unlock(&pace.lock);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void CtrPacer_getLevelTotals(CtrLevelTotals* out) {
     LightLock_Lock(&pace.lock);
@@ -1061,6 +1061,26 @@ SCREENS_LATE void CtrPacer_setGameScreen(gfxScreen_t screen) {
     LightLock_Unlock(&screensPace.lock);
 }
 
-#if defined(CTRPORT_PACER_OBSERVE)
-#include "ctr_frame_pacer_prototype.inc"
+// Adaptive cushion prototype retired by owner ruling, 2026-10-28.
+// Its former wrapper options are rejected in CMake.
+// Historical prototype evidence cannot enter a shipping build.
+
+#include "ctr_frame_pacer_slots.inc"
+
+#ifdef CTRPORT_FRAMETRACE
+// frametrace (z_frametrace.c; build.sh ... frametrace, test builds only): the pacer's state as a frame's Step begins.
+// out: slot start, slot length, delay, the vblank the last flip shows on, flips so far, shifts so far, the frame goes
+// unshown (skipping), the slot began a whole vblank late.
+__attribute__((section(".text.frametrace_late"))) void CtrPacer_ftState(uint32_t* out) {
+    LightLock_Lock(&pace.lock);
+    out[0] = pace.slotStart;
+    out[1] = pace.slotLength;
+    out[2] = pace.delay;
+    out[3] = pace.lastShown;
+    out[4] = pace.flipTotals.flips;
+    out[5] = pace.stats.shifted;
+    out[6] = pace.skipping;
+    out[7] = pace.slotLate;
+    LightLock_Unlock(&pace.lock);
+}
 #endif

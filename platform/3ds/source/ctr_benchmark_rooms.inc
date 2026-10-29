@@ -68,19 +68,10 @@ ROOMS_CONST(roomsFormat,
 ROOMS_CONST(roomsResultFormat,
     "measurement %s contract=%s requested_frames=%ld actual_frames=%lu timed_intervals=%lu "
     "capture_excluded=%lu aggregate_room=start_room start_room=%s measured_room_visits=%lu departed_to=%s incomplete=%d\n");
-ROOMS_CONST(roomsVisitFormat,
-    "Bench: %s: room segment %lu room=%s frames=%lu range=%ld-%ld intervals=%lu "
-    "fps=%.3f 1%%low=%.3f draw=%.3f/%.3f ms class=%s HEADROOM=%s work_frames=%lu "
-    "cpu_ms=%.3f/%.3f gpu_ms=%.3f/%.3f work_contract=work/v1\n");
-ROOMS_CONST(roomsVisitResultFormat,
-    "room_segment %s contract=%s visit=%lu room=%s frames=%lu range=%ld-%ld intervals=%lu "
-    "fps=%.3f 1%%low=%.3f draw=%.3f/%.3f ms class=%s HEADROOM=%s work_frames=%lu "
-    "cpu_ms=%.3f/%.3f gpu_ms=%.3f/%.3f work_contract=work/v1\n");
 ROOMS_CONST(roomsPathFormat, "%s/%s");
 ROOMS_CONST(roomsFileMode, "a");
 ROOMS_CONST(roomsFileName, "benchmark.txt");
 ROOMS_CONST(roomsRangeFormat, "Bench: %s measured frames %d-%d\n");
-ROOMS_CONST(roomsSource, __FILE__);
 
 static void ROOMS_LATE benchWorkAdd(BenchWorkTail* t, double cpu, double gpu) {
     uint32_t n = t->frames < ROOMS_TAIL ? t->frames : ROOMS_TAIL;
@@ -243,62 +234,12 @@ static void ROOMS_LATE benchRoomsCollect(Runner* runner) {
     }
 }
 
-static void __attribute__((used)) ROOMS_LATE benchRoomsReport(void) {
-    // The original result calculation has consumed the complete, unchanged
-    // route buffer. A room seen only at the ending boundary did no measured work.
-    if (benchRooms.count > 0)
-        benchRooms.visits[benchRooms.count - 1].headroom = benchWorkResult(&benchRooms.visitWork);
-    while (benchRooms.count > 1 && benchRooms.visits[benchRooms.count - 1].frames == 0) benchRooms.count--;
-    const char* contract = benchRooms.battleOnly ? roomsBattle : roomsRoute;
-    const char* destination = benchRooms.destination[0] != '\0' ? benchRooms.destination : roomsNone;
-    char path[256];
-    snprintf(path, sizeof(path), roomsPathFormat, bench.session.gameDir, roomsFileName);
-    FILE* f = fopen(path, roomsFileMode);
-    logInfo(roomsFormat, benchRooms.id, contract, (long) benchRooms.requested, (unsigned long) benchRooms.work,
-            (unsigned long) benchRooms.intervals, (unsigned long) benchRooms.excluded, benchRooms.visits[0].room,
-            (unsigned long) benchRooms.count, destination, (int) benchRooms.overflow);
-    emit(f, roomsResultFormat, benchRooms.id, contract, (long) benchRooms.requested, (unsigned long) benchRooms.work,
-            (unsigned long) benchRooms.intervals, (unsigned long) benchRooms.excluded, benchRooms.visits[0].room,
-            (unsigned long) benchRooms.count, destination, (int) benchRooms.overflow);
-    BenchWorkResult work = benchWorkResult(&benchRooms.routeWork);
-    logInfo(roomsHeadroomFormat, benchRooms.id, benchWorkVerdict(&work), (unsigned long) work.frames,
-            (unsigned long) benchRooms.hiddenExcluded, (unsigned long) benchRooms.workExcluded,
-            work.cpuMean, work.valid ? work.cpuTail : -1.0, work.gpuMean, work.valid ? work.gpuTail : -1.0);
-    emit(f, roomsHeadroomResultFormat, benchRooms.id, benchWorkVerdict(&work), (unsigned long) work.frames,
-            (unsigned long) benchRooms.hiddenExcluded, (unsigned long) benchRooms.workExcluded,
-            work.cpuMean, work.valid ? work.cpuTail : -1.0, work.gpuMean, work.valid ? work.gpuTail : -1.0);
-    if (benchRooms.overflow) logWarn(roomsOverflow);
-    for (uint32_t i = 0; i < benchRooms.count; i++) {
-        BenchRoomVisit* v = &benchRooms.visits[i];
-        uint32_t n = v->intervals;
-        float* sorted = n > 0 ? safeMallocFunction(sizeof(float) * n, roomsSource, __LINE__) : nullptr;
-        double sum = 0.0, slowSum = 0.0;
-        for (uint32_t j = 0; j < n; j++) {
-            uint32_t at = v->firstInterval + j;
-            float ms = bench.frameMs[at];
-            sorted[j] = ms;
-            sum += ms;
-        }
-        if (n > 0) qsort(sorted, n, sizeof(float), compareSlowestFirst);
-        uint32_t low = n / 100 > 0 ? n / 100 : n > 0 ? 1 : 0;
-        for (uint32_t j = 0; j < low; j++) slowSum += sorted[j];
-        free(sorted);
-        double fps = sum > 0.0 ? 1000.0 * n / sum : 0.0;
-        double lowFps = slowSum > 0.0 ? 1000.0 * low / slowSum : 0.0;
-        double draw = v->frames > 0 ? v->drawSum / v->frames : 0.0;
-        const char* cadence = n == 0 ? roomsUnavailable : fps < 29.8 ? roomsUnder : lowFps < 28.5 ? roomsDips : roomsLocked;
-        BenchWorkResult* w = &v->headroom;
-        logInfo(roomsVisitFormat, benchRooms.id, (unsigned long) i + 1, v->room, (unsigned long) v->frames,
-                (long) v->firstFrame, (long) v->lastFrame, (unsigned long) n, fps, lowFps, draw, v->drawMax,
-                cadence, benchWorkVerdict(w), (unsigned long) w->frames, w->cpuMean,
-                w->valid ? w->cpuTail : -1.0, w->gpuMean, w->valid ? w->gpuTail : -1.0);
-        emit(f, roomsVisitResultFormat, benchRooms.id, contract, (unsigned long) i + 1, v->room, (unsigned long) v->frames,
-                (long) v->firstFrame, (long) v->lastFrame, (unsigned long) n, fps, lowFps, draw, v->drawMax,
-                cadence, benchWorkVerdict(w), (unsigned long) w->frames, w->cpuMean,
-                w->valid ? w->cpuTail : -1.0, w->gpuMean, w->valid ? w->gpuTail : -1.0);
-    }
-    if (f != nullptr) fclose(f);
-    benchRooms.active = false;
+// Layout anchor, never called. GCC aligns a string constant by the first function that expands it. Here
+// utils.h's safeMallocFunction message was first reached by speed-compiled code. Without this, the first is
+// benchfidRoomsReport (optimize "Os"), so the message leaves .rodata.str1.4 (the pool's copy) for a new
+// .rodata.str1.1. That moves the linker's merged str1.1 strings into early .rodata (+40 B).
+static void* __attribute__((used)) ROOMS_LATE benchRoomsAnchor(size_t size) {
+    return safeMallocFunction(size, roomsFileName, __LINE__);
 }
 
 static BenchScriptState ROOMS_LATE benchRoomsTick(BenchScript* script, Runner* runner) {

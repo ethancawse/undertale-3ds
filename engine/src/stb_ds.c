@@ -37,3 +37,10 @@ __asm__(".set realloc, stbds_safe_realloc\n.set malloc, stbds_safe_malloc");
 #define STBDS_FREE(c, p) free(p)
 #define STB_DS_IMPLEMENTATION
 #include "stb_ds.h"
+#if defined(PLATFORM_3DS) && defined(__GNUC__)
+// freewins_maps.h mirrors these two layouts to clear a parked map's hash index.
+_Static_assert(sizeof(stbds_hash_bucket) == 64 && offsetof(stbds_hash_bucket, index) == 32, "freewins_maps.h bucket");
+_Static_assert(offsetof(stbds_hash_index, slot_count) == 4 && offsetof(stbds_hash_index, used_count) == 8 &&
+               offsetof(stbds_hash_index, tombstone_count) == 20 && offsetof(stbds_hash_index, storage) == 48,
+               "freewins_maps.h hash index");
+#endif

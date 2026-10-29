@@ -124,6 +124,10 @@ extern uint32_t __ctru_heap_size;
 #define UTSTALL_WHOLE_NANOS (2500ull * 1000000ull)
 // ROOMLOAD_SPRITE_HEADROOM_BYTES (ctr_textures.c), repeated: what the set leaves free of the texture budget.
 #define UTSTALL_WHOLE_HEADROOM (4u * 1024u * 1024u)
+// The eviction loop is usWholeEvict (z_utstall_l2.c, late code last in merge order); UTSTALL_L2_PAD keeps
+// usWholeMakeRoom at its size before L2, so no symbol after it moves (ARM nops, run once a room load).
+#define UTSTALL_L2_PAD __asm__ volatile(".rept 13\n\tnop\n\t.endr")
+void usWholeEvict(CtrTextureCache* cache, uint64_t missing);
 // A page's tile grid at most (CTR_PAGE_MAX_TILES), as 64-bit words.
 #define UTSTALL_MASK_WORDS 4u
 // z_roomplan.c, utstall's accessors at its end, and the plan scene's code entries (z_roomload reads them too).
@@ -243,7 +247,9 @@ static UTSTALL_TEXT uint32_t usWholeFits(CtrTextureCache* cache, const uint8_t* 
 
 // 5. Makes room for the set: its resident tiles count as last used in the frame before this one (as the room load
 //    stamps its own), then tiles not drawn in the old room's last frame go, least recently used first, until the set's
-//    missing tiles and the room's other wanted ones fit below the budget less the headroom. Returns the bytes evicted.
+//    missing tiles and the room's other wanted ones fit below the budget less the headroom, and in linear memory above
+//    its floor (freewins L2: the budget assumes the other linear users' share, and where they hold more, as in
+//    Flowey's room, the passes stopped at the floor with stale tiles resident). Returns the bytes evicted.
 static UTSTALL_TEXT uint32_t usWholeMakeRoom(CtrTextureCache* cache, const uint8_t* scene) {
     if (cache->frame == 0) return 0;
     RoomPlanScene s;
@@ -275,9 +281,8 @@ static UTSTALL_TEXT uint32_t usWholeMakeRoom(CtrTextureCache* cache, const uint8
         }
     }
     uint32_t before = cache->residentBytes;
-    while ((uint64_t) cache->residentBytes + missing + UTSTALL_WHOLE_HEADROOM > cache->budgetBytes) {
-        if (!CtrTextures_evictLeastRecentIdle(cache, 1)) break;
-    }
+    usWholeEvict(cache, missing);
+    UTSTALL_L2_PAD;
     return before > cache->residentBytes ? before - cache->residentBytes : 0;
 }
 

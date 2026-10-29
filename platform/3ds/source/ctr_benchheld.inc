@@ -193,13 +193,26 @@ __attribute__((noinline, optimize("Os"), section(".text.stallfix_late"))) void _
     if (threadGetCurrent() == nullptr) heldRead(out);
 }
 
+// benchfix round 6 (argstage47 F2): the report is bfHeldReport (ctr_benchmark.c, after this file), which first
+// completes the window's last read (the gpu and gpuwait benchfix fills in), then runs heldReport. Round 7: the
+// held lines' window boundary (bfHeldBoundary) runs first. This wrap keeps its
+// stage slot (cand24): padded to the old size with a fill reached only by a phase that never occurs, so no late code
+// after it moves.
+static void bfHeldReport(const char* id);
+static void bfHeldBoundary(void);
 void __real_CtrPacer_logLevels(const char* id, const CtrLevelTotals* start, double seconds);
 void __wrap_CtrPacer_logLevels(const char* id, const CtrLevelTotals* start, double seconds);
 __attribute__((noinline, optimize("Os"), section(".text.stallfix_late"))) void __wrap_CtrPacer_logLevels(const char* id,
         const CtrLevelTotals* start, double seconds) {
     __real_CtrPacer_logLevels(id, start, seconds);
-    if (benchHeld.open && benchRooms.active && !sweep.on)
-        heldReport(id);
+    if (benchHeld.open && benchRooms.active && !sweep.on) {
+        bfHeldBoundary(); // round 7 (argbenchr6 M3): a window that closes in the call after its first read
+        bfHeldReport(id);
+        return;
+    }
+    if (__builtin_expect(bench.phase != 255, 1)) return;
+    __asm__ volatile(".space 320"); // the stage body: 420 B
+    __builtin_unreachable();
 }
 #endif
 

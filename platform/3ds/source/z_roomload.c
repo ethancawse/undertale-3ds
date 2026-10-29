@@ -519,3 +519,90 @@ RL_CODE void RoomLoad_collect(CtrTextureCache* cache, bool drop) {
     RoomLoad_frame(cache);
     CtrTextures_collectWholeRead(cache, drop);
 }
+
+// ===[ codeclose F1/F6 (UNDERTALE Old only): the plan's code after the tiles, coalesced and never aborting ]===
+// utstall item 7 (z_utstall.c usReadCode) reads the plan scene's code that rlReadCode above left (its 120 ms) after the
+// tiles, one DataWin_loadCodeBytes a group: one SD read each (about 8.5 ms on the o3DS), into the code arena through
+// safeMalloc, which aborts when no block fits, while the check before it counts the heap's total free, not its largest
+// block (argclosereview F1, F6). The room plan's in-play code closure (tools/roomplan/codeclose.py) lists more code
+// there. RoomPlan_roomCode is wrapped (CMakeLists.txt, UNDERTALE Old): the call that fills rl.codeIds (the room load
+// above) goes on as it was; usReadCode's call reads the same list here with rlReadCode (file order, neighbouring groups
+// in one read, rlArena's memory, which gives up instead of aborting) within usReadCode's limits, and hands usReadCode
+// nothing, so its loop and its log stay quiet. A pass of rlReadCode stops at ROOMLOAD_CODE_BYTES; another starts only
+// after a pass that reached it. Only when the bytecode is on file: usReadCode returns before its call otherwise. Code
+// loads only: no game state changes.
+// A pass is best effort and touches nothing else (argcfreview F1-F4): the heap's reliever (packed copies) and its
+// overflow into linear memory are off for it (CtrMemory_allowRelief, as CtrMemory_allocWork), so its allocations
+// fail instead; rlArena's block list gets its room first, with both on, as any lazy load's would (an arrput that
+// grows it inside the pass would abort on failure); and a pass starts only when one heap block holds the most it can
+// take (CC_PASS_NEED, from the largest unread group: one larger than ROOMLOAD_SPAN_BYTES is a read of its own) with
+// 2 MB still free after it. Its allocations then fit in that block, carved in order, the transient buffer last and
+// given back each read, so none fails; one that did anyway would leave its read's code memory unused in the arena
+// (rlUnplace), which is why a pass that stops short is never retried in the same call.
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+#include "ctr_memory.h"
+#define CC_CODE __attribute__((noinline, optimize("Os"), section(".text.codeclose_late")))
+#define CC_RODATA __attribute__((aligned(4), section(".rodata.codeclose_in_text")))
+// z_utstall.c's UTSTALL_CODE_NANOS, UTSTALL_CODE_BYTES and UTSTALL_CODE_HEAP_FREE, repeated.
+#define CC_CODE_NANOS (400ull * 1000000ull)
+#define CC_CODE_BYTES (512u * 1024u)
+#define CC_HEAP_FREE (2u * 1024u * 1024u)
+// The most one rlReadCode pass can take, its largest read being span bytes: the code memory of its byte limit and one
+// read past it (rlArena moves to a new 32 KB block only with under 8 KB of the last one free, so a third more at
+// most, and one block part used), and that read's transient buffer.
+#define CC_PASS_NEED(span) ((ROOMLOAD_CODE_BYTES + (span)) / 3u * 4u + RL_ARENA_BLOCK + (span))
+// rlArena's blocks for one call: two passes at most, each a block per 8 KB it reads at most, and one more.
+#define CC_ARENA_ENTRIES 96u
+
+uint32_t __real_RoomPlan_roomCode(Runner* runner, int32_t* out, uint32_t max);
+uint32_t __wrap_RoomPlan_roomCode(Runner* runner, int32_t* out, uint32_t max);
+
+static const char ccLog[] CC_RODATA =
+    "Room load (codeclose): %s: the plan's code after the tiles, %u groups in %u reads, %u KB in %.0f ms; %u entries not read\n";
+
+CC_CODE uint32_t __wrap_RoomPlan_roomCode(Runner* runner, int32_t* out, uint32_t max) {
+    // The room load's call fills rl.codeIds from its objects' count on, which may be its end (max 0).
+    if ((uintptr_t) out - (uintptr_t) rl.codeIds <= sizeof(rl.codeIds)) return __real_RoomPlan_roomCode(runner, out, max);
+    DataWin* dw = runner->dataWin;
+    uint32_t count = __real_RoomPlan_roomCode(runner, rl.codeIds, ROOMLOAD_CODE_MAX);
+    uint64_t start = nowNanos();
+    uint64_t deadline = start + CC_CODE_NANOS;
+    uint64_t copyNanos = rl.copyNanos; // the room load's, for its log line
+    uint32_t groups = 0, reads = 0, bytes = 0;
+    uint64_t nanos = 0;
+    uint32_t span = ROOMLOAD_SPAN_BYTES;
+    for (uint32_t i = 0; count > i; i++) {
+        const CodeEntry* code = &dw->code.entries[rl.codeIds[i]];
+        if (!code->present || code->bytecode != nullptr) continue;
+        uint32_t blob = rlBlobOf(dw, code->bytecodeAbsoluteOffset);
+        if (dw->codeBlobCount <= blob || dw->codeBlobs[blob].bytes != nullptr) continue;
+        uint32_t group = dw->codeBlobs[blob].group, after = 0;
+        uint32_t size = rlGroupEnd(dw, group, &after) - dw->codeBlobs[group].absoluteOffset;
+        if (size > span) span = size;
+    }
+    uint32_t need = CC_PASS_NEED(span);
+    arrsetcap(dw->codeArenaBlocks, arrlen(dw->codeArenaBlocks) + CC_ARENA_ENTRIES);
+    bool relief = CtrMemory_allowRelief(false);
+    while (count > 0 && CC_CODE_BYTES > bytes && deadline > nowNanos()) {
+        struct mallinfo mi = mallinfo();
+        if ((uint32_t) mi.uordblks + CC_HEAP_FREE + need > __ctru_heap_size) break;
+        void* room = malloc(need);
+        if (room == nullptr) break;
+        free(room);
+        uint32_t before = bytes;
+        rlReadCode(dw, count, deadline, &groups, &reads, &bytes, &nanos);
+        if (ROOMLOAD_CODE_BYTES > bytes - before) break;
+    }
+    CtrMemory_allowRelief(relief);
+    rl.copyNanos = copyNanos;
+    uint32_t left = 0;
+    for (uint32_t i = 0; count > i; i++) {
+        if (rlResidentBytes(dw, &dw->code.entries[rl.codeIds[i]]) == nullptr) left++;
+    }
+    if (reads > 0 || left > 0) {
+        logInfo(ccLog, runner->currentRoom->name, (unsigned) groups, (unsigned) reads, (unsigned) (bytes / 1024),
+                (double) (nowNanos() - start) / 1e6, (unsigned) left);
+    }
+    return 0;
+}
+#endif

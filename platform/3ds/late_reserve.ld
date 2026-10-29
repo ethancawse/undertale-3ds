@@ -367,7 +367,7 @@ SECTIONS
     *(.text.late.utasgore)
     /* Any other late text (round 14 dropped the wildcard ahead of the host table: it placed nothing). Not
        ctr_renderer.c's or z_itemverdict.c's, whose smartcut sections come last (round 17). */
-    *(SORT_BY_NAME(EXCLUDE_FILE (*z_knightnew_history.o *source/z_flowcode.o *ctr_data_version.o *z_gogut* *ctr_pixgrid* *z_builderx_review* *z_builderx_new* *z_builderx_old* *z_builderx_receipt* *runner.o *z_loadscreen.o *z_symverdict* *z_smalltext_dr* *z_utstall* *z_sdmigrate* *source/ctr_renderer.o *source/z_itemverdict.o *z_phaseplan* *z_utold_scalar* *source/ctr_benchmark.o *z_sdlat* *vm_builtins.o *z_gamedir* *ctr_flowervramg_promotion.o *ctr_memory.o *ctr_flowervramg_palette.o *ctr_textures.o) .text.late.*))
+    *(SORT_BY_NAME(EXCLUDE_FILE (*z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *ctr_data_version.o *z_gogut* *ctr_pixgrid* *z_builderx_review* *z_builderx_new* *z_builderx_old* *z_builderx_receipt* *runner.o *z_loadscreen.o *z_symverdict* *z_smalltext_dr* *z_utstall* *z_sdmigrate* *source/ctr_renderer.o *source/z_itemverdict.o *z_phaseplan* *z_utold_scalar* *source/ctr_benchmark.o *z_sdlat* *vm_builtins.o *z_gamedir* *ctr_flowervramg_promotion.o *ctr_memory.o *ctr_flowervramg_palette.o *ctr_textures.o) .text.late.*))
     /* builderx UT-only adapters, after every round-14 fixed section. DR excludes this object. */
     *z_builderx_review*(.text .text.* .rodata .rodata.*)
     *(.text.late.builderxnew)
@@ -647,6 +647,103 @@ SECTIONS
        key's wraps (z_utorder.c), then the full rebuild by key (runner.c's end; runner.o is out of the catch-all). */
     *(.text.utorder_late)
     *(.text.late.utorder)
+    /* utgapfix (last, merge order; UNDERTALE only): string_char_at's ASCII walk and its binding (z_utflames.c's
+       end), then its constant. Named outside .text.* and .rodata.* so z_utflames.o's line above leaves them here. */
+    *(.text_utgapfix_late)
+    *(.rodata_utgapfix_in_text)
+    /* freewins (round 4, after its round 3 lines; UNDERTALE only): L2, the whole set's make-room in linear memory
+       (z_utstall_l2.c, usWholeEvict), named outside .text.late.* so the catch-all above leaves it here. */
+    *(.text.freewins_r4_late)
+    /* textfront (simplefix, last, merge order; UNDERTALE Old only, empty elsewhere): the centred-text scripts' hand
+       fronts with the view cull and their binding (z_textfront.c), then their constants (in late text: UNDERTALE
+       Old's late constants are short), then that file's out-of-line copies of header functions (none expected).
+       Named outside .text.late.* so the catch-all above leaves it here. */
+    *(.text.textfront_late)
+    *(.rodata.textfront_in_text)
+    *z_textfront.o(.text .text.* .rodata .rodata.*)
+    /* writerfront (freebies, after textfront; UNDERTALE Old only, empty elsewhere and in nowriterfront builds): the
+       dialogue writer's Draw front, its binding and vm.c's VM_aotSwapFront, then its constants and that file's
+       out-of-line copies of header functions. Named outside .text.late.* so the catch-all above leaves it here. */
+    *(.text.writerfront_late)
+    *(.rodata.writerfront_in_text)
+    *z_writerfront.o(.text .text.* .rodata .rodata.*)
+    /* noshots (credfix, ruling 2026-10-28; last, merge order; both games): the BenchScript_takeShot wrap that
+       skips scene shot steps in timing rows (z_noshots.c). Named outside .text.late.* so the catch-all leaves it here. */
+    *(.text.noshots_late)
+    *(.rodata.noshots_in_text)
+    *z_noshots.o(.text .text.* .rodata .rodata.*)
+    /* benchfix (last, merge order; both games): a tour room's warm-up starts after a warp frame longer than the
+       warm-up (ctr_benchmark.c's end, the benchfidBeginFrame wrap). Named outside .text.late.* so ctr_benchmark.o's
+       line above leaves it here. */
+    *(.text.benchfix_late)
+    /* benchfix (after it, merge order; both games): the sweep start's chapter-1 data.win answer (ctr_benchmark.c's
+       end, the _stat_r wrap). */
+    *(.text.benchfix_stat_late)
+    /* benchfix (after it, merge order; both games): a bench window's own budget of utpolish's "Frame over" lines
+       (ctr_benchmark.c's end). */
+    *(.text.benchfix_lines_late)
+    /* freebies restart preload (last, merge order; UNDERTALE only, empty in DELTARUNE): restarting the room into another
+       planned scene gets the room load (z_freebies.c), then its constants. Named outside .text.late.* so the
+       catch-alls above leave them here. */
+    *(.text.freebies_late)
+    *(.rodata.freebies_in_text)
+    *z_freebies.o(.text .text.* .rodata .rodata.*)
+    /* benchfix round 6 (last, merge order; both games): the bench's frame work, stat answer and fence timing moved out
+       of the wraps above (which keep their slots), the held lines' window boundary and report (ctr_benchmark.c's
+       end). Named outside .text.late.* so ctr_benchmark.o's line above leaves it here. */
+    *(.text.benchfix_r6_late)
+    /* sfxcopy (aotprof, last, merge order; both games): buildSfx's word-at-a-time dual-mono check and copy
+       (ctr_sfxcopy.inc, in ctr_audio_system.c). Named outside .text.late.* so the catch-all leaves it here. */
+    *(.text.sfxcopy_late)
+    /* freewins (round 4c, after its round 4 line; UNDERTALE Old only): L1, the overflow allocator's linear piece
+       (z_utstall_l2.c), and the heap reliever's wrap that gives it the texture cache; then L1's log line constants. */
+    *(.text.freewins_r4b_late)
+    *(.rodata.freewins_r4_in_text)
+    /* bboxround (simplefix, last, merge order; both games): Collision_computeBBox's edge rounding (z_bboxround.c:
+       a VFP truncation front, the double's bits for the rest). Named outside .text.late.* so the catch-all above
+       leaves it here. */
+    *(.text.bboxround_late)
+
+    /* flowpitch (flowend, last, merge order; both games): every voice and ctr_video.c's wall clock at the game's
+       frame clock (ctr_audio_system.c's end, ctr_music_clock.h) and its log line. */
+    *(.text.flowpitch_late)
+    *(.rodata.flowpitch_in_text)
+    *(.text.late.adpcm .text.late.adpcm.*)
+    /* ADPCM's newly linked libctru entry; absent from the frozen UT controls. */
+    *(.text.ndspChnSetAdpcmCoefs)
+    /* codeclose F1/F6 (last, merge order; UNDERTALE Old only, empty elsewhere): the plan's code after the tiles through
+       roomload's coalesced, non-aborting reader (z_roomload.c's end, the RoomPlan_roomCode wrap), then its constants.
+       Named outside .text.late.* so the catch-all above leaves it here. */
+    *(.text.codeclose_late)
+    *(.rodata.codeclose_in_text)
+    /* A cached sound's PCM freed once no stopped uta channel reads it (ctr_audio_system.c's end; both games), then
+       its literal table and log text. Named outside .text.late.* so the catch-alls above leave them here. */
+    *(.text.pcmwait_late)
+    *(.rodata.pcmwait_in_text)
+    /* boardgrid (simplefix, last, merge order; DELTARUNE New only, empty elsewhere): Chapter 3's board grid rebuild
+       (z_boardgrid.c, bound by gmlaot.py's BOARD_NATIVE). Named outside .text.late.* so the catch-all above leaves it
+       here. */
+    *(.text.boardgrid_late)
+    /* benchfix round 7 (last, merge order; both games): the held lines' window boundary with argbenchr6's M1-M4
+       fixed (ctr_benchmark.c's end; round 6's two functions above keep their slots and call these); DELTARUNE Old,
+       which has no held lines, has only the tour warm-up's restart (bfTourBefore). Named outside .text.late.* so
+       ctr_benchmark.o's line above leaves it here. */
+    *(.text.benchfix_r7_late)
+    /* frametrace (benchfix, last, merge order; test builds with build.sh's frametrace word only, both games, so
+       no release build has these sections): the frame trace (z_frametrace.c, the accessors at ctr_benchmark.c's and
+       ctr_frame_pacer.c's ends), its constants, then that file's out-of-line copies (none expected). Named outside
+       .text.late.* so the catch-all above leaves it here. */
+    *(.text.frametrace_late)
+    *(.rodata.frametrace_in_text)
+    *z_frametrace.o(.text .text.* .rodata .rodata.*)
+    /* utold Continue transition (utold, last, merge order; UNDERTALE only, empty in DELTARUNE): the title
+       menu's Continue hook (z_utold_contblack.c). Named outside .text.late.* so the catch-alls leave it here. */
+    *(.text.utoldcontblack_late)
+    *(.rodata.utoldcontblack_late)
+    /* lbind (aotprof, last, merge order; both games): aotBind's name test, offset and blob length first
+       (z_lbind.c). Named outside .text.late.* so the catch-all leaves it here. */
+    *(.text.lbind_late)
+    *z_lbind.o(.text .text.* .rodata .rodata.*)
     __late_text_end = ABSOLUTE(.);
   }
   /* 192 KiB (grown in whole 4 KiB pages from 16 KiB, each time late code outgrew it): screens' options page took
@@ -766,7 +863,7 @@ SECTIONS
     *(.rodata.late.pacer)
     /* oomport (integrate round 15, after pacer): checked optional renderer/history arrays. */
     *(.rodata.late.oomport)
-    *(SORT_BY_NAME(EXCLUDE_FILE (*z_knightnew_history.o *source/z_flowcode.o *ctr_flowervramg_promotion.o *ctr_flowervramg_palette.o *z_gogut* *z_builderx_new* *z_builderx_receipt* *z_sdlat*) .rodata.late.*))
+    *(SORT_BY_NAME(EXCLUDE_FILE (*z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *ctr_flowervramg_promotion.o *ctr_flowervramg_palette.o *z_gogut* *z_builderx_new* *z_builderx_receipt* *z_sdlat*) .rodata.late.*))
     *(.rodata.late.builderxnew)
     *(.rodata.late.builderxreceipt)
     *(.rodata.late.gogut)
@@ -781,6 +878,11 @@ SECTIONS
     /* flowfull code paging (round 21, last, merge order; DELTARUNE New flowcode=lazy builds only, default Off, so no
        release build has these sections): z_flowcode.c. z_flowcode.o is out of the catch-all above. */
     *(.rodata.late.flowfullcode)
+
+    *(.rodata.late.adpcm)
+    /* snap names (credfix 8232d6954, last, merge order; both games): the L+SELECT scan prefix "snap_"
+       (ctr_screenshot_path.c). Named outside .rodata.late.* so the catch-all above leaves it here. */
+    *(.rodata.snapname_late)
     __late_rodata_end = ABSOLUTE(.);
   }
   /* 8 KiB (at first 4 KiB): late code's constants are mostly log formats; heapfrag's are 472 B, and
@@ -849,7 +951,7 @@ SECTIONS
     *(.data.late.pacer_vc)
     /* utold lava (integrate round 16): its data. */
     *(.data.late.utlava)
-    *(SORT_BY_NAME(EXCLUDE_FILE (*z_knightnew_history.o *source/z_flowcode.o *z_gogut* *z_builderx_new* *z_builderx_old* *z_loadscreen.o *source/ctr_benchmark.o *z_sdlat*) .data.late.*))
+    *(SORT_BY_NAME(EXCLUDE_FILE (*z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *z_gogut* *z_builderx_new* *z_builderx_old* *z_loadscreen.o *source/ctr_benchmark.o *z_sdlat*) .data.late.*))
     *(.data.late.builderxnew)
     *(.data.late.builderxold)
     *(.data.late.builderxoldconst)
@@ -871,6 +973,15 @@ SECTIONS
     /* knightnew GPU-1 (round 21, last, merge order; DELTARUNE New only, empty elsewhere): z_knightnew_history.c and
        ctr_renderer.c's KnightHistory_layout table. z_knightnew_history.o is out of the catch-all above. */
     *(.data.late.knightnew)
+    /* benchfix (last, merge order; both games): the sweep start's chapter-1 data.win answer (ctr_benchmark.c's end,
+       the _stat_r wrap). Named outside .data.late.* so ctr_benchmark.o's line above leaves it here. */
+    *(.data.benchfix_late)
+    /* benchfix (after it, merge order; both games): the window line budget's state. */
+    *(.data.benchfix_lines_late)
+    /* benchfix round 6 (last, merge order; both games): the held lines' window boundary snapshot. */
+    *(.data.benchfix_r6_late)
+
+    *(.data.late.adpcm)
     __late_data_end = ABSOLUTE(.);
   }
   __late_data_limit = __late_data_start + 0x1000;
@@ -1034,7 +1145,7 @@ SECTIONS
     *(.bss.late.bootlog)
     /* utasgore (round 17, after bootlog, before the catch-all): the steady path's plan cache (utaKeys). */
     *(.bss.late.utasgore)
-    *(SORT_BY_NAME(EXCLUDE_FILE (*z_knightnew_history.o *source/z_flowcode.o *z_gogut* *z_loadscreen.o *z_symverdict* *z_smalltext_dr* *z_utstall* *z_sdmigrate* *libswkbd_late.a:* *source/ctr_renderer.o *source/z_itemverdict.o *z_phaseplan* *z_sdlat* *z_gamedir* *ctr_flowervramg_palette.o) .bss.late.*))
+    *(SORT_BY_NAME(EXCLUDE_FILE (*z_adpcm* *ctr_adpcm_probe.o *source/ctr_audio_system.o *z_knightnew_history.o *source/z_flowcode.o *z_gogut* *z_loadscreen.o *z_symverdict* *z_smalltext_dr* *z_utstall* *z_sdmigrate* *libswkbd_late.a:* *source/ctr_renderer.o *source/z_itemverdict.o *z_phaseplan* *z_sdlat* *z_gamedir* *ctr_flowervramg_palette.o) .bss.late.*))
     /* packscreen (integrate round 16, after the catch-all, merge order): the setup line it draws. */
     *(.bss.late.packscreen)
     /* symverdict (after packscreen; UNDERTALE only): the table's bits. */
@@ -1156,6 +1267,40 @@ SECTIONS
     *(.bss.stallfix_late)
     /* utorder (credfix, last, merge order; UNDERTALE only): the draw order key counter (z_utorder.c). */
     *(.bss.utorder_late)
+    /* utgapfix (last, merge order; UNDERTALE only): the builtin string_char_at's walk falls back to (z_utflames.c's end). */
+    *(.bss.utgapfix_late)
+    /* textfront (simplefix, last, merge order; UNDERTALE Old only): the fronts' lookups (z_textfront.c). Named
+       outside .bss.late.* so the catch-alls above leave it here. */
+    *(.bss.textfront_late)
+    *z_textfront.o(.bss .bss.* COMMON)
+    /* writerfront (freebies, after textfront; UNDERTALE Old only): the front's lookups (z_writerfront.c). */
+    *(.bss.writerfront_late)
+    *z_writerfront.o(.bss .bss.* COMMON)
+    /* freebies restart preload (last, merge order; UNDERTALE only): the plan, the restart and the last scene key
+       (z_freebies.c). Named outside .bss.late.* so the catch-alls above leave it here. */
+    *(.bss.freebies_late)
+    *z_freebies.o(.bss .bss.* COMMON)
+    /* freewins (round 4c, after its round 2 line; UNDERTALE Old only): L1's texture cache and its busy flag
+       (z_utstall_l2.c). */
+    *(.bss.freewins_r4_late)
+    /* freewins (round 5, after its round 4c line; UNDERTALE Old only): the two big ds_maps' storage parked between
+       a VM reset and their first ds_map_add (vm_builtins.c's end, freewins_maps.h). */
+    *(.bss.freewins_r5_late)
+
+    /* flowpitch (flowend, last, merge order; both games): its log-once flag (ctr_audio_system.c's end). */
+    *(.bss.flowpitch_late)
+    *(.bss.late.adpcm)
+    /* The PCM blocks waiting for their channel (ctr_audio_system.c's end). */
+    *(.bss.pcmwait_late)
+    /* benchfix round 7 (last, merge order; both games): the held boundary's room start and hidden-read flag
+       (ctr_benchmark.c's end); DELTARUNE Old: the tour warm-up's last room (bfTourRoom). */
+    *(.bss.benchfix_r7_late)
+    /* frametrace (benchfix, last, merge order; test builds only): its state, the open files' names and the
+       dump's 4 KiB buffer (z_frametrace.c; the records themselves are allocated). */
+    *(.bss.frametrace_late)
+    *z_frametrace.o(.bss .bss.* COMMON)
+    /* utold Continue transition (last, merge order): the original script code index. */
+    *(.bss.utoldcontblack_late)
     /* 3dsxtool refuses a segment whose size isn't a multiple of 4 ("The segments is not word-aligned!"), and this
        block ends the RW segment: late statics of odd sizes (bools) would end it off a word. */
     . = ALIGN(4);

@@ -64,7 +64,7 @@ static const char btnpromptLogNone[] BTN_CONST = "Buttons: no prompt table, PC p
 static const char btnpromptYes[] BTN_CONST = "on";
 static const char btnpromptNo[] BTN_CONST = "off";
 // btnpromptRetained (184 B that kept the late code after the prompts in place) went in argcheck's UT late-text
-// reclaim (a lead-ruled layout event: the late code after it moved down, tools/analysis/check_shrink_layout.py).
+// reclaim (a ruled layout event: the late code after it moved down, tools/analysis/check_shrink_layout.py).
 
 
 // Private STRG indices and FNV guards, generated from the player's own data.

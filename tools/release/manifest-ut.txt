@@ -49,6 +49,7 @@ engine/src/debug_overlay.h
 engine/src/event_table.c
 engine/src/event_table.h
 engine/src/file_system.h
+engine/src/freewins_maps.h
 engine/src/gettime.c
 engine/src/gettime.h
 engine/src/gml_array.c
@@ -205,6 +206,26 @@ platform/3ds/source/ctr_apt_trace.c
 platform/3ds/source/ctr_apt_trace.h
 platform/3ds/source/ctr_argui.c
 platform/3ds/source/ctr_asgprobe.c
+platform/3ds/source/ctr_adpcm_metrics.h
+platform/3ds/source/ctr_adpcm_format.h
+platform/3ds/source/ctr_adpcm_player.h
+platform/3ds/source/ctr_adpcm_catalog.h
+platform/3ds/source/ctr_adpcm_store.h
+platform/3ds/source/ctr_adpcm_music.inc
+platform/3ds/source/ctr_adpcm_uta_state.inc
+platform/3ds/source/ctr_adpcm_pcm.h
+platform/3ds/source/ctr_adpcm_sfx.inc
+platform/3ds/source/ctr_adpcm_sfx_types.inc
+platform/3ds/source/ctr_adpcm_sfx_pieces.inc
+platform/3ds/source/ctr_adpcm_mono.inc
+platform/3ds/source/ctr_adpcm_pack.inc
+platform/3ds/diag/ctr_adpcm_probe.c
+platform/3ds/source/z_adpcm_format.c
+platform/3ds/source/z_adpcm_player.c
+platform/3ds/source/z_adpcm_catalog.c
+platform/3ds/source/z_adpcm_store.c
+platform/3ds/source/z_adpcm_pcm.c
+platform/3ds/source/z_adpcm_metrics.c
 platform/3ds/source/ctr_audio_decoder.c
 platform/3ds/source/ctr_audio_decoder.h
 platform/3ds/source/ctr_audio_selftest.c
@@ -284,6 +305,8 @@ platform/3ds/source/ctr_knfuse_tail.inc
 platform/3ds/source/ctr_input_schedule.h
 platform/3ds/source/ctr_inputlate_keys.h
 platform/3ds/source/z_dodgefront.c
+platform/3ds/source/z_textfront.c
+platform/3ds/source/z_writerfront.c
 platform/3ds/source/z_inputlate.c
 platform/3ds/source/ctr_lab.c
 platform/3ds/source/ctr_lab.h
@@ -313,6 +336,7 @@ platform/3ds/source/ctr_menu.h
 platform/3ds/source/ctr_menu_text.h
 platform/3ds/source/ctr_mp4.c
 platform/3ds/source/ctr_mp4.h
+platform/3ds/source/ctr_music_clock.h
 platform/3ds/source/ctr_notice.c
 platform/3ds/source/ctr_notice.h
 platform/3ds/source/ctr_open_files.c
@@ -345,6 +369,7 @@ platform/3ds/source/ctr_safe_save.h
 platform/3ds/source/ctr_screens.c
 platform/3ds/source/ctr_screenshot_path.c
 platform/3ds/source/ctr_screenshot_path.h
+platform/3ds/source/ctr_sfxcopy.inc
 platform/3ds/source/ctr_shot_name.c
 platform/3ds/source/ctr_shot_name.h
 platform/3ds/source/ctr_slot_diag.h
@@ -395,6 +420,7 @@ platform/3ds/source/z_roomload_trace.h
 platform/3ds/source/z_roomplan.c
 platform/3ds/source/z_utpolish_audio.c
 platform/3ds/source/z_utpolish_bench.c
+platform/3ds/source/z_utpolish_bench.h
 platform/3ds/source/zzz_ctr_slot_diag.c
 platform/3ds/vendor/pvaac/LICENSE
 platform/3ds/vendor/pvaac/NOTICE
@@ -590,8 +616,48 @@ tools/aot/gmlaot.py
 tools/aot/prepare.py
 tools/aot/selection/typed-undertale.txt
 tools/aot/selection/undertale-hints.txt
+tools/aot/selection/undertale-n3ds.txt
+tools/aot/selection/undertale-o3ds-pad.txt
 tools/aot/selection/undertale.txt
 tools/aot/typed.py
+# ADPCM tools and diagnostic sources; playback and release selection stay disabled.
+tools/audio/FORMAT.md
+tools/audio/convert.py
+tools/audio/dspadpcm.c
+tools/audio/dspadpcm.py
+tools/audio/mono_sfx.py
+tools/audio/sfxpack.py
+tools/audio/test_sfxpack.py
+tools/audio/prepare.py
+tools/audio/stage.py
+tools/audio/receipts.py
+tools/audio/test_receipts.py
+tools/audio/report_baseline.py
+tools/audio/report_metrics.py
+tools/audio/test_convert.py
+tools/audio/test_dspadpcm.py
+tools/audio/test_metrics.c
+tools/audio/test_metrics.py
+tools/audio/test_mono_pipeline.py
+tools/audio/test_mono_sfx.py
+tools/audio/test_mono_store.py
+tools/audio/test_mono_runtime.py
+tools/audio/test_mono_runtime.c
+tools/audio/test_prepare.py
+tools/audio/test_runtime.py
+tools/audio/test_player.py
+tools/audio/test_catalog.py
+tools/audio/test_store.py
+tools/audio/test_store.c
+tools/audio/test_music.c
+tools/audio/test_music.py
+tools/audio/test_pcm.py
+tools/audio/test_sfx.c
+tools/audio/test_sfx.py
+tools/audio/test_player.c
+tools/audio/test_support/test_ndsp.h
+tools/audio/test_report_metrics.py
+tools/audio/verify_listening.py
 tools/buildcache/builderx_compile.py
 tools/buildcache/compile_cache.py
 tools/buildcache/test_compile_cache.py
@@ -621,6 +687,7 @@ tools/release/test_prepare_legal.py
 tools/release/identifier-allowlist.json
 tools/release/release_contract.py
 tools/release/music-versions.json
+tools/release/sfxpack-versions.json
 tools/release/verify_game.py
 tools/release/test_verify_game.py
 tools/release/test_builder.py
@@ -674,6 +741,7 @@ tools/release/test_builder_platforms.py
 tools/release/test_texcache.py
 tools/roomplan/build_plan.py
 tools/roomplan/closure.py
+tools/roomplan/codeclose.py
 tools/roomplan/build_sfxplan.py
 tools/roomplan/records/sounds/undertale-steam-1.08.json
 tools/roomplan/dwinfo.py
@@ -713,7 +781,9 @@ tools/texprep/windows_utf8.h
 platform/3ds/source/z_cut10.c
 # utstall (UNDERTALE), benchfid (both games) and panelgrid (compiled for both games, gated off in UNDERTALE)
 platform/3ds/source/z_utstall.c
+platform/3ds/source/z_utstall_l2.c
 platform/3ds/source/z_utorder.c
+platform/3ds/source/z_noshots.c
 platform/3ds/source/ctr_benchfid_rooms.inc
 platform/3ds/source/ctr_benchfid_window.h
 platform/3ds/source/z_benchfid_window.c
@@ -748,7 +818,7 @@ platform/3ds/source/ctr_textures_oomport_slots.inc
 platform/3ds/source/ctr_bench_io.c
 platform/3ds/source/ctr_fps_clock.c
 platform/3ds/source/ctr_fps_clock.h
-platform/3ds/source/ctr_frame_pacer_prototype.inc
+platform/3ds/source/ctr_frame_pacer_slots.inc
 platform/3ds/source/ctr_pacer_csv_diag.c
 platform/3ds/source/ctr_pacer_policy.h
 # utsfx: the sound plan runtime
@@ -787,6 +857,8 @@ platform/3ds/source/z_phaseplan.c
 tools/roomplan/build_phases.py
 # utold scalar3: the lava's numeric draw_sprite_part call (UNDERTALE only)
 platform/3ds/source/z_utold_scalar.c
+# utold contblack: black before the title menu's Continue load (UNDERTALE only; compiles empty for DELTARUNE)
+platform/3ds/source/z_utold_contblack.c
 # gogut: GOG UNDERTALE support
 platform/3ds/source/z_gogut.c
 tools/roomplan/records/undertale-gog-1.08.json
@@ -796,6 +868,7 @@ tools/roomplan/records/sounds/undertale-gog-1.08.json
 # sdlat: profile-only emulator timing (excluded from ordinary Release linking)
 platform/3ds/source/z_sdlat.c
 platform/3ds/source/z_spikerec.c
+platform/3ds/source/z_frametrace.c
 platform/3ds/source/ctr_hintpos.c
 # drresid: its builder (build.sh names it, and runs it for DELTARUNE New only), and its source (compiled empty here)
 platform/3ds/source/z_drresid.c
@@ -826,3 +899,15 @@ tools/release/licenses/bannertool-MIT.txt
 platform/3ds/source/z_offkill.c
 tools/aot/offkill.py
 tools/aot/test_offkill.py
+
+# freebies restart preload: restarting the room into another planned scene gets the room load (UNDERTALE only;
+# compiled empty for DELTARUNE, listed for the build inputs)
+platform/3ds/source/z_freebies.c
+
+# bboxround (simplefix): Collision_computeBBox's exact edge rounding (both games)
+engine/src/z_bboxround.c
+# lbind (aotprof): aotBind's late name test
+platform/3ds/source/z_lbind.c
+
+# Windows sound encoder validation; no DLL in the source export.
+tools/release/builder/sfx_encoder.py

@@ -7,6 +7,7 @@
 #define CTR_WRAP_CHAIN_H
 
 #include "ctr_data_version.h"
+#include <stdint.h>
 
 // CtrAudioSystem_shedSfx (UNDERTALE): flowend -> utflowey2 (Old only, CTRPORT_PKLIN) -> real.
 //   flowend (ctr_audio_system.c's end): the room's planned sounds count as just played during the shed.
@@ -85,13 +86,27 @@ CtrDataVersionResult CTR_DATAVERSION_CRISPART(CTR_DATAVERSION_CHAIN_PARAMS);
 CtrDataVersionResult CTR_DATAVERSION_UTSFX(CTR_DATAVERSION_CHAIN_PARAMS);
 #endif
 
-// CtrRenderer_prefetchRoom: roomplan -> [dodgefront, UNDERTALE Old 3DS only] -> real.
+// CtrRenderer_prefetchRoom: roomplan -> [textfront -> (writerfront) -> dodgefront, UNDERTALE Old 3DS only] -> real.
 //   roomplan (z_roomplan.c): reads the room's planned code entries back.
-//   dodgefront (z_dodgefront.c): binds the centred text line's hand front after each room change.
+//   textfront (z_textfront.c): binds the centred-text scripts' hand fronts first, then calls the next link.
+//   writerfront (z_writerfront.c; not in build.sh's nowriterfront builds): binds the dialogue writer's Draw front.
+//   dodgefront (z_dodgefront.c): binds the centred text line's hand front after each room change (where textfront
+//   hasn't).
 #ifdef CTRPORT_DODGEFRONT
+#define CTR_PREFETCHROOM_TEXTFRONT CtrRenderer_chainTextfront
 #define CTR_PREFETCHROOM_DODGEFRONT CtrRenderer_chainDodgefront
-#define CTR_PREFETCHROOM_AFTER_ROOMPLAN CTR_PREFETCHROOM_DODGEFRONT
+#define CTR_PREFETCHROOM_AFTER_ROOMPLAN CTR_PREFETCHROOM_TEXTFRONT
+#ifdef CTRPORT_WRITERFRONT
+#define CTR_PREFETCHROOM_WRITERFRONT CtrRenderer_chainWriterfront
+#define CTR_PREFETCHROOM_AFTER_TEXTFRONT CTR_PREFETCHROOM_WRITERFRONT
+#define CTR_PREFETCHROOM_AFTER_WRITERFRONT CTR_PREFETCHROOM_DODGEFRONT
 struct Renderer;
+void CTR_PREFETCHROOM_WRITERFRONT(struct Renderer* renderer);
+#else
+#define CTR_PREFETCHROOM_AFTER_TEXTFRONT CTR_PREFETCHROOM_DODGEFRONT
+#endif
+struct Renderer;
+void CTR_PREFETCHROOM_TEXTFRONT(struct Renderer* renderer);
 void CTR_PREFETCHROOM_DODGEFRONT(struct Renderer* renderer);
 #else
 #define CTR_PREFETCHROOM_AFTER_ROOMPLAN __real_CtrRenderer_prefetchRoom
@@ -222,6 +237,13 @@ void CTR_STEP_SWKBD(struct Runner* runner);
 #ifdef __3DS__
 void CTR_ENDFRAME_SWKBD(Renderer* renderer);
 #endif
+// CtrRenderer_endFrame, continued: swkbd -> freebies (z_freebies.c: restarting the room into another planned scene gets
+// the room load after the frame, as main.c gives a room change) -> real.
+#define CTR_ENDFRAME_FREEBIES CtrRenderer_chainEndFrameFreebies
+#define CTR_ENDFRAME_AFTER_SWKBD CTR_ENDFRAME_FREEBIES
+#ifdef __3DS__
+void CTR_ENDFRAME_FREEBIES(Renderer* renderer);
+#endif
 #endif
 
 // DR exact cold SHA/read implementation, after every existing digest consumer.
@@ -256,5 +278,29 @@ void CTR_EXIT_ONCE(int status) __attribute__((noreturn));
 // CtrLab_poll: argcrash (z_argcrash.c) -> leavekeep (z_leavekeep.c: the lab's "died" target, once) -> real.
 #define CTR_LABPOLL_AFTER_ARGCRASH CtrLabPoll_chainLeavekeep
 void CtrLabPoll_chainLeavekeep(void);
+
+
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+// Capture the already checked data identity without rereading data.win on
+// the game thread. Original per-game links remain downstream in the chain.
+#undef CTR_DATAVERSION_AFTER_ROOMPLAN
+#ifdef CTRPORT_ADPCM_MUSIC
+#define CTR_DATAVERSION_AFTER_ROOMPLAN CtrDataVersion_chainAdpcmMusic
+#elif defined(CTRPORT_ADPCM_SFXPACK)
+#define CTR_DATAVERSION_AFTER_ROOMPLAN CtrDataVersion_chainAdpcmPack
+#else
+#define CTR_DATAVERSION_AFTER_ROOMPLAN CtrDataVersion_chainAdpcm
+#endif
+#ifdef ENABLE_WAD17
+#define CTR_DATAVERSION_AFTER_ADPCM CTR_DATAVERSION_CRISPART
+#elif defined(ENABLE_WAD16)
+#define CTR_DATAVERSION_AFTER_ADPCM CTR_DATAVERSION_UTSFX
+#else
+#define CTR_DATAVERSION_AFTER_ADPCM __real_CtrDataVersion_check
+#endif
+CtrDataVersionResult CtrDataVersion_chainAdpcm(CTR_DATAVERSION_CHAIN_PARAMS);
+CtrDataVersionResult CtrDataVersion_chainAdpcmMusic(CTR_DATAVERSION_CHAIN_PARAMS);
+CtrDataVersionResult CtrDataVersion_chainAdpcmPack(CTR_DATAVERSION_CHAIN_PARAMS);
+#endif
 
 #endif

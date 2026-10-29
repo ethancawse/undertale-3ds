@@ -173,7 +173,7 @@ void CtrRenderer_probeNextFrame(Renderer* renderer, bool batches);
 
 // Saves the application surface to a BMP at the start of the next frame, as shot_<frame>.bmp.
 void CtrRenderer_requestScreenshot(Renderer* renderer);
-// The player's screenshot (L+SELECT): the same, at the next free shot_<number>.bmp, so shots never overwrite each
+// The player's screenshot (L+SELECT): the same, at the next free snap_<number>.bmp, so shots never overwrite each
 // other across boots. An automatic request for the same frame wins and keeps the frame-numbered name.
 void CtrRenderer_requestPlayerScreenshot(Renderer* renderer);
 // The same, with suffix after the frame number in the file names (top_00405p.bmp), for a second shot of a frame

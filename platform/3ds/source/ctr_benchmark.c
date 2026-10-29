@@ -2531,3 +2531,1020 @@ __attribute__((noinline, noipa, section(".text.late.smartcut"))) void CtrBench_l
 #ifdef CTRPORT_BENCH_HELD
 #include "ctr_benchheld.inc"
 #endif
+
+#ifdef CTRPORT_BENCHFIX_PROBE
+// benchfix probe (ruling 2026-10-28; build.sh ... bfprobe, its own build directory, never a release). On every
+// console sweep the main thread loses 0.3-0.9 s between "[prewindow] <sweep>" and "Sweep: <sweep> ... begins" while
+// the battle music's stream opens on the audio thread; Azahar loses 3 ms. This times, on the main thread only and only
+// in a sweep (its setup and window), every wait it can make: CtrLog_beginConsole (the log writer's drain; harness
+// only in play), contended LightLock/RecursiveLock, LightEvent and svcWaitSynchronization waits (vblank and GPU waits
+// land here too), svcSleepThread, and SD/RomFS calls (FSUSER/FSFILE/FSDIR). One "[bfprobe] sweep start" line splits
+// the ready frame's bench call around CtrLog_beginConsole, with a CPU canary (a fixed loop; slower than in the setup
+// frames = the main thread lost its core). In the window, one "[bfprobe] frame" line for each frame with main-thread
+// FS, lock or condition-variable waits of 2 ms or more, or any console wait of 1 ms (at most 400 lines). Only call
+// targets change. Rev 2 (10-28, a hunch: the main thread waits on something queued behind a stream open):
+// the main thread never waits on an audio loader/opener/worker request itself (it queues them and polls; no audio thread
+// holds a lock across a read or an open), so that can only show as an FS wait (the same fs:USER session or card), a
+// lock or condition-variable wait (CondVar: the save writer's idle wait, the read-ahead), or a slow canary. For each
+// frame line and the sweep start, the frame's longest such wait is named (call, ms, caller address and object: map the
+// address with addr2line on the build's .elf) with every other named thread's last watchdog note at its start (the
+// loader's, opener's, decode thread's... current job).
+// Its code is too big for UNDERTALE o3DS's late code reserve, so it sits in ordinary text after
+// ctr_benchmark.o's: a probe build's later text moves (its timings are for this probe only). Its constants sit in
+// ordinary .rodata with it (round 6, argstage47 F3: DELTARUNE Old's late constants had 410 B left after
+// integrate21's merges, and the probe's 867 B no longer fit).
+#define BFP_LATE __attribute__((noinline, noclone, section(".text.bfprobe")))
+#define BFP_RO __attribute__((section(".rodata.bfprobe")))
+enum { BFP_CONSOLE, BFP_LOCK, BFP_EVENT, BFP_SLEEP, BFP_SYNC, BFP_FS, BFP_COND, BFP_KINDS };
+#define BFP_THREADS 16
+// One wait, with what the other named threads last noted when it began.
+typedef struct {
+    u64 ticks;
+    const char* what;
+    const char* mainPhase; // the main thread's watchdog phase (step, draw, audio update, room change...)
+    u32 caller, object, threads;
+    const char* names[BFP_THREADS];
+    const char* states[BFP_THREADS];
+} BfpWait;
+typedef struct { u64 ticks[BFP_KINDS]; u64 max[BFP_KINDS]; u32 count[BFP_KINDS]; BfpWait longest; } BfpSum;
+static struct {
+    BfpSum frame; // since the last benchfidBeginFrame (or the sweep start line)
+    u64 canaryBase, canaryConsole, consoleEnter, consoleLeave;
+    void* mainTls; // the main thread's TLS block
+    u32 lines, suppressed;
+    bool armed, reporting, starting;
+    char text[720];
+} bfp __attribute__((section(".data.late.zz_benchfix_probe"))) = {0};
+int32_t CtrWatchdog_bfpNotes(const char** names, const char** states, int32_t max); // ctr_watchdog.c, probe builds
+const char* CtrWatchdog_phase(void);
+// Every file opened on any thread (probe builds, from boot): its handle and the tail of its path, so a wait on a file
+// handle names the file (the cache file a shed closes, an audio group, a tile pack...). Ordinary BSS (probe builds only).
+#define BFP_FILES 96
+static struct { Handle handle; char name[44]; } bfpFiles[BFP_FILES];
+static u32 bfpFileNext;
+static const char bfpStartFormat[] BFP_RO =
+    "[bfprobe] sweep start frame %lu: bench call %.1f ms = before console %.1f + console wait %.1f + after %.1f; "
+    "canary us setup-best %.1f, at console %.1f, at end %.1f\n";
+static const char bfpWaitFormat[] BFP_RO =
+    "[bfprobe] %s %lu: fs %lu/%.1f/%.1f lock %lu/%.1f/%.1f console %lu/%.1f sleep %lu/%.1f/%.1f sync %lu/%.1f/%.1f "
+    "event %lu/%.1f/%.1f cond %lu/%.1f/%.1f (count/ms/max ms, main thread; %lu lines suppressed)\n";
+static const char bfpLongestFormat[] BFP_RO =
+    "[bfprobe] longest wait %s %lu: %s %.1f ms, called from %08lx, object %08lx%s%s, main thread in %s; other threads "
+    "at its start: %s\n";
+static const char bfpFileWord[] BFP_RO = " file ";
+static const char bfpThreadFormat[] BFP_RO = "%s%s=%s";
+static const char bfpSeparator[] BFP_RO = "; ";
+static const char bfpNone[] BFP_RO = "";
+static const char bfpConsoleName[] BFP_RO = "CtrLog_beginConsole";
+static const char bfpLightLockName[] BFP_RO = "LightLock_Lock";
+static const char bfpRecursiveLockName[] BFP_RO = "RecursiveLock_Lock";
+static const char bfpCondName[] BFP_RO = "CondVar_Wait";
+static const char bfpCondTimeoutName[] BFP_RO = "CondVar_WaitTimeout";
+static const char bfpStartName[] BFP_RO = "sweep start waits, frame";
+static const char bfpFrameName[] BFP_RO = "frame";
+
+// The thread test reads the TLS register only: threadGetCurrent would svcBreak on ctr_exit.c's guard, a thread made
+// with svcCreateThread (no libctru thread block), which sleeps through these wraps.
+static inline __attribute__((always_inline)) bool bfpOn(void) {
+    return bfp.armed && !bfp.reporting && getThreadLocalStorage() == bfp.mainTls;
+}
+
+static BFP_LATE u64 bfpAdd(int kind, u64 start) {
+    u64 d = svcGetSystemTick() - start;
+    bfp.frame.ticks[kind] += d;
+    bfp.frame.count[kind]++;
+    if (d > bfp.frame.max[kind]) bfp.frame.max[kind] = d;
+    return d;
+}
+
+// At a wait's start: what it is and what every other named thread last noted (pointers only).
+static BFP_LATE void bfpSnap(BfpWait* w, const char* what, const void* caller, const void* object) {
+    w->what = what;
+    w->mainPhase = CtrWatchdog_phase();
+    w->caller = (u32) caller;
+    w->object = (u32) object;
+    w->threads = (u32) CtrWatchdog_bfpNotes(w->names, w->states, BFP_THREADS);
+}
+
+// At its end: timed as kind, and kept if it is the frame's longest FS, lock, condition-variable or console wait.
+static BFP_LATE void bfpEnd(int kind, u64 start, BfpWait* w) {
+    u64 d = bfpAdd(kind, start);
+    if (d > bfp.frame.longest.ticks) {
+        w->ticks = d;
+        bfp.frame.longest = *w;
+    }
+}
+
+static BFP_LATE double bfpMs(u64 ticks) {
+    return (double) ticks / (SYSCLOCK_ARM11 / 1000.0);
+}
+
+// Any thread: a file was opened as handle h.
+static BFP_LATE void bfpFileOpened(Handle h, FS_Path path) {
+    u32 i = __atomic_fetch_add(&bfpFileNext, 1, __ATOMIC_RELAXED) % BFP_FILES;
+    char* d = bfpFiles[i].name;
+    const u32 cap = sizeof(bfpFiles[i].name) - 1;
+    u32 n = 0;
+    if (path.type == PATH_UTF16 && path.data != nullptr) {
+        const u16* s = (const u16*) path.data;
+        u32 chars = path.size / 2;
+        while (chars > 0 && s[chars - 1] == 0) chars--;
+        for (u32 k = chars > cap ? chars - cap : 0; k < chars; k++) d[n++] = s[k] < 0x80 ? (char) s[k] : '?';
+    } else if (path.type == PATH_ASCII && path.data != nullptr) {
+        const char* s = (const char*) path.data;
+        u32 chars = (u32) strnlen(s, path.size);
+        for (u32 k = chars > cap ? chars - cap : 0; k < chars; k++) d[n++] = s[k];
+    }
+    d[n] = '\0';
+    bfpFiles[i].handle = h;
+}
+
+// The newest file opened as handle h, or "".
+static BFP_LATE const char* bfpFileName(u32 h) {
+    if (h == 0) return bfpNone;
+    u32 next = bfpFileNext;
+    for (u32 k = 1; k <= BFP_FILES && k <= next; k++) {
+        u32 i = (next - k) % BFP_FILES;
+        if (bfpFiles[i].handle == h) return bfpFiles[i].name;
+    }
+    return bfpNone;
+}
+
+static BFP_LATE void bfpLongest(const char* name, unsigned long frame, const BfpWait* w) {
+    if (w->what == nullptr) return;
+    size_t n = 0;
+    bfp.text[0] = '\0';
+    for (u32 i = 0; i < w->threads && n + 1 < sizeof(bfp.text); i++) {
+        int k = snprintf(bfp.text + n, sizeof(bfp.text) - n, bfpThreadFormat, i > 0 ? bfpSeparator : bfpNone, w->names[i],
+                         w->states[i] != nullptr ? w->states[i] : bfpNone);
+        if (k < 0) break;
+        n += (size_t) k;
+    }
+    const char* file = bfpFileName(w->object);
+    bfp.reporting = true;
+    logInfo(bfpLongestFormat, name, frame, w->what, bfpMs(w->ticks), (unsigned long) w->caller, (unsigned long) w->object,
+            file[0] != '\0' ? bfpFileWord : bfpNone, file, w->mainPhase != nullptr ? w->mainPhase : bfpNone, bfp.text);
+    bfp.reporting = false;
+}
+
+static BFP_LATE u64 bfpCanary(void) {
+    u64 t = svcGetSystemTick();
+    for (volatile u32 i = 0; i < 4096; i++) {}
+    return svcGetSystemTick() - t;
+}
+
+static BFP_LATE void bfpWaits(const char* name, unsigned long frame, const BfpSum* s) {
+    bfp.reporting = true;
+    logInfo(bfpWaitFormat, name, frame,
+            (unsigned long) s->count[BFP_FS], bfpMs(s->ticks[BFP_FS]), bfpMs(s->max[BFP_FS]),
+            (unsigned long) s->count[BFP_LOCK], bfpMs(s->ticks[BFP_LOCK]), bfpMs(s->max[BFP_LOCK]),
+            (unsigned long) s->count[BFP_CONSOLE], bfpMs(s->ticks[BFP_CONSOLE]),
+            (unsigned long) s->count[BFP_SLEEP], bfpMs(s->ticks[BFP_SLEEP]), bfpMs(s->max[BFP_SLEEP]),
+            (unsigned long) s->count[BFP_SYNC], bfpMs(s->ticks[BFP_SYNC]), bfpMs(s->max[BFP_SYNC]),
+            (unsigned long) s->count[BFP_EVENT], bfpMs(s->ticks[BFP_EVENT]), bfpMs(s->max[BFP_EVENT]),
+            (unsigned long) s->count[BFP_COND], bfpMs(s->ticks[BFP_COND]), bfpMs(s->max[BFP_COND]),
+            (unsigned long) bfp.suppressed);
+    bfp.reporting = false;
+    bfpLongest(name, frame, &s->longest);
+}
+
+// Called by __wrap_benchfidBeginFrame before the bench's own frame call: the last frame's line, then arming.
+static BFP_LATE void bfpBefore(const Runner* runner) {
+    BfpSum last = bfp.frame;
+    memset(&bfp.frame, 0, sizeof(bfp.frame));
+    bfp.mainTls = getThreadLocalStorage();
+    if (bfp.armed && sweep.on && bench.phase == PHASE_MEASURE && runner != nullptr &&
+        (last.ticks[BFP_FS] >= SYSCLOCK_ARM11 / 500 || last.ticks[BFP_LOCK] >= SYSCLOCK_ARM11 / 500 ||
+         last.ticks[BFP_COND] >= SYSCLOCK_ARM11 / 500 || last.ticks[BFP_CONSOLE] >= SYSCLOCK_ARM11 / 1000)) {
+        if (bfp.lines < 400) {
+            bfp.lines++;
+            bfpWaits(bfpFrameName, (unsigned long) (runner->frameCount - 1), &last);
+        } else {
+            bfp.suppressed++;
+        }
+    }
+    bfp.armed = sweep.on && (bench.phase == PHASE_SETUP || bench.phase == PHASE_MEASURE);
+    bfp.starting = bfp.armed && bench.phase == PHASE_SETUP;
+    if (bfp.starting) {
+        u64 c = bfpCanary();
+        if (bfp.canaryBase == 0 || c < bfp.canaryBase) bfp.canaryBase = c;
+        bfp.consoleEnter = bfp.consoleLeave = bfp.canaryConsole = 0;
+    }
+}
+
+// After it: on the frame the sweep's window opened, the split of that call.
+static BFP_LATE void bfpAfter(const Runner* runner, u64 t0) {
+    if (!bfp.starting || bench.phase != PHASE_MEASURE || runner == nullptr) return;
+    u64 t1 = svcGetSystemTick();
+    u64 c1 = bfpCanary();
+    u64 enter = bfp.consoleEnter != 0 ? bfp.consoleEnter : t1, leave = bfp.consoleLeave != 0 ? bfp.consoleLeave : t1;
+    BfpSum s = bfp.frame;
+    memset(&bfp.frame, 0, sizeof(bfp.frame));
+    bfp.starting = false;
+    bfp.reporting = true;
+    logInfo(bfpStartFormat, (unsigned long) runner->frameCount, bfpMs(t1 - t0), bfpMs(enter - t0), bfpMs(leave - enter),
+            bfpMs(t1 - leave), bfpMs(bfp.canaryBase) * 1000.0, bfpMs(bfp.canaryConsole) * 1000.0, bfpMs(c1) * 1000.0);
+    bfp.reporting = false;
+    bfpWaits(bfpStartName, (unsigned long) runner->frameCount, &s);
+}
+
+void __real_CtrLog_beginConsole(void);
+BFP_LATE void __wrap_CtrLog_beginConsole(void) {
+    if (!bfpOn()) {
+        __real_CtrLog_beginConsole();
+        return;
+    }
+    bool first = bfp.starting && bfp.consoleEnter == 0;
+    if (first) bfp.canaryConsole = bfpCanary();
+    BfpWait w;
+    bfpSnap(&w, bfpConsoleName, __builtin_return_address(0), nullptr);
+    u64 t = svcGetSystemTick();
+    __real_CtrLog_beginConsole();
+    if (first) {
+        bfp.consoleEnter = t;
+        bfp.consoleLeave = svcGetSystemTick();
+    }
+    bfpEnd(BFP_CONSOLE, t, &w);
+}
+
+void __real_LightLock_Lock(LightLock* lock);
+BFP_LATE void __wrap_LightLock_Lock(LightLock* lock) {
+    if (!bfpOn()) {
+        __real_LightLock_Lock(lock);
+        return;
+    }
+    if (LightLock_TryLock(lock) == 0) return;
+    BfpWait w;
+    bfpSnap(&w, bfpLightLockName, __builtin_return_address(0), lock);
+    u64 t = svcGetSystemTick();
+    __real_LightLock_Lock(lock);
+    bfpEnd(BFP_LOCK, t, &w);
+}
+
+void __real_RecursiveLock_Lock(RecursiveLock* lock);
+BFP_LATE void __wrap_RecursiveLock_Lock(RecursiveLock* lock) {
+    if (!bfpOn()) {
+        __real_RecursiveLock_Lock(lock);
+        return;
+    }
+    if (RecursiveLock_TryLock(lock) == 0) return;
+    BfpWait w;
+    bfpSnap(&w, bfpRecursiveLockName, __builtin_return_address(0), lock);
+    u64 t = svcGetSystemTick();
+    __real_RecursiveLock_Lock(lock);
+    bfpEnd(BFP_LOCK, t, &w);
+}
+
+// A condition variable: the main thread waiting for a worker (the save writer's idle wait, the read-ahead).
+void __real_CondVar_Wait(CondVar* cv, LightLock* lock);
+BFP_LATE void __wrap_CondVar_Wait(CondVar* cv, LightLock* lock) {
+    if (!bfpOn()) {
+        __real_CondVar_Wait(cv, lock);
+        return;
+    }
+    BfpWait w;
+    bfpSnap(&w, bfpCondName, __builtin_return_address(0), cv);
+    u64 t = svcGetSystemTick();
+    __real_CondVar_Wait(cv, lock);
+    bfpEnd(BFP_COND, t, &w);
+}
+
+int __real_CondVar_WaitTimeout(CondVar* cv, LightLock* lock, s64 timeout);
+BFP_LATE int __wrap_CondVar_WaitTimeout(CondVar* cv, LightLock* lock, s64 timeout) {
+    if (!bfpOn()) return __real_CondVar_WaitTimeout(cv, lock, timeout);
+    BfpWait w;
+    bfpSnap(&w, bfpCondTimeoutName, __builtin_return_address(0), cv);
+    u64 t = svcGetSystemTick();
+    int r = __real_CondVar_WaitTimeout(cv, lock, timeout);
+    bfpEnd(BFP_COND, t, &w);
+    return r;
+}
+
+void __real_LightEvent_Wait(LightEvent* event);
+BFP_LATE void __wrap_LightEvent_Wait(LightEvent* event) {
+    if (!bfpOn()) {
+        __real_LightEvent_Wait(event);
+        return;
+    }
+    u64 t = svcGetSystemTick();
+    __real_LightEvent_Wait(event);
+    bfpAdd(BFP_EVENT, t);
+}
+
+int __real_LightEvent_WaitTimeout(LightEvent* event, s64 timeout);
+BFP_LATE int __wrap_LightEvent_WaitTimeout(LightEvent* event, s64 timeout) {
+    if (!bfpOn()) return __real_LightEvent_WaitTimeout(event, timeout);
+    u64 t = svcGetSystemTick();
+    int r = __real_LightEvent_WaitTimeout(event, timeout);
+    bfpAdd(BFP_EVENT, t);
+    return r;
+}
+
+void __real_svcSleepThread(s64 ns);
+BFP_LATE void __wrap_svcSleepThread(s64 ns) {
+    if (!bfpOn()) {
+        __real_svcSleepThread(ns);
+        return;
+    }
+    u64 t = svcGetSystemTick();
+    __real_svcSleepThread(ns);
+    bfpAdd(BFP_SLEEP, t);
+}
+
+Result __real_svcWaitSynchronization(Handle handle, s64 ns);
+BFP_LATE Result __wrap_svcWaitSynchronization(Handle handle, s64 ns) {
+    if (!bfpOn()) return __real_svcWaitSynchronization(handle, ns);
+    u64 t = svcGetSystemTick();
+    Result r = __real_svcWaitSynchronization(handle, ns);
+    bfpAdd(BFP_SYNC, t);
+    return r;
+}
+
+Result __real_svcWaitSynchronizationN(s32* out, const Handle* handles, s32 n, bool all, s64 ns);
+BFP_LATE Result __wrap_svcWaitSynchronizationN(s32* out, const Handle* handles, s32 n, bool all, s64 ns) {
+    if (!bfpOn()) return __real_svcWaitSynchronizationN(out, handles, n, all, ns);
+    u64 t = svcGetSystemTick();
+    Result r = __real_svcWaitSynchronizationN(out, handles, n, all, ns);
+    bfpAdd(BFP_SYNC, t);
+    return r;
+}
+
+// The SD card and RomFS calls (newlib's sdmc and romfs devices and the engine's own file code all end in these). The
+// object is the file or directory handle (0 for the FSUSER calls).
+#define BFP_FS_WRAP(name, params, args, object) \
+    static const char bfpName_##name[] BFP_RO = #name; \
+    Result __real_##name params; \
+    BFP_LATE Result __wrap_##name params { \
+        if (!bfpOn()) return __real_##name args; \
+        BfpWait w; \
+        bfpSnap(&w, bfpName_##name, __builtin_return_address(0), (const void*) (object)); \
+        u64 t = svcGetSystemTick(); \
+        Result r = __real_##name args; \
+        bfpEnd(BFP_FS, t, &w); \
+        return r; \
+    }
+// The two opens also note every thread's opened file (handle -> path tail), from boot.
+static const char bfpName_FSUSER_OpenFile[] BFP_RO = "FSUSER_OpenFile";
+Result __real_FSUSER_OpenFile(Handle* out, FS_Archive archive, FS_Path path, u32 flags, u32 attributes);
+BFP_LATE Result __wrap_FSUSER_OpenFile(Handle* out, FS_Archive archive, FS_Path path, u32 flags, u32 attributes) {
+    if (!bfpOn()) {
+        Result r = __real_FSUSER_OpenFile(out, archive, path, flags, attributes);
+        if (R_SUCCEEDED(r) && out != nullptr) bfpFileOpened(*out, path);
+        return r;
+    }
+    BfpWait w;
+    bfpSnap(&w, bfpName_FSUSER_OpenFile, __builtin_return_address(0), nullptr);
+    u64 t = svcGetSystemTick();
+    Result r = __real_FSUSER_OpenFile(out, archive, path, flags, attributes);
+    // A failed open (stat's probe of a missing path) is noted as handle ffffffff, the main thread's newest such.
+    w.object = R_SUCCEEDED(r) && out != nullptr ? (u32) *out : 0xFFFFFFFFu;
+    bfpFileOpened((Handle) w.object, path);
+    bfpEnd(BFP_FS, t, &w);
+    return r;
+}
+static const char bfpName_FSUSER_OpenFileDirectly[] BFP_RO = "FSUSER_OpenFileDirectly";
+Result __real_FSUSER_OpenFileDirectly(Handle* out, FS_ArchiveID id, FS_Path archivePath, FS_Path filePath, u32 flags,
+                                      u32 attributes);
+BFP_LATE Result __wrap_FSUSER_OpenFileDirectly(Handle* out, FS_ArchiveID id, FS_Path archivePath, FS_Path filePath,
+                                               u32 flags, u32 attributes) {
+    if (!bfpOn()) {
+        Result r = __real_FSUSER_OpenFileDirectly(out, id, archivePath, filePath, flags, attributes);
+        if (R_SUCCEEDED(r) && out != nullptr) bfpFileOpened(*out, filePath);
+        return r;
+    }
+    BfpWait w;
+    bfpSnap(&w, bfpName_FSUSER_OpenFileDirectly, __builtin_return_address(0), nullptr);
+    u64 t = svcGetSystemTick();
+    Result r = __real_FSUSER_OpenFileDirectly(out, id, archivePath, filePath, flags, attributes);
+    w.object = R_SUCCEEDED(r) && out != nullptr ? (u32) *out : 0xFFFFFFFFu;
+    bfpFileOpened((Handle) w.object, filePath);
+    bfpEnd(BFP_FS, t, &w);
+    return r;
+}
+static const char bfpName_FSUSER_OpenDirectory[] BFP_RO = "FSUSER_OpenDirectory";
+Result __real_FSUSER_OpenDirectory(Handle* out, FS_Archive archive, FS_Path path);
+BFP_LATE Result __wrap_FSUSER_OpenDirectory(Handle* out, FS_Archive archive, FS_Path path) {
+    if (!bfpOn()) return __real_FSUSER_OpenDirectory(out, archive, path);
+    BfpWait w;
+    bfpSnap(&w, bfpName_FSUSER_OpenDirectory, __builtin_return_address(0), nullptr);
+    u64 t = svcGetSystemTick();
+    Result r = __real_FSUSER_OpenDirectory(out, archive, path);
+    w.object = R_SUCCEEDED(r) && out != nullptr ? (u32) *out : 0xFFFFFFFFu;
+    bfpFileOpened((Handle) w.object, path);
+    bfpEnd(BFP_FS, t, &w);
+    return r;
+}
+BFP_FS_WRAP(FSUSER_CreateDirectory, (FS_Archive archive, FS_Path path, u32 attributes), (archive, path, attributes), 0)
+BFP_FS_WRAP(FSUSER_DeleteFile, (FS_Archive archive, FS_Path path), (archive, path), 0)
+BFP_FS_WRAP(FSUSER_RenameFile, (FS_Archive a, FS_Path p, FS_Archive b, FS_Path q), (a, p, b, q), 0)
+BFP_FS_WRAP(FSFILE_Read, (Handle h, u32* got, u64 offset, void* buffer, u32 size), (h, got, offset, buffer, size), h)
+BFP_FS_WRAP(FSFILE_Write, (Handle h, u32* put, u64 offset, const void* buffer, u32 size, u32 flags),
+            (h, put, offset, buffer, size, flags), h)
+BFP_FS_WRAP(FSFILE_GetSize, (Handle h, u64* size), (h, size), h)
+BFP_FS_WRAP(FSFILE_Flush, (Handle h), (h), h)
+BFP_FS_WRAP(FSFILE_Close, (Handle h), (h), h)
+BFP_FS_WRAP(FSDIR_Read, (Handle h, u32* got, u32 count, FS_DirectoryEntry* entries), (h, got, count, entries), h)
+#endif
+
+// benchfix (2026-10-28): a tour room whose warp frame alone outlasts the 1 s warm-up (a cold first room, such as
+// c0r145's 1455.6 ms and c0r112's 1286.3 ms on the New 3DS) opened its window on the very next frame, before the flip
+// that ends the old room's hold: room presentation 1 counted that hold (shown_3vb=1, shown_max_vb=89) and loadMs
+// missed the load. Its warm-up now starts after the warp, as it already does for a room whose warp is shorter, so
+// those rows change and no other does. Linked as --wrap=benchfidBeginFrame (z_utpolish_bench.c's one call), in a
+// section of its own after all other late text, so nothing above moves.
+//
+// benchfix (2026-10-28): the sweep-start stall (0.3-0.9 s on every console between "[prewindow] <sweep>" and
+// "Sweep: ... begins", Azahar ~20 ms). sweepBegin -> sweepParseRecipe asks chapterAvailable(1), a stat of
+// "<gameDir>/chapter1_windows/data.win" on the SD card (in UNDERTALE a path that never exists: libctru's archive_stat
+// then makes an FSUSER_OpenFile and an FSUSER_OpenDirectory), in the very frame the battle music's stream opens on the
+// opener thread, so the main thread's calls wait behind the stream's card reads (bfprobe: FSUSER_OpenDirectory from
+// archive_stat, the sweep start's longest wait). The answer is now taken once, on the bench's first frame (before its
+// first scene's window), and while a bench runs a stat of that exact path answers from it (the file's presence does
+// not change in a run). Linked as --wrap=_stat_r (newlib's stat()'s one call), so only that call target moves.
+static struct {
+    bool filled;
+    int result, error;
+    struct stat st;
+    char path[128];
+} bfStat __attribute__((section(".data.benchfix_late"))) = {0};
+
+// In .text.benchfix_stat_late, after __wrap_benchfidBeginFrame, so its place holds (CtrBench_beginFrameTimed's call stays).
+static void bfStatFill(void);
+// In .text.benchfix_lines_late, after those.
+static void bfWindowLines(double frameMs);
+static void bfHeldAfter(void);
+
+// Round 6 (10-28, argstage47 F1): these wraps run in every player's game, where no bench is active, so each now
+// tests the bench phase first (one load and a branch) and otherwise goes straight to the real call. The bench's own
+// work moved to .text.benchfix_r6_late (the end of this file; late_reserve.ld, last), and each wrap keeps its stage
+// slot (cand24, 353db7f54): its body is padded to the old size with a fill reached only by a phase that never occurs
+// (BF_SLOT_PHASE), so no late code after it moves (check_layout.py --full against the stage: 0 failures).
+#define BF_SLOT_PHASE 255
+#define BF_SLOT_FILL(bytes) do { __asm__ volatile(".space " bytes); __builtin_unreachable(); } while (0)
+#ifdef CTRPORT_BENCHFIX_DRAWWAIT
+#define BF_FILL_BEGIN "192" // the stage body: 228 B with the held lines' bfHeldAfter call
+#else
+#define BF_FILL_BEGIN "180" // 216 B (DELTARUNE Old)
+#endif
+#define BF_FILL_STAT "112" // 148 B
+#define BF_FILL_FRAME "104" // bfBeginFrameBench without the held lines: 236 B
+CtrBenchFrame bfBeginFrameBench(u32 down, double frameMs);
+int bfStatAnswer(struct _reent* r, const char* path, struct stat* st);
+
+CtrBenchFrame __real_benchfidBeginFrame(u32 down, double frameMs);
+__attribute__((noinline, noclone, section(".text.benchfix_late")))
+CtrBenchFrame __wrap_benchfidBeginFrame(u32 down, double frameMs) {
+    if (__builtin_expect(bench.phase == PHASE_IDLE, 1)) return __real_benchfidBeginFrame(down, frameMs);
+    if (__builtin_expect(bench.phase != BF_SLOT_PHASE, 1)) return bfBeginFrameBench(down, frameMs);
+    BF_SLOT_FILL(BF_FILL_BEGIN);
+}
+
+int __real__stat_r(struct _reent* r, const char* path, struct stat* st);
+__attribute__((noinline, noclone, section(".text.benchfix_stat_late")))
+int __wrap__stat_r(struct _reent* r, const char* path, struct stat* st) {
+    if (__builtin_expect(bench.phase == PHASE_IDLE, 1)) return __real__stat_r(r, path, st);
+    if (__builtin_expect(bench.phase != BF_SLOT_PHASE, 1)) return bfStatAnswer(r, path, st);
+    BF_SLOT_FILL(BF_FILL_STAT);
+}
+
+// The bench's first frame: chapterAvailable(1)'s path, asked once.
+__attribute__((noinline, noclone, section(".text.benchfix_stat_late")))
+static void bfStatFill(void) {
+    if (bfStat.filled || bench.session.gameDir == nullptr) return;
+    int n = snprintf(bfStat.path, sizeof(bfStat.path), "%s/chapter%ld_windows/data.win", bench.session.gameDir, 1L);
+    if (n <= 0 || n >= (int) sizeof(bfStat.path)) return;
+    struct _reent* r = _REENT;
+    int saved = r->_errno;
+    bfStat.result = __real__stat_r(r, bfStat.path, &bfStat.st);
+    bfStat.error = r->_errno;
+    r->_errno = saved;
+    bfStat.filled = true;
+}
+
+// benchfix (2026-10-28, gap 1): utpolish's "Frame over 33.4 ms" lines (z_utpolish_bench.c) stop after
+// SLOW_ROOM_LINES (16) a room visit, and its count starts again only at a room change. A scene whose room intro
+// already spent them (all four drsweep22 Knight logs: 16 lines by frame 60-63, before the window) logged no per-frame
+// line inside its measured window. While the bench measures, each frame now starts with utpolish's count at zero, so
+// every frame over 33.4 ms in a window gets its line, up to BF_WINDOW_LINES a room visit in that window (20 s of
+// frames over 33.4 ms is at most 599; a sweep's window spans its rows, so the budget is per room visit). After the
+// window, utpolish's own count comes back as it was, so lines outside windows are as before. The line is utpolish's
+// (same text, same place: CtrBench_beginFrameTimed, right after this wrapper returns), queued to the log writer as
+// before. This call runs first in CtrBench_beginFrameTimed, so a frame whose interval arrives while the phase is
+// still MEASURE (the window's frames, its last one included) is in the window.
+#include "z_utpolish_bench.h"
+#define BF_WINDOW_LINES 600
+static struct {
+    bool on;
+    int32_t savedRoom, savedLines; // utpolish's count when the window began
+    int32_t start, room; // the window (its first frame) and room visit the budget is for
+    uint32_t lines;
+} bfWin __attribute__((no_reorder, section(".data.benchfix_lines_late"))) = {0};
+
+__attribute__((noinline, noclone, section(".text.benchfix_lines_late")))
+static void bfWindowLines(double frameMs) {
+    if (bench.phase != PHASE_MEASURE) {
+        if (bfWin.on) {
+            bfWin.on = false;
+            utSlowFrame.linesRoom = bfWin.savedRoom;
+            utSlowFrame.lines = bfWin.savedLines;
+        }
+        return;
+    }
+    if (!bfWin.on) {
+        bfWin.on = true;
+        bfWin.savedRoom = utSlowFrame.linesRoom;
+        bfWin.savedLines = utSlowFrame.lines;
+        bfWin.start = -1;
+    }
+    if (bfWin.start != bench.measureStartFrame || bfWin.room != utSlowFrame.room) {
+        bfWin.start = bench.measureStartFrame;
+        bfWin.room = utSlowFrame.room;
+        bfWin.lines = 0;
+    }
+    utSlowFrame.linesRoom = utSlowFrame.room;
+    if (bfWin.lines >= BF_WINDOW_LINES) {
+        utSlowFrame.lines = INT32_MAX; // spent: utpolish logs no more in this visit's window
+        return;
+    }
+    // utpolish's test for a line (its runner, renderer and CtrBench_running() checks hold whenever the phase is MEASURE).
+    if (utSlowFrame.valid && frameMs > 33.4) bfWin.lines++;
+    utSlowFrame.lines = 0;
+}
+
+// benchfix (2026-10-28, gaps 2 and 3): the held_frame lines' gpu and gpuwait (ctr_benchheld.inc, stallfix,
+// which must be included above this point: bfHeldAfter reads its benchHeld).
+// gpu: heldRead gives a frame its GPU time one read later (as frame F begins, the GPU's last finished frame is taken
+// to be F-2), but a hold whose late flip is frame F-1's is listed in the read where F-1's entry is made, before its
+// time is known, and kept 0.0 (302 of 340 movebench Knight lines). After each held read, a listed frame F-2 now takes
+// the time its ring entry just got.
+// gpuwait: CtrGpu_waitTotalTicks counts CtrGpu_waitIdle only; CtrGpu_waitDraws (the spare-texture fence,
+// ctr_renderer.c initLinearTextureForCpu) slept without adding to it. Its waits (--wrap=CtrGpu_waitDraws, the one
+// call) are now added to the gpuwait of the frame they fell in, in the ring and in a listed frame. CtrGpu_waitTotalTicks
+// is unchanged, so the result line's gpu wait and the pacer's "waited" keep their meaning.
+// Both run after the held read, in bfHeldAfter after the bench's frame call, and (round 6, argstage47 F2) also right
+// before heldReport: the call that closes a window reads its last frame and prints the held lines inside the same
+// bench call (endScene -> computeResult -> CtrPacer_logLevels), so the after-call pass came too late for that read
+// (its frame B-1 kept gpu=0.0 and frame B lacked its waitDraws time). The wrap is on wherever the held lines are
+// (CMakeLists.txt); without them only the wrap's counter runs.
+#ifdef CTRPORT_BENCHFIX_DRAWWAIT
+static uint32_t bfDrawWait __attribute__((no_reorder, section(".data.benchfix_lines_late"))) = 0; // ticks (low word)
+
+#define BF_FILL_DRAWS "12" // 48 B
+void __real_CtrGpu_waitDraws(void);
+void __wrap_CtrGpu_waitDraws(void);
+void bfDrawWaitTimed(void);
+__attribute__((noinline, noclone, section(".text.benchfix_lines_late")))
+void __wrap_CtrGpu_waitDraws(void) {
+    if (__builtin_expect(bench.phase == PHASE_IDLE, 1)) {
+        __real_CtrGpu_waitDraws();
+        return;
+    }
+    if (__builtin_expect(bench.phase != BF_SLOT_PHASE, 1)) {
+        bfDrawWaitTimed();
+        return;
+    }
+    BF_SLOT_FILL(BF_FILL_DRAWS);
+}
+#endif
+
+#if defined(CTRPORT_BENCH_HELD) && defined(CTRPORT_BENCHFIX_DRAWWAIT)
+static uint32_t bfDrawWaitSeen __attribute__((no_reorder, section(".data.benchfix_lines_late"))) = 0;
+
+__attribute__((noinline, noclone, section(".text.benchfix_lines_late")))
+static void bfHeldAfter(void) {
+    uint32_t drawWait = bfDrawWait - bfDrawWaitSeen; // since the last frame's begin: the frame just ended (F-1)
+    bfDrawWaitSeen = bfDrawWait;
+    const Runner* runner = bench.session.runner;
+    if (runner == nullptr || !benchHeld.open || !benchHeld.started) return;
+    uint32_t now = (uint32_t) runner->frameCount;
+    BenchHeld* f = &benchHeld.ring[(now - 1) & 3];
+    // Only after a held read in this call (it made frame F-1's entry).
+    if (f->frame != now - 1 || now < 3) return;
+    float ms = (float) drawWait * (float) (1.0 / CPU_TICKS_PER_MSEC);
+    f->t[4] += ms;
+    const BenchHeld* g = &benchHeld.ring[(now - 2) & 3];
+    for (uint32_t i = benchHeld.listed; i > 0; i--) {
+        BenchHeld* r = &benchHeld.list[i - 1];
+        if (r->frame + 3 < now) break;
+        if (r->frame == now - 1) r->t[4] += ms;
+        else if (r->frame == now - 2 && g->frame == now - 2) r->t[3] = g->t[3];
+    }
+}
+#else
+static void bfHeldAfter(void) {
+}
+#endif
+
+// ===== benchfix round 6 (10-28): .text.benchfix_r6_late and .data.benchfix_r6_late (late_reserve.ld, last).
+// no_reorder (round 7): kept in source order, their cand24 order, whatever calls them (bfWin, bfDrawWait,
+// bfDrawWaitSeen and bfHeldSnap too: GCC emits statics in first-use order otherwise, and round 7 swapped two).
+#define BF_R6 __attribute__((noinline, noclone, no_reorder, optimize("Os"), section(".text.benchfix_r6_late")))
+
+// c0r148 (round 6): a hold before the window. The window's first held read sees the flips still pending at its
+// start; a late one is a frame from before the window (c0r148 o3ds: held f987 for window 988-1287,
+// integ24-o3c-uthot-3B), and both the held lines and the presentation counts (shown_3vb, shown_max_vb, which the
+// boards judge) took it against the scene. Frames before the window's first measured frame never count: after the
+// bench's frame call, a hold heldAdd listed in it for such a frame (play or black; a hidden hold is presentation's own
+// case) leaves the list, its class count, and the visit's presentation counts it went into (a snapshot of the visit
+// from before the call restores shown_max_vb). Scenes with no such hold are unchanged. Same build condition as the
+// held lines.
+#if defined(CTRPORT_BENCH_HELD) && defined(CTRPORT_BENCHFIX_DRAWWAIT)
+static struct {
+    bool on;
+    uint16_t listed;
+    uint32_t visit;
+    int32_t start;
+    BenchShownVisit v;
+} bfHeldSnap __attribute__((no_reorder, section(".data.benchfix_r6_late"))) = {0};
+
+// Round 7 (argbenchr6 M1-M4): the snapshot and the boundary are bfHeldBefore7 and bfHeldBoundary7 (the end of this
+// file). These keep their round 6 slots (cand24): padded to the old size with a fill reached only by a phase that never
+// occurs, so no late code after them moves.
+static void bfHeldBefore7(void);
+static void bfHeldBoundary7(void);
+#define BF_FILL_BEFORE "152"     // 176 B
+#define BF_FILL_BOUNDARY "524" // 548 B
+BF_R6 static void bfHeldBefore(void) {
+    if (__builtin_expect(bench.phase != BF_SLOT_PHASE, 1)) {
+        bfHeldBefore7();
+        return;
+    }
+    BF_SLOT_FILL(BF_FILL_BEFORE);
+}
+
+BF_R6 static void bfHeldBoundary(void) {
+    if (__builtin_expect(bench.phase != BF_SLOT_PHASE, 1)) {
+        bfHeldBoundary7();
+        return;
+    }
+    BF_SLOT_FILL(BF_FILL_BOUNDARY);
+}
+
+// ctr_benchheld.inc's logLevels wrap, at a scene's result: the window's last read completed, then the held lines.
+BF_R6 static void bfHeldReport(const char* id) {
+    bfHeldAfter();
+    heldReport(id);
+}
+#else
+// Without the held lines (DELTARUNE Old): the tour warm-up's restart alone (bfTourBefore, the end of this file).
+static void bfTourBefore(void);
+static inline void bfHeldBefore(void) {
+    bfTourBefore();
+}
+static inline void bfHeldBoundary(void) {
+}
+#ifdef CTRPORT_BENCH_HELD
+BF_R6 static void bfHeldReport(const char* id) {
+    heldReport(id);
+}
+#endif
+#endif
+
+// The bench's frame work (the frame wrap's body until round 6), when a bench is active.
+BF_R6 CtrBenchFrame bfBeginFrameBench(u32 down, double frameMs) {
+    const Runner* runner = bench.session.runner;
+    if (!bfStat.filled && bench.phase != PHASE_PICKER) bfStatFill();
+    bfWindowLines(frameMs);
+#if defined(CTRPORT_BENCH_HELD) && defined(CTRPORT_BENCHFIX_DRAWWAIT)
+    if (tour.on && bench.phase == PHASE_WARMUP && runner != nullptr && runner->frameCount == bench.readyFrame + 1 &&
+        nowNanos() - bench.phaseStart >= (uint64_t) (TOUR_WARMUP_SECONDS * 1e9)) {
+        bench.phaseStart = nowNanos();
+    }
+#else
+    // Without the held lines (DELTARUNE Old), bfHeldBefore's bfTourBefore restarts the warm-up at the frame after
+    // ready, this test's case among them. The fill (a phase that never occurs) keeps this function's cand24 size,
+    // 236 B, so no late code after it moves.
+    (void) runner;
+    if (__builtin_expect(bench.phase == BF_SLOT_PHASE, 0)) BF_SLOT_FILL(BF_FILL_FRAME);
+#endif
+    bfHeldBefore();
+#ifdef CTRPORT_BENCHFIX_PROBE
+    bfpBefore(runner);
+    u64 t0 = svcGetSystemTick();
+    CtrBenchFrame result = __real_benchfidBeginFrame(down, frameMs);
+    bfpAfter(runner, t0);
+#else
+    CtrBenchFrame result = __real_benchfidBeginFrame(down, frameMs);
+#endif
+    bfHeldBoundary();
+    bfHeldAfter();
+    // The bench ended in this call: what the next calls (idle, the wrap's first test) would have done first.
+    if (bench.phase == PHASE_IDLE) {
+        bfWindowLines(frameMs);
+#ifdef CTRPORT_BENCHFIX_PROBE
+        bfpBefore(runner);
+#endif
+    }
+    return result;
+}
+
+// The stat wrap's answer (its body until round 6), when a bench is active.
+BF_R6 int bfStatAnswer(struct _reent* r, const char* path, struct stat* st) {
+    if (bfStat.filled && bench.phase != PHASE_PICKER && strcmp(path, bfStat.path) == 0) {
+        *st = bfStat.st;
+        if (bfStat.result != 0) r->_errno = bfStat.error;
+        return bfStat.result;
+    }
+    return __real__stat_r(r, path, st);
+}
+
+#ifdef CTRPORT_BENCHFIX_DRAWWAIT
+// The fence wrap's timing (its body until round 6), when a bench is active.
+BF_R6 void bfDrawWaitTimed(void) {
+    uint32_t start = (uint32_t) svcGetSystemTick();
+    __real_CtrGpu_waitDraws();
+    bfDrawWait += (uint32_t) svcGetSystemTick() - start;
+}
+#endif
+#undef BF_R6
+
+// ===== benchfix round 7 (10-28, argbenchr6 M1-M4): .text.benchfix_r7_late and .bss.benchfix_r7_late
+// (late_reserve.ld, last). The held lines' window boundary, as round 6's with four edge cases fixed (bench only):
+// - M1: the window's first frame S had no ring entry (the read that opens the window sets no time baselines), so a
+//   hold that S's own slowness caused, seen at read S+1, went to frame S-1 and left as a hold before the window. The
+//   call that opens the window now sets the baselines the next read takes its times from: frame S is recorded.
+// - M2: a room change in frame S: round 6 skipped the boundary when the call opened a new room visit, but the read
+//   (before benchRoomsVisit) always adds to the snapshot's visit, so the boundary now runs whatever the call did after.
+// - M3: a window that closes in the call after its first read reports inside that call: the logLevels wrap
+//   (ctr_benchheld.inc) runs the boundary before the report.
+// - M4: a same-room restart (a restart of the room, or a goto to the room it is in) opens no room visit, so heldAdd took the
+//   visit's first frame for the room's start: the hidden load's hold went to frame first-1 with no times (the
+//   class=hidden frame=S-1 lines of integ24-o3-utcv-2B and integ24-o3-utnx-2B), and the room's first 3 frames after
+//   it counted as play. A room change seen as a call begins marks that frame as the room's start; holds listed after
+//   it are classed as heldAdd classes a new visit's start (hidden or entry, the same rules and times).
+// Rev 2 (argbenchr7, 10-28):
+// - F1.1: the call that opens the window also records frame S-1's interval in the ring (a read in the window would
+//   have), so the read at S+1 weighs S against S-1 as heldAdd does everywhere else; with S-1's slot empty, any S over
+//   a slot took S-1's hold (a hold from before the window kept as play). And a frame that changed room is never shown
+//   (main.c skips its present): a hold heldAdd gave it (not the hidden one) is the frame before's.
+// - F1.2: a window's start clears the room start (DELTARUNE starts frameCount again each scene, so an earlier scene's
+//   restart could match a later window's frames and class its play holds entry).
+// - F1.4: holds past HELD_MAX are only counted; the boundary now classes them too (their frames are heldAdd's, from
+//   the ring), so the counts the board judges get the same classes as the lines.
+// Rev 3 (argbenchr7b, 10-28):
+// - R7B-1.1, R7B-1.2: the window's flip baseline is read as frame S's call begins. A frame's flip normally comes
+//   between its own call and the next one, so frame S-1's is already in the baseline; when no flip came since S-1's
+//   call began, S-1's is still to come (its GPU work ran past S's slot start), or S-1 changed room outside the window
+//   (no hiddenPending outside PHASE_MEASURE) and was never shown. Room changed between the two calls: the window's
+//   first flip ends that hidden load (benchshownRead's skipNext, as a room change in the window sets it: hidden at
+//   S-1, or entry at S when S took over 2 vblanks of Step + Draw). Same room: the first hold read after the window
+//   opens, if that read is the first to see a flip, is S-1's and leaves as a hold before the window (with its
+//   presentation counts), whatever the intervals say. Not seen: S-1's flip pending while S-2's also came after
+//   S-1's call began (two late frames in a row before the window): S-1's hold is then classed as before.
+// - R7B-1.3: the room start before the latest is kept too: a hold of a frame before the latest start (read up to two
+//   calls later, as heldAdd reads them) is classed from the start it came after, and the hold that ends a hidden
+//   load is classed from its own load's start when another room change came before it was read.
+// - R7B-2.1: holds only counted (past HELD_MAX) of a frame before the window leave the counts and cut as the listed
+//   ones leave. Their presentation counts stay (the read does not say which flip was theirs); a list full in the
+//   window's first reads takes 25 holds of 3+ vblanks in one read, which 1 flip a vblank cannot give.
+// - The tour's warm-up (argdtm F8): a tour room's warm-up starts again as the first frame presented after its
+//   room change begins (the frame after ready, or a later room change in the warm-up's first BF_TOUR_REDIRECT
+//   frames: a room that warps on), after the hidden load and the rooms.dtm write of the change frame. Before, it
+//   started on the change frame itself, and from round 6 again on the frame after only when the change frame alone
+//   had run out the warm-up (DELTARUNE Old, without the held lines, gets the same restart from bfTourBefore below).
+#if defined(CTRPORT_BENCH_HELD) && defined(CTRPORT_BENCHFIX_DRAWWAIT)
+#define BF_R7 __attribute__((noinline, noclone, no_reorder, optimize("Os"), section(".text.benchfix_r7_late")))
+#define BF_HELD_SLOT 33.4f // ctr_benchheld.inc's HELD_SLOT
+#define BF_TOUR_REDIRECT 90 // frames after ready in which a tour room's room change starts its warm-up again
+static struct {
+    bool hidden;        // the call's read ends a hidden load's hold (benchshownRead's skipNext as the call began)
+    bool change;        // the frame before the call changed room (it was not shown)
+    uint16_t counts[4]; // benchHeld.counts as the call began
+    int32_t restartIn;  // the window (its first frame) the room start below is in; -1: none in this window
+    uint32_t restart;   // the frame a room change last made a room's first
+    bool pending;       // rev 3: the window's first hold is frame S-1's (no flip came between S-1's call and S's)
+    int32_t restartPrevIn; // rev 3: the room start before restart, and its window
+    uint32_t restartPrev;
+    uint32_t openSum;   // rev 3: the flip baseline (vblanks) the window opened with
+} bfHeld7 __attribute__((no_reorder, section(".bss.benchfix_r7_late")));
+// Rev 3: the flips' vblank total and the room as each bench call began (any phase): this call's and the one before's.
+static struct {
+    uint32_t sum[2];
+    int32_t room[2];
+} bfHeldSeen __attribute__((no_reorder, section(".bss.benchfix_r7_late")));
+
+BF_R7 static void bfHeldBefore7(void) {
+    const Runner* runner = bench.session.runner;
+    CtrFlipStats t;
+    __real_CtrPacer_getFlipTotals(&t); // the pacer's totals, not the held read's wrap
+    bfHeldSeen.sum[0] = bfHeldSeen.sum[1];
+    bfHeldSeen.sum[1] = (uint32_t) t.sum;
+    bfHeldSeen.room[0] = bfHeldSeen.room[1];
+    bfHeldSeen.room[1] = runner != nullptr ? runner->currentRoomIndex : -1;
+    if (tour.on && bench.phase == PHASE_WARMUP && runner != nullptr &&
+        (runner->frameCount == bench.readyFrame + 1 ||
+         (bfHeldSeen.room[1] != bfHeldSeen.room[0] && runner->frameCount > bench.readyFrame &&
+          runner->frameCount - bench.readyFrame <= BF_TOUR_REDIRECT))) {
+        bench.phaseStart = nowNanos();
+    }
+    bfHeldSnap.on = bench.phase == PHASE_MEASURE && benchHeld.open && benchRooms.count > 0 && !benchRooms.overflow;
+    if (!bfHeldSnap.on) return;
+    bfHeldSnap.listed = benchHeld.listed;
+    bfHeldSnap.visit = benchRooms.count - 1;
+    bfHeldSnap.start = bench.measureStartFrame;
+    bfHeldSnap.v = benchfidShown.visits[bfHeldSnap.visit];
+    bfHeld7.hidden = benchfidShown.skipNext;
+    bfHeld7.change = benchRooms.hiddenPending;
+    memcpy(bfHeld7.counts, benchHeld.counts, sizeof(bfHeld7.counts));
+    // The frame before changed room (CtrBench_handleRoomChange): this frame is the room's first, same room or not.
+    if (benchRooms.hiddenPending) {
+        bfHeld7.restartPrevIn = bfHeld7.restartIn;
+        bfHeld7.restartPrev = bfHeld7.restart;
+        bfHeld7.restartIn = bench.measureStartFrame;
+        bfHeld7.restart = (uint32_t) runner->frameCount;
+    }
+}
+
+// A listed hold given another frame and class: that frame's ring times if the ring has it (as heldAdd copies them).
+BF_R7 static void bfHeldMove(BenchHeld* r, uint32_t want, uint8_t cls) {
+    benchHeld.counts[r->cls]--;
+    benchHeld.counts[cls]++;
+    uint8_t vb = r->vb, visit = r->visit;
+    *r = benchHeld.ring[want & 3];
+    if (r->frame != want) {
+        memset(r, 0, sizeof(*r));
+        r->frame = want;
+    }
+    r->vb = vb;
+    r->cls = cls;
+    r->visit = visit;
+}
+
+// A room start's class for the hold that ends its hidden load (heldAdd's rule): entry when the room's first frame
+// (start) took over 2 vblanks of Step + Draw, else hidden.
+BF_R7 static bool bfHeldSlowStart(uint32_t start) {
+    const BenchHeld* e = &benchHeld.ring[start & 3];
+    return e->frame == start && e->t[1] + e->t[2] > BF_HELD_SLOT;
+}
+
+BF_R7 static void bfHeldBoundary7(void) {
+    Runner* runner = bench.session.runner;
+    // M1: the call that opened the window (its read cleared benchHeld): heldRead's baselines, so that the next read
+    // records frame S, and (F1.1) frame S-1's interval, as the read would have recorded it. F1.2: no room start yet.
+    if (benchHeld.open && !benchHeld.started && bench.phase == PHASE_MEASURE && runner != nullptr &&
+        runner->frameCount == bench.measureStartFrame) {
+        memset(&bfHeld7, 0, sizeof(bfHeld7));
+        bfHeld7.restartIn = bfHeld7.restartPrevIn = -1;
+        if (benchRooms.active && !sweep.on) {
+            benchHeld.started = true;
+            benchHeld.wait = (uint32_t) CtrGpu_waitTotalTicks();
+            benchHeld.snd = runner->audioSystem != nullptr ? (uint32_t) CtrAudioSystem_heldLoadTicks(runner->audioSystem) : 0;
+            benchHeld.texMs = CtrRenderer_getStats(bench.session.renderer).textureLoadMs;
+            BenchHeld* p = &benchHeld.ring[(uint32_t) (bench.measureStartFrame - 1) & 3];
+            p->frame = (uint32_t) (bench.measureStartFrame - 1);
+            p->t[0] = (float) runner->deltaTime * 0.001f;
+            // Rev 3 (R7B-1.1, R7B-1.2): no flip since frame S-1's call began: S-1's flip is still to come, or S-1
+            // changed room and was never shown.
+            if (benchfidShown.lastSum == bfHeldSeen.sum[0]) {
+                if (bfHeldSeen.room[1] != bfHeldSeen.room[0]) benchfidShown.skipNext = true;
+                else bfHeld7.pending = true;
+            }
+            bfHeld7.openSum = benchfidShown.lastSum;
+        }
+    }
+    if (!bfHeldSnap.on) return;
+    bfHeldSnap.on = false;
+    // Rev 3: the pending S-1 hold is the first read's that sees a flip, or none.
+    bool pend = bfHeld7.pending;
+    if (pend && benchfidShown.lastSum != bfHeld7.openSum) bfHeld7.pending = false;
+    // The same window (M2: whichever room visit the call ends in), and a call that added holds (F1.4: listed or not).
+    if (!benchHeld.open || bench.phase != PHASE_MEASURE || bench.measureStartFrame != bfHeldSnap.start) return;
+    uint16_t more[4]; // the call's holds by class, then less the listed ones: those past HELD_MAX
+    uint32_t added = 0;
+    for (uint32_t c = 0; c < 4; c++) {
+        if (benchHeld.counts[c] < bfHeld7.counts[c]) return;
+        more[c] = (uint16_t) (benchHeld.counts[c] - bfHeld7.counts[c]);
+        added += more[c];
+    }
+    if (added == 0) return;
+    for (uint32_t i = bfHeldSnap.listed; i < benchHeld.listed; i++)
+        if (more[benchHeld.list[i].cls] > 0) more[benchHeld.list[i].cls]--;
+    uint32_t now = (uint32_t) runner->frameCount, visit = bfHeldSnap.visit;
+    uint32_t first = (uint32_t) benchRooms.visits[visit].firstFrame;
+    // heldAdd's frame for the call's holds that are not the hidden one (the same for each: from the ring).
+    const BenchHeld* f2 = &benchHeld.ring[(now - 2) & 3];
+    const BenchHeld* f1 = &benchHeld.ring[(now - 1) & 3];
+    uint32_t want = now - 2;
+    if (f1->frame == now - 1 && f1->t[0] > BF_HELD_SLOT + 0.5f && (f2->frame != now - 2 || f1->t[0] > f2->t[0])) want = now - 1;
+    // F1.1: the frame before changed room, so was never shown: the flip read now is the frame before it's.
+    uint32_t to = bfHeld7.change && want == now - 1 ? now - 2 : want;
+    // M4: a room start after the visit's first frame (a same-room restart): heldAdd's classes from that start. R7B-1.3:
+    // the start the frame came after (a frame before the latest start: the one before); the hidden load's hold: its
+    // own load's start (the one before when this call saw another room change).
+    uint32_t start = bfHeld7.restart, hstart = bfHeld7.change ? bfHeld7.restartPrev : bfHeld7.restart;
+    int32_t in = bfHeld7.restartIn, hin = bfHeld7.change ? bfHeld7.restartPrevIn : bfHeld7.restartIn;
+    if (to < start) {
+        start = bfHeld7.restartPrev;
+        in = bfHeld7.restartPrevIn;
+    }
+    bool m4 = in == bfHeldSnap.start && start > first, hm4 = hin == bfHeldSnap.start && hstart > first;
+    // The class heldAdd would give a hold of frame `to` that it classed c at frame want (black kept, unless entry).
+    uint8_t cls[4];
+    for (uint32_t c = 0; c < 4; c++) {
+        uint8_t k = (uint8_t) c;
+        if (c != 2 && to != want) k = visit > 0 && to >= first && first + 3 > to ? 1 : c == 1 ? 0 : (uint8_t) c;
+        if (m4 && k != 1 && k != 2 && to >= start && start + 3 > to) k = 1;
+        cls[c] = k;
+    }
+    bool hidden = bfHeld7.hidden;
+    for (uint32_t i = bfHeldSnap.listed; i < benchHeld.listed; i++) {
+        BenchHeld* r = &benchHeld.list[i];
+        if (hidden) {
+            hidden = false;
+            if (hm4) {
+                bool slow = bfHeldSlowStart(hstart);
+                bfHeldMove(r, slow ? hstart : hstart - 1, slow ? 1 : 2);
+            }
+        } else if (pend) {
+            // R7B-1.1: frame S-1's (it leaves below, a play or black hold before the window).
+            pend = false;
+            bfHeld7.pending = false;
+            bfHeldMove(r, (uint32_t) bfHeldSnap.start - 1, r->cls);
+        } else if (to != want) {
+            bfHeldMove(r, to, cls[r->cls]);
+        } else if (cls[r->cls] != r->cls) {
+            benchHeld.counts[r->cls]--;
+            benchHeld.counts[cls[r->cls]]++;
+            r->cls = cls[r->cls];
+        }
+    }
+    // F1.4: the holds only counted (the list was full), the same way.
+    if (hidden) {
+        uint8_t was = bfHeldSlowStart(first) ? 1 : 2, now7 = hm4 ? (bfHeldSlowStart(hstart) ? 1 : 2) : was;
+        if (more[was] > 0) {
+            more[was]--;
+            benchHeld.counts[was]--;
+            benchHeld.counts[now7]++;
+        }
+    }
+    // R7B-2.1: of a frame before the window, they leave (the counts and cut).
+    bool before = (int32_t) to < bfHeldSnap.start;
+    for (uint32_t c = 0; c < 4; c++) {
+        if (c == 2 || (cls[c] == c && !before)) continue;
+        benchHeld.counts[c] -= more[c];
+        if (before) benchHeld.cut -= more[c];
+        else benchHeld.counts[cls[c]] += more[c];
+    }
+    if (benchHeld.listed <= bfHeldSnap.listed) return;
+    BenchShownVisit* s = &benchfidShown.visits[bfHeldSnap.visit];
+    const uint32_t L = CTR_FLIP_BUCKETS - 1;
+    uint32_t kept = bfHeldSnap.listed;
+    bool dropped = false;
+    for (uint32_t i = bfHeldSnap.listed; i < benchHeld.listed; i++) {
+        BenchHeld r = benchHeld.list[i];
+        if ((int32_t) r.frame >= bfHeldSnap.start || r.cls == 2) {
+            benchHeld.list[kept++] = r;
+            continue;
+        }
+        benchHeld.counts[r.cls]--;
+        uint32_t b = r.vb > L ? L : r.vb - 1u;
+        if (s->count[b] > bfHeldSnap.v.count[b]) {
+            s->count[b]--;
+            if (b == L) s->longSum = s->longSum > r.vb ? s->longSum - r.vb : 0;
+        }
+        dropped = true;
+    }
+    benchHeld.listed = (uint16_t) kept;
+    if (!dropped) return;
+    // The visit's longest: as before this call, or a flip of this call still counted (an 8+ one keeps the read's).
+    uint32_t top = 0;
+    for (uint32_t b = 0; b < CTR_FLIP_BUCKETS; b++)
+        if (s->count[b] > bfHeldSnap.v.count[b]) top = b + 1;
+    if (top == CTR_FLIP_BUCKETS) return;
+    s->maxVb = bfHeldSnap.v.maxVb > top ? bfHeldSnap.v.maxVb : top;
+}
+#undef BF_R7
+#undef BF_HELD_SLOT
+#else
+// The tour's warm-up without the held lines (DELTARUNE Old; 10-28, droldcensus's tour benches): as bfHeldBefore7
+// does with them, a tour room's warm-up starts again as the first frame presented after its room change begins (the
+// frame after ready, or a later room change in the warm-up's first BF_TOUR_REDIRECT frames), after the change frame's
+// hidden load and rooms.dtm write. The room each call began in is kept in any phase, as bfHeldSeen keeps it.
+#define BF_R7 __attribute__((noinline, noclone, no_reorder, optimize("Os"), section(".text.benchfix_r7_late")))
+#define BF_TOUR_REDIRECT 90 // frames after ready in which a tour room's room change starts its warm-up again
+static int32_t bfTourRoom __attribute__((no_reorder, section(".bss.benchfix_r7_late")));
+BF_R7 static void bfTourBefore(void) {
+    const Runner* runner = bench.session.runner;
+    int32_t was = bfTourRoom;
+    bfTourRoom = runner != nullptr ? runner->currentRoomIndex : -1;
+    if (tour.on && bench.phase == PHASE_WARMUP && runner != nullptr &&
+        (runner->frameCount == bench.readyFrame + 1 ||
+         (bfTourRoom != was && runner->frameCount > bench.readyFrame &&
+          runner->frameCount - bench.readyFrame <= BF_TOUR_REDIRECT))) {
+        bench.phaseStart = nowNanos();
+    }
+}
+#undef BF_R7
+#endif
+
+#ifdef CTRPORT_FRAMETRACE
+// frametrace (z_frametrace.c; build.sh ... frametrace, test builds only): the bench's state as a frame's Step begins.
+__attribute__((section(".text.frametrace_late"))) const CtrBenchSession* CtrBench_ftState(bool* measuring, int32_t* start,
+                                                                                   const char** id) {
+    const SceneResult* r = currentResult();
+    *measuring = bench.phase == PHASE_MEASURE && r != nullptr;
+    *start = bench.measureStartFrame;
+    *id = r != nullptr ? r->id : nullptr;
+    return &bench.session;
+}
+#endif

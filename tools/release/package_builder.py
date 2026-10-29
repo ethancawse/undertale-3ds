@@ -4,6 +4,7 @@
     py -3 -I tools/release/package_builder.py --source scratch/export --game undertale --platform linux --output scratch/dist
 
 Windows also needs --runtime with a prepared python.org embeddable runtime and matching Tcl/Tk.
+--dsp-library FILE adds the pinned Windows x64 sound encoder to UNDERTALE binary ZIPs only.
 --texprep FILE adds the platform's texprep binary (texture preparation on the PC, builder/texcache.py) after checking
 it against its pinned size and SHA-256; without it the package's builder leaves the textures to the console (or, on
 Linux and macOS, builds texprep when a compiler is present).
@@ -22,8 +23,10 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "builder"))
 import pipeline
 import texcache
+import sfx_encoder
 
 EXTRA_FILES = ("tools/release/verify_game.py", "tools/release/release_contract.py",
+               "tools/release/sfxpack-versions.json",
                "tools/release/music-versions.json", "tools/release/test_builder.py",
                "tools/release/test_builder_platforms.py", "tools/release/builder_platform_probe.py",
                "tools/release/package_builder.py", "tools/release/test_builder_native_data.py",
@@ -122,7 +125,7 @@ def texprep_entry(platform, data):
     return BIN + name, data
 
 
-def package(root, output, game, platform, runtime=None, texprep=None, release_descriptor=None):
+def package(root, output, game, platform, runtime=None, texprep=None, release_descriptor=None, dsp_library=None):
     version = pipeline.release_version(str(root))
     if platform == "windows" and runtime is None:
         raise ValueError("Windows needs a prepared embeddable runtime: --runtime DIR")
@@ -135,6 +138,11 @@ def package(root, output, game, platform, runtime=None, texprep=None, release_de
     if texprep is not None:
         rel, data = texprep_entry(platform, texprep.read_bytes())
         files[rel] = data
+    if dsp_library is not None:
+        if game != 'undertale' or platform != 'windows':
+            raise ValueError('The prebuilt sound encoder is for the UNDERTALE Windows kit only')
+        library = sfx_encoder.validate(dsp_library, root)
+        files[sfx_encoder.RELATIVE] = library.read_bytes()
     contract = pipeline.products.release_contract
     digest = contract.payload_digest({rel: files[rel] for rel in pipeline.source_payload(root, game)})
     descriptor = contract.source_descriptor(game, version, digest)
@@ -176,13 +184,14 @@ def main():
     p.add_argument("--platform", choices=("windows", "linux", "macos"), required=True)
     p.add_argument("--runtime", type=Path)
     p.add_argument("--texprep", type=Path, help="this platform's texprep binary (checked against its pin)")
+    p.add_argument('--dsp-library', type=Path, help='pinned Windows x64 sound encoder DLL (binary kit only)')
     p.add_argument('--release-descriptor', type=Path,
                    help='Owner-approved exact public commit and source digest; unset kits cannot build')
     o = p.parse_args()
     try:
         print(package(o.source.resolve(), o.output.resolve(), o.game, o.platform,
                       o.runtime.resolve() if o.runtime else None, o.texprep.resolve() if o.texprep else None,
-                      o.release_descriptor))
+                      o.release_descriptor, o.dsp_library))
     except (OSError, ValueError, pipeline.BuildFailed) as e:
         p.error(str(e))
 

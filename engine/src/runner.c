@@ -20,7 +20,7 @@
 
 #include "debug_overlay.h"
 #include "gettime.h"
-#include "stb_ds.h"
+#include "freewins_maps.h" // stb_ds.h, and round 5's parked maps
 
 // The runner's own work as lines of the GML profiler's report, between the code and builtins it runs: each zone's
 // time less theirs. Without the profiler on, a null check.
@@ -2561,7 +2561,7 @@ static void cleanupState(Runner* runner) {
     runner->audioEmitters = nullptr;
 
     // Drain ds_map/ds_list pools BEFORE bulk-freeing struct instances. Their RValue entries may hold RVALUE_STRUCT refs to structs in runner->structInstances, and RValue_free would deref freed memory if the structs are gone.
-    {
+    { FreewinsMap_dropUnclaimed();
     repeat((int32_t) arrlen(runner->dsMapPool), i) {
         DsMapEntry* map = runner->dsMapPool[i];
         if (map != nullptr) {
@@ -2569,7 +2569,7 @@ static void cleanupState(Runner* runner) {
                 FreewinsMap_freeKey(map[j].key);
                 RValue_free(&map[j].value);
             }
-            shfree(map);
+            FreewinsMap_park(map, i); // shfree(map), or park a text map's storage (freewins_maps.h)
         }
     }
     }
@@ -6656,7 +6656,7 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawRoom(
 // and New (GCC 16.1.0 Release).
 #if defined(__GNUC__)
 #define TILERUN_UTK_PAD ".space 64"
-// utkDrawRoomTail (these 64 B) went in argcheck's UT late-text reclaim, a lead-ruled layout event;
+// utkDrawRoomTail (these 64 B) went in argcheck's UT late-text reclaim, a ruled layout event;
 // the late code after it moved down (tools/analysis/check_shrink_layout.py). Lines kept: __LINE__.
 
 #endif
@@ -7042,7 +7042,7 @@ FREEWINS_ROOM_LATE void FreewinsRoom_free(Runner* runner) {
 // 3,528 + 188), Runner_reset 580 = 516 + 64, Runner_handlePendingRoomChange (persistRoomState inlined) 1,092 = 1,088 + 4.
 #if defined(PLATFORM_3DS) && defined(__GNUC__)
 __asm__(".pushsection .text.initRoom,\"ax\",%progbits\n.subsection 1\n.space 20\n.popsection\n"
-        ".pushsection .text.cleanupState,\"ax\",%progbits\n.subsection 1\n.space 188\n.popsection\n"
+        FREEWINS_CLEANUP_PAD_ASM
         ".pushsection .text.Runner_reset,\"ax\",%progbits\n.subsection 1\n.space 64\n.popsection\n"
         ".pushsection .text.Runner_handlePendingRoomChange,\"ax\",%progbits\n.subsection 1\n.space 4\n.popsection\n");
 #endif
@@ -7064,4 +7064,13 @@ __attribute__((noinline, section(".text.late.utorder"))) void Utorder_keep(Runne
     sortDrawables(runner, list, count);
     repeat(count, i) if (list[i].type == DRAWABLE_INSTANCE) list[i].instance->drawRank = (int32_t) i;
 }
+#endif
+
+// simplefix (2026-10-28): this file's out-of-line Collision_computeBBox rounds its edges through z_bboxround.c's
+// Collision_bboxRound (CTRPORT_BBOX_ROUND, CMakeLists.txt) and shrank from 1,588 to 996 B on every release target
+// (nm -S). It keeps its slot, so that nothing after it moves: the padding is subsection 1 of its own section, after its
+// code and literal pool, outside its symbol size (as Runner_destroyInstance's in runner.c; proven by
+// tools/analysis/check_simplefix_layout.py).
+#if defined(CTRPORT_LAYERFIX_RELEASE_LAYOUT) && defined(CTRPORT_BBOX_ROUND) && defined(__3DS__) && defined(__GNUC__)
+__asm__(".pushsection .text.Collision_computeBBox,\"ax\",%progbits\n.subsection 1\n.space 592\n.popsection\n");
 #endif

@@ -1,0 +1,7 @@
+# AOT block padding (tools/aot/aot_pad.py; read by platform/3ds/CMakeLists.txt): bytes added after the
+# AOT code, constants and statics, and to the string pool, so everything after them stays where the
+# base build had it.
+text 13812
+rodata 160
+bss 68
+str 292

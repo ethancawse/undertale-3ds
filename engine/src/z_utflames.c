@@ -785,4 +785,75 @@ RValue UtFlames_helixStep(VMContext* ctx, uint32_t k, AotFn generated, const int
 
 #endif
 
+// ===[ utgapfix: string_char_at's walk to the position, 16 plain ASCII bytes at a time ]===
+//
+// builtin_string_char_at (vm_builtins.c) walks from the string's start on every call. Code that reads a long string
+// one character at a time pays for every character before the one it reads: the vaporize object's Alarm 0 reads its
+// data string (6,255 characters for Undyne's melt) 212 times a frame at a rising position, up to 30 ms of the frame on an
+// Old 3DS (kb_undyne, 7 frames held 3 vblanks). This walk gives the same answer for plain ASCII text, about four times
+// faster; anything else (a byte past ASCII before or at the position, another argument type) goes to the builtin.
+// Its sections are taken by explicit late_reserve.ld lines at the end, so nothing linked before it moves. Compiled for
+// size: the 16-byte loop comes out the same as at -O2.
+#if defined(__arm__) && defined(__3DS__)
+#define UTG_LATE __attribute__((noinline, optimize("Os"), section(".text_utgapfix_late")))
+#define UTG_RODATA __attribute__((section(".rodata_utgapfix_in_text")))
+#define UTG_BSS __attribute__((section(".bss.utgapfix_late")))
+#else
+#define UTG_LATE __attribute__((noinline))
+#define UTG_RODATA
+#define UTG_BSS
+#endif
+
+typedef uint32_t __attribute__((may_alias)) UtgWord;
+static BuiltinFunc utgCharAtPrevious UTG_BSS;
+static const char utgCharAtName[] UTG_RODATA = "string_char_at";
+
+// string_char_at(str, pos) for a string and a real. builtin_string_char_at takes pos - 1 (clamped at 0) and steps one
+// character at a time; over plain ASCII each character is one byte, so it lands on the byte pos - 1 bytes in, or on the
+// terminator first (""), which is where this walk lands too. It stops early at a byte past ASCII, and hands that case
+// (and a character past ASCII at the position) to the builtin.
+static UTG_LATE RValue utgCharAt(VMContext* ctx, RValue* args, int32_t argCount) {
+    const uint8_t* p;
+    if (2 <= argCount && args[0].type == RVALUE_STRING && (p = (const uint8_t*) args[0].string) != nullptr &&
+        args[1].type == RVALUE_REAL) {
+        int32_t pos = (int32_t) args[1].real - 1; // RValue_toInt32's conversion of a real
+        uint32_t k = 0x01010101u;
+        __asm__("" : "+r"(k)); // kept in a register (the compiler would rebuild it from immediates for every word)
+        uint32_t ch;
+        for (;;) {
+            // On a 16-byte boundary, 16 bytes at a time while none is the terminator or past ASCII (a zero byte turns
+            // into 0xFF when subtracting). An aligned 16-byte block never crosses a page, and p[0] (not yet known to be
+            // past the terminator) is in it. (Not under AddressSanitizer, which would flag the bytes past the end.)
+#if !defined(__SANITIZE_ADDRESS__)
+            if (((uintptr_t) p & 15) == 0) {
+                while (pos >= 16) {
+                    const UtgWord* w = (const UtgWord*) p;
+                    uint32_t a = w[0], b = w[1], c = w[2], d = w[3];
+                    if ((((a | (a - k)) | (b | (b - k))) | ((c | (c - k)) | (d | (d - k)))) & (k << 7)) break;
+                    p += 16;
+                    pos -= 16;
+                }
+            }
+#endif
+            ch = *p;
+            if (0 >= pos || ch - 1u >= 0x7Fu) break; // at the position, or at the terminator or a byte past ASCII
+            p++;
+            pos--;
+        }
+        if (0x80 > ch) return RValue_makeString(RValue_asciiStrings[ch]); // the terminator gives ""
+    }
+    return utgCharAtPrevious(ctx, args, argCount);
+}
+
+// What VM_create calls through COLFLIP_REGISTER_ALL (vm_builtins.h): UtFlames_registerCircle, then the walk over
+// string_char_at's builtin.
+void Utgap_registerAll(VMContext* ctx) UTG_LATE;
+void Utgap_registerAll(VMContext* ctx) {
+    UtFlames_registerCircle(ctx);
+    ptrdiff_t idx = shgeti(ctx->builtinMap, (char*) utgCharAtName);
+    if (0 > idx || ctx->builtinMap[idx].value == nullptr) return;
+    utgCharAtPrevious = ctx->builtinMap[idx].value;
+    ctx->builtinMap[idx].value = utgCharAt;
+}
+
 #endif // ENABLE_WAD16

@@ -323,3 +323,20 @@ void CtrWatchdog_note(const char* state) {
     threadSlots[slot].state = state;
     threadSlots[slot].notes++;
 }
+
+#ifdef CTRPORT_BENCHFIX_PROBE
+// benchfix probe (ctr_benchmark.c): every other named thread's name and last note, pointers only.
+__attribute__((noinline, noclone, section(".text.bfprobe"))) int32_t CtrWatchdog_bfpNotes(const char** names,
+                                                                                         const char** states,
+                                                                                         int32_t max) {
+    const void* self = getThreadLocalStorage();
+    int32_t count = threadSlotCount, n = 0;
+    for (int32_t i = 0; count > i && max > n; i++) {
+        if (threadSlots[i].name == nullptr || threadSlots[i].tls == self) continue;
+        names[n] = threadSlots[i].name;
+        states[n] = threadSlots[i].state;
+        n++;
+    }
+    return n;
+}
+#endif

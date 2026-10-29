@@ -5773,6 +5773,40 @@ void VM_runEventBound(VMContext* ctx, VMEventRun* run, Instance* instance) {
 }
 #endif /* ENABLE_WAD16 */
 
+// writerfront (freebies, UNDERTALE Old 3DS only, CMakeLists.txt defines CTRPORT_WRITERFRONT here): binds a hand
+// front (platform/3ds/source/z_writerfront.c, which pins the entry's bytecode itself and keeps the generated function
+// as its fallback) to a code entry not looked up yet in this context (AOT_UNBOUND) or bound to exactly that generated
+// function, the one aotBind binds (z_writerfront.c finds it in aotTable as aotBind does). Returns false, binding
+// nothing, for an entry bound to anything else or interpreted, outside the context bound now, with generated code off
+// (BS_AOT=0) and in tracing or stress builds. Late text, so nothing in this file moves; it calls nothing here (a call
+// to aotBind would take it out of aotDispatch).
+#if defined(CTRPORT_WRITERFRONT) && defined(VM_AOT_ENABLED)
+#if defined(__3DS__)
+#define VM_WRITERFRONT_LATE __attribute__((noinline, optimize("Os"), section(".text.writerfront_late")))
+#else
+#define VM_WRITERFRONT_LATE __attribute__((noinline))
+#endif
+bool VM_aotSwapFront(VMContext* ctx, int32_t codeIndex, AotFn fn, AotFn generated) VM_WRITERFRONT_LATE;
+bool VM_aotSwapFront(VMContext* ctx, int32_t codeIndex, AotFn fn, AotFn generated) {
+#if defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS)
+    (void) ctx;
+    (void) codeIndex;
+    (void) fn;
+    (void) generated;
+    return false;
+#else
+    if (aotEnabled != 1 || aotBoundCtx != ctx || aotBound == nullptr || 0 > codeIndex || (uint32_t) codeIndex >= aotBoundCount
+        || generated == nullptr)
+        return false;
+    AotFn now = aotBound[codeIndex];
+    if (now == fn) return true;
+    if (now != AOT_UNBOUND && now != generated) return false;
+    aotBound[codeIndex] = fn;
+    return true;
+#endif
+}
+#endif
+
 // dodgefront (credfix, UNDERTALE Old 3DS only, CMakeLists.txt defines CTRPORT_DODGEFRONT here): binds a hand
 // front (platform/3ds/source/z_dodgefront.c, which pins the entry's bytecode itself) to a code entry that has no
 // generated function bound yet, so aotDispatch runs it as it runs generated code: with ip at the entry's start, the

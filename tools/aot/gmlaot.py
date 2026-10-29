@@ -342,6 +342,20 @@ LATE_COPY_SITE = re.compile(r"^(\s*)(AOT_SITE_POPVAR\(0x[0-9A-F]+, (\d+), 0, \d+
 # WAD 16 (UNDERTALE) only: code entries engine/src/z_utflames.c has a native body for go to it (UTF_NATIVE);
 # --no-utflames turns it off.
 UTFLAMES = True
+# DELTARUNE New (--target n3ds) only: Chapter 3's game boards rebuild their pathfinding grid in the board controller's
+# Draw (the loop at 1058-1194: instance_place of the solid block, then of the path blocker, at every 32-pixel cell,
+# and mp_grid_add_cell where either finds something). engine/src/z_boardgrid.c's BoardGrid_fill does that loop, called
+# just before it, keyed by the entry's digest (its bytecode exactly: Steam's Windows and macOS data, v0.0.253, have the
+# same), by instance_place's body in the engine (builtin_audit.py's hash) and by the bbox_* cases of vm_builtins.c's
+# VMBuiltins_getVariable (its boxes come from there; the same hash of that text), by the engine code that decides
+# which cells it may mark without a call (board_hit_body), with the operands it reads by name.
+# It returns 1 when it did the loop (on at aotb_<exit>) and 0 to run the generated loop. --no-boardgrid turns it off.
+BOARD_NATIVE = {0x956F0A35BE731E13: (0x1058, 0x1198)}
+BOARD_PLACE_BODY = "b4d2dd2d2431"
+BOARD_SIDES_BODY = "d9ac1960677f"
+BOARD_HIT_BODY = "2e111d44b748"
+BOARDGRID = True
+BOARD_TARGET = None   # --target
 LAYOUT_TAIL = 25   # --layout leaves the selection's last 25% of the files of generated code where they are
 # Math builtins whose calls on plain numbers are inline (AOT_MATH<n> in vm_aot.h): name -> (argument count, the
 # aotMath function in vm_aot.h that copies the builtin's body, the hash of that body as builtin_audit.py's
@@ -837,6 +851,7 @@ class Emitter:
         self.cur_in = frozenset()
         self.typed = {}           # --typed: address of a region's call (its head, or the branch above it) -> typed.Region
         self.typed_exits = set()  # --typed: the addresses its regions leave for (an aoty_<address> label each)
+        self.board = None         # BOARD_NATIVE: board_site's dict
 
     def L(self, addr):
         return "L_%04X" % addr
@@ -1331,7 +1346,9 @@ class Emitter:
             if typed_r is not None and typed_r.site == typed_r.lo and not typed_r.straight:   # before the head, where the code above falls in
                 self.lines.extend(typed_mod.call_site(self, typed_r))
             if addr in fn.labels:
-                self.lines.append("%s:" % self.L(addr))
+                # BOARD_NATIVE's call (before the loop's head) and exit label share the label's line: a line more would
+                # move the __LINE__ of every later function in the file.
+                self.lines.append(board_line(self, addr) + "%s:" % self.L(addr) + board_after(self, addr))
                 self.emit("AOT_BLOCK(%d, 0x%X);" % (d, addr))
             if typed_r is not None and typed_r.straight and addr in covered:
                 raise Reject("internal: the typed region at %#x is emitted with the instruction before it" % addr)
@@ -1813,6 +1830,11 @@ def parse_args(args):
             UTFLAMES = False
             i += 1
             continue
+        if a == "--no-boardgrid":
+            global BOARDGRID
+            BOARDGRID = False
+            i += 1
+            continue
         if a == "--no-inline":
             global INLINE
             INLINE = False
@@ -1893,6 +1915,8 @@ def parse_args(args):
             if args[i + 1] not in TARGET_BUDGET_MB:
                 raise SystemExit("--target is one of " + ", ".join(sorted(TARGET_BUDGET_MB)))
             opts["budget"] = TARGET_BUDGET_MB[args[i + 1]]
+            global BOARD_TARGET
+            BOARD_TARGET = args[i + 1]
         elif a == "--scene-weight":
             if args[i + 1] not in ("ops", "share"):
                 raise SystemExit("--scene-weight is ops or share")
@@ -2329,6 +2353,131 @@ def utflowey_native(dw, blob, entry, k, digest):
     return text, "UtFlowey_pipeDraw"
 
 
+BOARD_DECL = ("int32_t BoardGrid_fill(VMContext* ctx, RValue* cellSize, RValue* gridW, RValue* gridH, RValue* grid, "
+              "const int32_t* a); int32_t BoardGrid_after(VMContext* ctx) __attribute__((weak));")
+
+
+def board_site(dw, fn, blob, entry, name, report):
+    """BOARD_NATIVE's call for this entry: {site, exit, the global variables' keys (cell_size, grid_width, grid_height,
+    grid), the operands (the two objects, instance_place's and mp_grid_add_cell's function indices)}, else None."""
+    if not BOARDGRID or BOARD_TARGET != "n3ds" or dw.wad != 17 or not SLOTS or not fn.instrs:
+        return None
+    end = max(ins.next for addr, ins in fn.instrs.items() if addr in fn.depth)
+    if fnv1a64(blob[entry["offset"]:end]) not in BOARD_NATIVE:
+        return None
+    site, exit_ = BOARD_NATIVE[fnv1a64(blob[entry["offset"]:end])]
+    ins = fn.instrs
+    from builtin_audit import builtin_body_hashes
+
+    def call(addr, fname):
+        i = ins.get(addr)
+        return (i is not None and i.op == OP_CALL and (i.word & 0xFFFF) == 3 and i.extra < len(dw.funcs)
+                and dw.funcs[i.extra]["name"] == fname and fname not in dw.code_by_name
+                and "gml_Script_" + fname not in dw.code_by_name)
+
+    def glob(addr, vname):
+        i = ins.get(addr)
+        if i is None or i.op != OP_PUSHGLB or i.var_type() != VT_NORMAL:
+            return None
+        v = dw.vars[i.var_index()]
+        return (GLOBAL, v["varID"]) if v["name"] == vname and v["varID"] >= 0 else None
+
+    def pushi(addr):
+        i = ins.get(addr)
+        return i.inst if i is not None and i.op == OP_PUSHI else None
+
+    keys = [glob(0x10A4, "cell_size"), glob(0x1060, "grid_width"), glob(0x1084, "grid_height"), glob(0x114C, "grid")]
+    operands = [pushi(0x1094), pushi(0x10E8)]
+    why = None
+    if not (call(0x10C4, "instance_place") and call(0x1118, "instance_place") and call(0x1154, "mp_grid_add_cell")):
+        why = "the calls are not the instance_place and mp_grid_add_cell builtins"
+    elif ins[0x10C4].extra != ins[0x1118].extra or None in keys or None in operands:
+        why = "the operands are not the ones it was written for"
+    elif site not in fn.labels or exit_ not in fn.labels or fn.depth.get(site) != 0 or fn.depth.get(exit_) != 0:
+        why = "the loop's labels are not where they were"
+    elif builtin_body_hashes().get("instance_place") != BOARD_PLACE_BODY:
+        why = "instance_place's body in the engine changed (builtin_audit.py's hash)"
+    elif board_sides_body() != BOARD_SIDES_BODY:
+        why = "VMBuiltins_getVariable's bbox_* cases changed (vm_builtins.c)"
+    elif board_hit_body() != BOARD_HIT_BODY:
+        why = "the overlap test or the spatial grid query changed (collision.h, spatial_grid.h/.c)"
+    if why is not None:
+        report.append("boardgrid %s: digest matches but %s: generated code" % (name, why))
+        return None
+    report.append("boardgrid %s: BoardGrid_fill before %04X" % (name, site))
+    return {"site": site, "exit": exit_, "keys": keys, "a": operands + [ins[0x10C4].extra, ins[0x1154].extra]}
+
+
+def board_sides_body():
+    """The hash of vm_builtins.c's bbox_left ... bbox_bottom cases (comments and strings out, whitespace collapsed, as
+    builtin_audit.py's body hashes), or None when they are not where they were."""
+    import hashlib
+    from builtin_audit import ENGINE_SRC, _STRIP
+    with open(os.path.join(ENGINE_SRC, "vm_builtins.c"), encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    start = "case BUILTIN_VAR_BBOX_LEFT: {"
+    if text.count(start) != 1 or text.find("case BUILTIN_VAR_BROWSER_WIDTH:", text.find(start)) < 0:
+        return None
+    i = text.find(start)
+    body = " ".join(_STRIP.sub(" ", text[i:text.find("case BUILTIN_VAR_BROWSER_WIDTH:", i)]).split())
+    return hashlib.sha1(body.encode("utf-8")).hexdigest()[:12]
+
+
+# The engine text z_boardgrid.c's sure hits rely on: Collision_instancesOverlapPrecise up to its pixel scan (an
+# overlap of boxes is a hit when neither sprite is precise or rotated), SpatialGrid_computeCellRange (the cells a
+# query visits) and SPATIAL_GRID_CELL_SIZE, SpatialGrid_prepareQuery (one query number a call), and the functions that
+# keep an instance in exactly the grid cells it lists (SpatialGrid_removeInstance, _syncGrid, _markInstanceAsDirty).
+BOARD_HIT_PARTS = (("collision.h", "static inline bool Collision_instancesOverlapPrecise(", "// Pixel scan"),
+                   ("spatial_grid.h", "static inline SpatialGridRange SpatialGrid_computeCellRange(", "static inline bool SpatialGrid_instanceOverlapsRange("),
+                   ("spatial_grid.h", "#define SPATIAL_GRID_CELL_SIZE", "\n"),
+                   ("spatial_grid.c", "SpatialGridQuery SpatialGrid_prepareQuery(", "\n}\n"),
+                   ("spatial_grid.c", "void SpatialGrid_removeInstance(", "\nvoid SpatialGrid_markInstanceAsDirty("),
+                   ("spatial_grid.c", "void SpatialGrid_markInstanceAsDirty(", "\n}\n"))
+
+
+def board_hit_body():
+    """The hash of BOARD_HIT_PARTS (comments and strings out, whitespace collapsed, as builtin_audit.py's body hashes),
+    or None when a part is not where it was."""
+    import hashlib
+    from builtin_audit import ENGINE_SRC, _STRIP
+    parts = []
+    for name, start, end in BOARD_HIT_PARTS:
+        with open(os.path.join(ENGINE_SRC, name), encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        i = text.find(start)
+        j = text.find(end, i + len(start)) if i >= 0 else -1
+        if text.count(start) != 1 or j < 0:
+            return None
+        parts.append(" ".join(_STRIP.sub(" ", text[i:j]).split()))
+    return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+def board_line(em, addr):
+    """BOARD_NATIVE's call, ahead of the loop head's label on its line (em.cur_in: the pointers good at the head), and
+    the label it goes on at, ahead of the loop exit's."""
+    b = em.board
+    if b is not None and addr == b["exit"]:
+        return "aotb_%04X: ; " % addr
+    if b is None or addr != b["site"]:
+        return ""
+    look = frozenset(k for k in b["keys"] if k not in em.cur_in)
+    again = em.slot_in.get(b["exit"], frozenset())
+    return ("    { %sstatic const int32_t aotbg_[4] = { %s }; if (BoardGrid_fill(ctx, %s, aotbg_)) { %sgoto aotb_%04X; } }"
+            "  /* boardgrid (z_boardgrid.c): the loop %04X-%04X, or 0 for the generated loop */ "
+            % ((em.refind(look, cold=False) + " ") if look else "", ", ".join("%d" % v for v in b["a"]),
+               ", ".join(em.slot_name(k) for k in b["keys"]), (em.refind(again, cold=False) + " ") if again else "",
+               b["exit"], b["site"], b["exit"] - 4))
+
+
+def board_after(em, addr):
+    """After the loop exit's label (on its line): the check builds' BoardGrid_after (a weak reference: null in other
+    builds)."""
+    b = em.board
+    if b is None or addr != b["exit"]:
+        return ""
+    return " if (BoardGrid_after != nullptr) BoardGrid_after(ctx);"
+
+
 def generate_function(dw, name, k, report):
     """Returns (function C text, table C text, aotEntries line, instruction count) or None when the entry is left to
     the interpreter."""
@@ -2347,6 +2496,7 @@ def generate_function(dw, name, k, report):
         esc = escape_plan(dw, fn, k, name, em, report)
         if esc is not None:
             em = esc
+        em.board = board_site(dw, fn, blob, entry, name, report)
         body = em.gen()
     except Reject as ex:
         report.append("skip %s: %s" % (name, ex))
@@ -2360,6 +2510,9 @@ def generate_function(dw, name, k, report):
     tail = em.stub_lines() + tail
     out = ["// %s (%d instructions)" % (name.replace("*/", ""), len(fn.depth)),
            "#define AOT_K %d" % k]
+    if em.board is not None:
+        # On the comment line, as the lava include below: another line would move later functions' __LINE__.
+        out[0] = BOARD_DECL + " " + out[0]
     if any("AOT_CALL_LAVA_PART(" in line for line in body):
         # Use the existing comment line: another physical line changes
         # __LINE__ literals in unrelated functions later in the same unit.
@@ -2480,8 +2633,9 @@ def main(argv):
         print(__doc__)
         return 2
     t0 = time.time()
-    global TYPED
+    global TYPED, BOARDGRID, BOARD_TARGET
     TYPED = None   # prepare.py runs main once per chapter in one process: --typed sets it again
+    BOARDGRID, BOARD_TARGET = True, None   # and --no-boardgrid / --target too
     del TYPED_TEXTS[:]
     del TYPED_BIND[:]
     out_dir, groups, opts = parse_args(args)

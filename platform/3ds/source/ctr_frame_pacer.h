@@ -7,8 +7,8 @@
 // before it for a vblank less: the display alternated between one and three
 // vblanks a frame while the frame rate stayed at 30. Here a frame finished
 // early waits for the slot's last vblank before it is flipped in. While the
-// GPU keeps finishing frames too late for that, they are shown a vblank later
-// instead of the slots moving (see ctr_frame_pacer.c).
+// GPU misses that deadline, the late picture may stay longer. No extra
+// input-delay vblank is added to subsequent pictures (ctr_frame_pacer.c).
 #ifndef CTRPORT_CTR_FRAME_PACER_H
 #define CTRPORT_CTR_FRAME_PACER_H
 
@@ -27,9 +27,9 @@ void CtrPacer_setFrameRate(float fps);
 // and CtrPacer_frameBegun once the GPU is done with the frame before.
 //
 // A frame that starts after its slot has begun starts the schedule over, and
-// one the GPU finished late is shown a vblank after its slot (or, later than
-// that, the next slot moves to the vblank it showed on), so every frame stays
-// up for a whole slot and the game slows down.
+// one the GPU finished late may move the next slot to its actual flip.
+// Every later picture keeps the same low-delay deadline; no adaptive
+// cushion is armed or recovered.
 //
 // With catchUp, the slots keep to their schedule instead (they never move),
 // so the game keeps its speed: a frame less than a slot behind is shown as soon as it is done,
@@ -48,8 +48,8 @@ void CtrPacer_setSkipPolicy(int32_t policy);
 void CtrPacer_skipSlot(void);
 // Fixed 2:1 overlap (frame_skip_overlap): an unshown frame doesn't wait for the shown frame
 // before it, so the GPU runs that one during the unshown frame and the next shown frame's step and draw. A shown
-// frame is then late only if it flips after the end of its own slot plus the delay, and the delay (a vblank at most
-// otherwise) grows up to two slots while shown frames keep coming late.
+// frame is late if it flips after the end of its own slot. No extra adaptive
+// input delay is added, including in this explicit overlap mode.
 void CtrPacer_setHalfRateOverlap(bool on);
 
 // Top screen flips by how many vblanks the flip before stayed up: count[i] is i + 1 vblanks, the last bucket that

@@ -104,9 +104,7 @@ def check_cancel(cancelled):
 
 
 def identify(ftp):
-    banner = ftp.getwelcome() or ''
-    if not re.search(r'\bftpd\b', banner, re.I):
-        raise TransferError('No ftpd found at this address. Check the address ftpd shows on your 3DS.')
+    # Console ftpd can greet with only "220 Hello!". Identify the SD layout.
     rows = list(ftp.mlsd('/', facts=['type']))
     folders = {name.casefold() for name, facts in rows if facts.get('type') == 'dir'}
     if not {'3ds', 'nintendo 3ds'} <= folders:
@@ -119,8 +117,6 @@ def connect(value, *, factory=ConsoleFTP, timeout=10):
     try:
         with friendly_errors(connecting=True):
             ftp.connect(host, port, timeout=timeout)
-            if not re.search(r'\bftpd\b', ftp.getwelcome() or '', re.I):
-                raise TransferError('No ftpd found at this address. Check the address ftpd shows on your 3DS.')
             ftp.login()
             identify(ftp)
             ftp.voidcmd('TYPE I')
@@ -213,14 +209,19 @@ def size(ftp, path):
     try:
         return ftp.size(path)
     except ftplib.error_perm as exc:
-        if not str(exc).startswith('550'):
+        if str(exc)[:3] not in ('550', '553'):
             raise
         return None
 
 
 def delete_if_present(ftp, path):
     if size(ftp, path) is not None:
-        ftp.delete(path)
+        try:
+            ftp.delete(path)
+        except ftplib.error_perm as exc:
+            # The file may disappear after SIZE, including on a retry.
+            if str(exc)[:3] not in ('550', '553'):
+                raise
 
 
 def fingerprint(ftp, path):
@@ -311,7 +312,7 @@ class Transfer:
                                                        expected_size, expected_hash, 'sdmc:' + receipt_for)
             if source.read_bytes() != expected_text or fingerprint(self.ftp, receipt_for) != identity:
                 raise TransferError('The game file on the 3DS changed during sending. Send again.')
-        critical = data_file or item.size <= SMALL or PurePosixPath(path).suffix.casefold() in ('.3dsx', '.cia')
+        critical = data_file or item.size <= SMALL or PurePosixPath(path).suffix.casefold() in ('.3dsx', '.cia', '.dtsp')
         local_hash = hashlib.sha256()
         if critical:
             with source.open('rb') as stream:
@@ -410,7 +411,7 @@ class Transfer:
             return (3 if name == 'data-version.txt' else 2 if name == 'complete' else 0 if name == 'data.win' else 1,
                     it.dst)
         items.sort(key=order)
-        self.total = sum(it.size * (2 if it.size <= SMALL or PurePosixPath(it.dst).suffix.casefold() in ('.3dsx', '.cia')
+        self.total = sum(it.size * (2 if it.size <= SMALL or PurePosixPath(it.dst).suffix.casefold() in ('.3dsx', '.cia', '.dtsp')
                                     or PurePosixPath(it.dst).name.casefold() == 'data.win' else 1) for it in items)
         for it in items:
             if self.install and PurePosixPath(it.dst).name == 'complete':

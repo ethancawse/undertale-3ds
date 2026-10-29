@@ -30,7 +30,7 @@
 #endif
 
 // 1: rows wholly outside the view are not handed to the renderer (which would cull them itself): the same pixels, a
-// shorter draw list (another draw hash). 0: every row is drawn, as the game does. On (lead 10-24): state and every
+// shorter draw list (another draw hash). 0: every row is drawn, as the game does. On (10-24): state and every
 // capture are byte-identical with it off.
 #ifndef UTF_WFALL_CULL
 #define UTF_WFALL_CULL 1

@@ -423,6 +423,32 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertIn('README.md', names)
         self.assertNotIn('tools/release/templates/README-undertale.md', names)
 
+    def test_public_source_digest_hashes_the_mapped_export_bytes(self):
+        # argstage59 F-5.1: DELTARUNE maps drawskip_deltarune.txt to a generic template. The descriptor's digest must
+        # be the one package_builder computes from the exported tree (mapped bytes, builder.py's FIXED_GAME set).
+        import package_builder
+        for game, short in (('undertale', 'ut'), ('deltarune', 'dr')):
+            names, _tracked, sources = gate.read_manifest(gate.safe_local('tools/release/manifest-%s.txt' % short))
+            files = {name: gate.safe_local(sources.get(name, name)).read_bytes() for name in names}
+            digest = gate.public_source_digest(package_builder.inputs(gate.ROOT, game), files, sources,
+                                               package_builder.pipeline.source_payload(gate.ROOT, game))
+            with tempfile.TemporaryDirectory() as tmp:
+                export = Path(tmp)
+                for name, data in files.items():
+                    (export / name).parent.mkdir(parents=True, exist_ok=True)
+                    (export / name).write_bytes(data)
+                payload = package_builder.inputs(export, game)
+                builder = gate.release_contract.payload_digest(
+                    {r: payload[r] for r in package_builder.pipeline.source_payload(export, game)})
+            self.assertEqual(digest, builder, game)
+        member = 'platform/3ds/bench/drawskip_deltarune.txt'
+        self.assertIn(member, sources)
+        self.assertNotEqual(files[member], (gate.ROOT / member).read_bytes())
+        wanted = package_builder.pipeline.source_payload(gate.ROOT, 'deltarune')
+        self.assertIn(member, wanted)
+        with self.assertRaisesRegex(ValueError, 'export lacks'):
+            gate.public_source_digest({}, {n: files[n] for n in wanted if n != member}, sources, wanted)
+
     def test_export_manifest_omits_private_bench_scripts(self):
         manifest = (gate.ROOT / 'tools/release/manifest-ut.txt').read_text().splitlines()
         self.assertNotIn('platform/3ds/bench/undertale.txt', manifest)

@@ -8,7 +8,7 @@
 //
 // The frame numbers are the ones the bench's "Bench: <id> measured frames A-B" line uses, so
 // tools/analysis/ut_lock_check.py keeps the lines inside each scene's measured window (setup and settle frames are
-// logged too). At most SLOW_ROOM_LINES lines per room visit.
+// logged too). At most SLOW_ROOM_LINES lines a room visit outside a window (inside: bfWindowLines, ctr_benchmark.c).
 //
 // The main loop calls these in place of CtrBench_sessionStarted, CtrBench_beginFrame and CtrBench_endFrame. It is a
 // translation unit of its own, with all code and state in utpolish's late sections (platform/3ds/late_reserve.ld),
@@ -19,6 +19,7 @@
 #include "log.h"
 #include "runner.h"
 #include "ctr_renderer.h"
+#include "z_utpolish_bench.h"
 
 #define SLOW_LATE __attribute__((noinline, section(".text.late.utpolish")))
 #define SLOW_BSS __attribute__((section(".bss.late.utpolish")))
@@ -26,18 +27,9 @@
 #define SLOW_FRAME_MS 33.4
 #define SLOW_ROOM_LINES 16
 
-static struct {
-    Runner* runner; // the session's, from CtrBench_sessionStarted
-    Renderer* renderer;
-    bool valid; // the frame before this one was recorded by CtrBench_endFrameTimed
-    bool roomChanged;
-    int32_t room; // the room the frame began in
-    int32_t linesRoom; // the room visit the lines were counted for
-    int32_t lines;
-    double stepMs, drawMs, gpuMs;
-    uint32_t loadsAtStart, loads;
-    float loadMsAtStart, loadMs;
-} slowFrame SLOW_BSS;
+static UtSlowFrame slowFrame SLOW_BSS;
+// ctr_benchmark.c's benchfix code gives a bench window its own line budget through this name (z_utpolish_bench.h).
+extern UtSlowFrame utSlowFrame __attribute__((alias("slowFrame")));
 
 static const char slowFrameLine[] SLOW_RODATA =
     "Frame over 33.4 ms: frame %ld: %.1f ms, step %.1f, draw %.1f, gpu %.1f, textures %lu/%.1f ms%s in %s\n";

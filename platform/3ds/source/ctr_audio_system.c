@@ -826,11 +826,38 @@ static bool openStream(CtrAudioSystem* ca, StreamContext* s) {
 
 // Tops up one playing stream and finishes it once it has played out or was
 // stopped. Opening is the opener thread's (openStream).
+#ifdef CTRPORT_ADPCM_MUSIC
+#define MM_CODE __attribute__((noinline, noipa, optimize("Os"), section(".text.late.adpcm")))
+MM_CODE static bool mmDecOpen(CtrDecoder*, const char*);
+MM_CODE static bool mmDecSeek(CtrDecoder*, uint64_t, bool*);
+MM_CODE static bool mmDecRead(CtrDecoder*, int16_t*, uint32_t, int32_t*);
+MM_CODE static void mmService(CtrAudioSystem*, StreamContext*, DecodeStats*);
+MM_CODE static void mmServiceLock(LightLock*);
+MM_CODE static void mmServiceUnlock(LightLock*);
+MM_CODE static bool mmControl(int, unsigned, const void*);
+MM_CODE static void mmFrame(void);
+MM_CODE static int mmSfxAdmit(int32_t, uint32_t, uint32_t);
+MM_CODE static bool mmSfxPlanned(int32_t);
+#elif defined(CTRPORT_ADPCM_SFXPACK)
+#define MM_CODE __attribute__((noinline, noipa, optimize("Os"), section(".text.late.adpcm")))
+MM_CODE static int apAdmit(int32_t, uint32_t, uint32_t);
+MM_CODE static int apQueue(int32_t, uint32_t, uint32_t);
+#endif
+#line 827
 static void serviceStream(CtrAudioSystem* ca, StreamContext* s, DecodeStats* stats) {
+#ifdef CTRPORT_ADPCM_MUSIC
+    mmServiceLock(&s->lock);
+#else
     LightLock_Lock(&s->lock);
+#endif
     StreamState state = s->state;
     bool stop = s->stopRequested;
+#ifdef CTRPORT_ADPCM_MUSIC
+    mmServiceUnlock(&s->lock);
+#else
     LightLock_Unlock(&s->lock);
+#endif
+#line 832
     if (state != CTX_PLAYING && state != CTX_DRAINING) return;
     if (stop) {
 #ifdef CTR_AUDIO_PCM_HASH
@@ -1398,19 +1425,8 @@ uint32_t CtrAudioSystem_shedSfx(uint32_t bytes) {
     return shed;
 }
 
-static bool isDualMono(const uint8_t* data, uint32_t frames, uint32_t bytesPerSample) {
-    if (bytesPerSample == 2) {
-        for (uint32_t i = 0; i < frames; i++, data += 4) {
-            if (data[0] != data[2] || data[1] != data[3]) return false;
-        }
-    } else {
-        for (uint32_t i = 0; i < frames; i++, data += 2) {
-            if (data[0] != data[1]) return false;
-        }
-    }
-    return true;
-}
-
+#include "ctr_sfxcopy.inc" // sfxcopy: sfxIsDualMono, sfxCopyPcm (late code)
+#line 1412 // sfxcopy: main's numbering (the __LINE__ trap)
 // Copies a PCM WAV into linear memory in the format NDSP plays. Stereo files
 // whose channels are identical are stored as mono. False if the WAV is empty
 // or (with *outOfMemory set) no linear block that size is free.
@@ -1420,7 +1436,7 @@ static bool buildSfx(CtrAudioSystem* ca, CachedSfx* c, const CtrDecoder* wav, co
     uint32_t bytesPerSample = wav->wavBits / 8u;
     uint32_t frames = (uint32_t) wav->totalFrames;
     if (frames == 0) return false;
-    bool dualMono = wav->channels == 2 && isDualMono(src, frames, bytesPerSample);
+    bool dualMono = wav->channels == 2 && sfxIsDualMono(src, frames, bytesPerSample);
     uint32_t outChannels = dualMono ? 1 : wav->channels;
     uint32_t bytes = frames * outChannels * bytesPerSample;
 
@@ -1432,21 +1448,8 @@ static bool buildSfx(CtrAudioSystem* ca, CachedSfx* c, const CtrDecoder* wav, co
         return false;
     }
 
-    if (bytesPerSample == 2) {
-        if (dualMono) {
-            for (uint32_t i = 0; i < frames; i++) {
-                pcm[i * 2] = src[i * 4];
-                pcm[i * 2 + 1] = src[i * 4 + 1];
-            }
-        } else {
-            memcpy(pcm, src, bytes);
-        }
-    } else {
-        // WAV 8-bit is unsigned; NDSP PCM8 is signed.
-        uint32_t step = dualMono ? 2 : 1;
-        uint32_t samples = frames * outChannels;
-        for (uint32_t i = 0; i < samples; i++) pcm[i] = src[i * step] ^ 0x80;
-    }
+    sfxCopyPcm(pcm, src, frames, bytesPerSample, dualMono, bytes);
+#line 1448 // sfxcopy: main's numbering (the __LINE__ trap)
     DSP_FlushDataCache(pcm, bytes);
 
     c->pcm = pcm;
@@ -2209,6 +2212,14 @@ static void ctrDestroy(AudioSystem* audio) {
 
 // ===[ Vtable: update ]===
 
+#ifdef CTRPORT_AUDIO_METRICS
+#include "ctr_adpcm_metrics.h"
+AM_CODE static void amStatsLock(LightLock* lock);
+AM_CODE static void amStatsUnlock(LightLock* lock);
+#define LightLock_Lock amStatsLock
+#define LightLock_Unlock amStatsUnlock
+#endif
+#line 2210
 static void logWindowStats(CtrAudioSystem* ca) {
     u64 now = svcGetSystemTick();
     double wallMs = TICKS_TO_MS(now - ca->windowStart);
@@ -2271,6 +2282,11 @@ static void logWindowStats(CtrAudioSystem* ca) {
     ca->windowDecodeTicks = 0;
 }
 
+#ifdef CTRPORT_AUDIO_METRICS
+#undef LightLock_Lock
+#undef LightLock_Unlock
+#endif
+#line 2272
 static void ctrUpdate(AudioSystem* audio, float deltaTime) {
     CtrAudioSystem* ca = (CtrAudioSystem*) audio;
     u64 t0 = svcGetSystemTick();
@@ -3051,10 +3067,10 @@ static bool ctrDestroyStream(AudioSystem* audio, int32_t streamIndex) {
 
 // ===[ Creation ]===
 
-static AudioSystemVtable ctrAudioSystemVtable = {
+__attribute__((noinline, section(".text.pcmwait_late"))) static void pcmWaitUpdate(AudioSystem* audio, float deltaTime); static AudioSystemVtable ctrAudioSystemVtable = {
     .init = ctrInit,
     .destroy = ctrDestroy,
-    .update = ctrUpdate,
+    .update = pcmWaitUpdate,
     .playSound = ctrPlaySound,
     .setSoundSpatial = ctrSetSoundSpatial,
     .setSoundEmitterGain = ctrSetSoundEmitterGain,
@@ -3367,6 +3383,9 @@ typedef struct {
     int8_t trigger[2];
 } UtaSeamSound;
 
+#if defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+#include "ctr_adpcm_uta_state.inc"
+#else
 static CtrAudioSystem* utaCa UTA_BSS;
 static volatile bool utaActive UTA_BSS;
 static volatile bool utaMapped UTA_BSS; // utaMap holds the mapping (identity until a voice first moves)
@@ -3393,6 +3412,8 @@ static uint32_t utaProbe UTA_BSS;
 static uint8_t utaPeak UTA_BSS, utaPeakAll UTA_BSS, utaPeakHeld UTA_BSS;
 static u64 utaCbTicks UTA_BSS, utaCbMaxTicks UTA_BSS, utaLastLog UTA_BSS;
 
+#endif
+#line 3368
 static const char utaLogFormat[] UTA_RODATA = "Audio: declick %lu tails, %lu yielded, %lu moved, %lu unstarted, %lu hard, "
                                               "%lu starved; %lu pieces; peak %u channels (%u in all, %u holding a tail); "
                                               "callback %.1f us avg, %.1f max\n";
@@ -3402,7 +3423,24 @@ static const char utaKept[] UTA_RODATA = "kept";
 static const char utaCached[] UTA_RODATA = " (cached)";
 static const char utaNone[] UTA_RODATA = "";
 
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+#if defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+#define AS_CODE MM_CODE
+#else
+#define AS_CODE __attribute__((noinline, noipa, section(".text.late.adpcm")))
+#endif
+AS_CODE static void adSfxForget(int p);
+AS_CODE static void adSfxRate(int p, float rate);
+AS_CODE static void adSfxSegment(int p, UtaChan* c, Voice* v, ndspWaveBuf* wb);
+AS_CODE static const uint8_t* adSfxPiece(int p, const UtaChan* c, const UtaSeg* g, uint32_t* frames);
+AS_CODE static const UtaSeamSound* adSfxSeam(const Voice* v);
+AS_CODE static bool adSfxOffsets(const UtaChan* c, float out[2]);
+AS_CODE static const int16_t* adSfxSeamPcm(int p, const UtaChan* c, const UtaSeg* g, uint32_t frames, int16_t* dst);
+AS_CODE static void adSfxCaptureTail(int p, const UtaChan* c);
+AS_CODE static const uint8_t* adSfxTailSample(int p, const UtaChan* c, const UtaSeg* g, uint32_t j);
+#endif
 UTA_LATE static int utaPhys(int id) {
+#line 3389
     return utaMapped && id >= 0 && id < UTA_CHANNELS ? utaMap[id] : id;
 }
 
@@ -3441,6 +3479,10 @@ UTA_LATE static bool utaStreamOn(int id) {
 
 // The channel holds none of this layer's pieces any more (after a clear or a reset).
 UTA_LATE static void utaForget(int p, UtaChan* c) {
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+    adSfxForget(p);
+#endif
+#line 3427
     c->state = UTA_IDLE;
     c->segs = 0;
     memset(utaWb[p], 0, sizeof(utaWb[p]));
@@ -3502,8 +3544,12 @@ UTA_LATE static uint32_t utaSeamOffsets(const UtaChan* c, const UtaSeg* g, float
     uint32_t n = (uint32_t) (c->rate * UTA_SEAM_SECONDS_X1000 / 1000.0f);
     if (n < 8) n = 8;
     if (n > UTA_TAIL_MAX) n = UTA_TAIL_MAX;
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+    if (adSfxOffsets(c, off)) return n;
+#endif
     const int16_t* x = (const int16_t*) g->data;
     uint32_t ch = c->chans;
+#line 3490
     for (uint32_t k = 0; k < 2; k++) {
         off[k] = 0.0f;
         if (k >= ch || !c->trigger[k]) continue;
@@ -3529,8 +3575,14 @@ UTA_LATE static void utaBuildSeam(int p, UtaChan* c, const UtaSeg* g, uint32_t f
     uint32_t n = utaSeamOffsets(c, g, off);
     uint32_t m = frame > n ? frame : n;
     if (m > UTA_SEAM_MAX) m = UTA_SEAM_MAX;
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+    int16_t* dst = (int16_t*) (utaSeamPcm + (uint32_t) p * UTA_SEAM_MAX * 4);
+    const int16_t* x = adSfxSeamPcm(p, c, g, m, dst);
+#else
     const int16_t* x = (const int16_t*) g->data;
     int16_t* dst = (int16_t*) (utaSeamPcm + (uint32_t) p * UTA_SEAM_MAX * 4);
+#endif
+#line 3517
     uint32_t ch = c->chans;
     for (uint32_t j = 0; j < m; j++) {
         float w = utaSeamWeight(j, n);
@@ -3587,7 +3639,14 @@ UTA_LATE static void utaFeed(int p, UtaChan* c) {
         uint32_t n = target - u;
         if (n < frame) n = frame;
         if (n + frame > g->frames - c->off) n = g->frames - c->off; // no piece shorter than a DSP frame after it
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+        const uint8_t* source = adSfxPiece(p, c, g, &n);
+        if (!source) return;
+        utaQueue(p, c, source, n, c->cur, c->off, UTA_PIECE_SOUND);
+#else
         utaQueue(p, c, g->data + c->off * c->bytes, n, c->cur, c->off, UTA_PIECE_SOUND);
+#endif
+#line 3574
         c->off += n;
         u += n;
     }
@@ -3656,20 +3715,40 @@ UTA_LATE static void utaChnSetInterp(int id, ndspInterpType type) {
 }
 
 UTA_LATE static void utaChnSetFormat(int id, u16 format) {
+#ifdef CTRPORT_ADPCM_MUSIC
+    if (mmControl(id, 4, NULL)) return;
+#endif
+#line 3642
     UTA_PHYS_FORMAT(utaPhys(id), format);
 }
 
 UTA_LATE static void utaChnSetRate(int id, float rate) {
+#ifdef CTRPORT_ADPCM_MUSIC
+    if (mmControl(id, 1, &rate)) return;
+#endif
+#line 3646
     int p = utaPhys(id);
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+    adSfxRate(p, rate);
+#endif
+#line 3637
     if (p >= 0 && p < UTA_CHANNELS) utaChan[p].rate = rate;
     UTA_PHYS_RATE(p, rate);
 }
 
 UTA_LATE static void utaChnSetMix(int id, float mix[12]) {
+#ifdef CTRPORT_ADPCM_MUSIC
+    if (mmControl(id, 0, mix)) return;
+#endif
+#line 3642
     UTA_PHYS_MIX(utaPhys(id), mix);
 }
 
 UTA_LATE static void utaChnSetPaused(int id, bool paused) {
+#ifdef CTRPORT_ADPCM_MUSIC
+    if (mmControl(id, 2, &paused)) return;
+#endif
+#line 3646
     int p = utaPhys(id);
     if (p >= 0 && p < UTA_CHANNELS) utaChan[p].paused = paused;
     UTA_PHYS_PAUSED(p, paused);
@@ -3678,11 +3757,19 @@ UTA_LATE static void utaChnSetPaused(int id, bool paused) {
 // A sound effect this layer feeds is not cut here: the next frame callback ends it with its tail (utaStop). The voice is
 // free for the game at once, as before, and its buffers are no longer written.
 UTA_LATE static void utaChnWaveBufClear(int id) {
+#ifdef CTRPORT_ADPCM_MUSIC
+    if (mmControl(id, 3, NULL)) return;
+#endif
+#line 3654
     int p = utaPhys(id);
     if (utaActive && id >= 0 && id < UTA_CHANNELS && p >= 0 && p < UTA_CHANNELS) {
         LightLock_Lock(&utaLock);
         UtaChan* c = &utaChan[p];
         if (c->state == UTA_FEED || c->state == UTA_PENDING) {
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+            adSfxCaptureTail(p, c);
+#endif
+#line 3669
             for (int i = 0; i < 2; i++) c->seg[i].mirror = NULL;
             if (c->state == UTA_FEED && !c->paused) c->state = UTA_PENDING;
             else utaClearPhys(p, c);
@@ -3699,6 +3786,7 @@ UTA_LATE static void utaChnWaveBufClear(int id) {
 // Whether a cached sound's loop seam is smoothed, per channel; measured once per cached copy. Game thread.
 UTA_LATE static const UtaSeamSound* utaSeamSound(const Voice* v) {
     const CachedSfx* s = v->sfx;
+#line 3685
     int chans = s->format & 3;
     if (((s->format >> 2) & 3) != 1 || chans < 1 || chans > 2 || s->frames < 4 * UTA_TAIL_MAX) return NULL;
     if (v->soundIndex < 0 || (uint32_t) v->soundIndex >= utaCa->soundCount) return NULL;
@@ -3746,7 +3834,16 @@ UTA_LATE static void utaChnWaveBufAdd(int id, ndspWaveBuf* buf) {
     }
     int chans = v->sfx->format & 3, encoding = (v->sfx->format >> 2) & 3;
     // Measured before the lock: the first scan of a sound reads all of it, and the frame callback waits on the lock.
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+    const UtaSeamSound* seam = NULL;
+    if (buf->looping && utaSeamPcm != NULL) {
+        seam = adSfxSeam(v);
+        if (!seam) seam = utaSeamSound(v);
+    }
+#else
     const UtaSeamSound* seam = buf->looping && utaSeamPcm != NULL ? utaSeamSound(v) : NULL;
+#endif
+#line 3733
     LightLock_Lock(&utaLock);
     UtaChan* c = &utaChan[p];
     if (c->state == UTA_PENDING || c->state == UTA_TAILING) {
@@ -3776,6 +3873,10 @@ UTA_LATE static void utaChnWaveBufAdd(int id, ndspWaveBuf* buf) {
         return;
     }
     UtaSeg* g = &c->seg[c->segs];
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+    adSfxSegment(p, c, v, buf);
+#endif
+#line 3762
     g->data = (const uint8_t*) buf->data_vaddr;
     g->frames = buf->nsamples;
     g->looping = buf->looping;
@@ -3873,7 +3974,12 @@ UTA_LATE static void utaStop(int p, UtaChan* c, uint32_t cb) {
                 add[0] = seamOff[0] * sw;
                 add[1] = seamOff[1] * sw;
             }
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+            src = adSfxTailSample(p, c, g, j);
+#else
             src = g->data + c->off * c->bytes;
+#endif
+#line 3860
             c->off++;
             any = true;
         }
@@ -3947,6 +4053,10 @@ UTA_LATE static void utaFrameCallback(void* data) {
         if (dt > utaCbMaxTicks) utaCbMaxTicks = dt;
         LightLock_Unlock(&utaLock);
     }
+#ifdef CTRPORT_ADPCM_MUSIC
+    mmFrame();
+#endif
+#line 3933
     utaEngineCallback(data);
 }
 
@@ -3977,6 +4087,7 @@ UTA_LATE static void utaSetCallback(ndspCallback callback, void* data) {
 
 // The loop seam of the stream whose decoder this is, or NULL for any other decoder (sounds decoded into the cache).
 UTA_LATE static UtaSeam* utaSeamFor(CtrDecoder* dec, int* index) {
+#line 3963
     if (utaCa == NULL) return NULL;
     uintptr_t base = (uintptr_t) &utaCa->streams[0], d = (uintptr_t) dec;
     if (d < base || d >= base + sizeof(utaCa->streams)) return NULL;
@@ -3987,12 +4098,17 @@ UTA_LATE static UtaSeam* utaSeamFor(CtrDecoder* dec, int* index) {
 }
 
 UTA_LATE static bool utaDecOpenFile(CtrDecoder* dec, const char* path) {
+#line 3973
     int i;
     UtaSeam* s = utaSeamFor(dec, &i);
     if (s != NULL) {
         memset(s, 0, sizeof(*s));
         s->fromZero = true;
     }
+#ifdef CTRPORT_ADPCM_MUSIC
+    if (mmDecOpen(dec, path)) return true;
+#endif
+#line 3979
     return UTA_PHYS_OPEN_FILE(dec, path);
 }
 
@@ -4007,6 +4123,7 @@ UTA_LATE static bool utaDecOpenMemory(CtrDecoder* dec, const uint8_t* data, uint
 }
 
 UTA_LATE static bool utaDecSeek(CtrDecoder* dec, uint64_t frame) {
+#line 3993
     int i;
     UtaSeam* s = utaSeamFor(dec, &i);
     if (s != NULL) {
@@ -4016,11 +4133,22 @@ UTA_LATE static bool utaDecSeek(CtrDecoder* dec, uint64_t frame) {
         s->atEnd = false;
         if (!loop) s->remain = 0;
     }
+#ifdef CTRPORT_ADPCM_MUSIC
+    bool result;
+    if (mmDecSeek(dec, frame, &result)) return result;
+#endif
+#line 4002
     return UTA_PHYS_SEEK(dec, frame);
 }
 
 UTA_LATE static int32_t utaDecRead(CtrDecoder* dec, int16_t* out, uint32_t maxFrames) {
+#ifdef CTRPORT_ADPCM_MUSIC
+    int32_t got;
+    if (!mmDecRead(dec, out, maxFrames, &got)) got = UTA_PHYS_READ(dec, out, maxFrames);
+#else
     int32_t got = UTA_PHYS_READ(dec, out, maxFrames);
+#endif
+#line 4007
     int idx = 0;
     UtaSeam* s = utaSeamFor(dec, &idx);
     if (s == NULL || !utaCa->streams[idx].loop) return got;
@@ -4260,7 +4388,7 @@ UTSFX_DATA static struct {
     AudioSystemVtable outer;
     uint32_t installed, installedKb, dropped, failed;
     u64 workTicks;
-} usw;
+} usw; UTSFX_DATA static volatile uint32_t usDoneCount; UTSFX_DATA static uint32_t usDoneSeen; static void usFastCheck(void);
 
 UTSFX_CODE static bool usReadAt(int fd, uint32_t at, uint8_t* out, uint32_t n) {
     if (lseek(fd, (off_t) at, SEEK_SET) != (off_t) at) return false;
@@ -4408,6 +4536,12 @@ UTSFX_CODE static bool usCopy(int fd, UtSfxJob* job) {
 
 bool CtrMemory_allowRelief(bool allow); // ctr_memory.h: off, so a failed malloc here never takes linear memory
 
+#ifdef CTRPORT_ADPCM_SFXPACK
+#define AP_JOB 0xFFFFFFFFu // job->header of a pack job (WAV jobs: 0 or 4)
+MM_CODE static bool apCopy(UtSfxJob* job);
+MM_CODE static void apFinish(CtrAudioSystem* ca, UtSfxJob* job, bool done);
+#endif
+#line 4394
 UTSFX_CODE static void usWorkerMain(void* arg) {
     (void) arg;
     CtrMemory_allowRelief(false);
@@ -4426,11 +4560,21 @@ UTSFX_CODE static void usWorkerMain(void* arg) {
             LightLock_Unlock(&usw.lock);
             if (job == NULL) break;
             u64 start = svcGetSystemTick();
+#ifdef CTRPORT_ADPCM_SFXPACK
+            bool ok;
+            if (job->header == AP_JOB) ok = apCopy(job);
+            else {
+                if (0 > fd) fd = open(usw.path, O_RDONLY);
+                ok = fd >= 0 && usCopy(fd, job);
+            }
+#else
             if (0 > fd) fd = open(usw.path, O_RDONLY);
             bool ok = fd >= 0 && usCopy(fd, job);
+#endif
+#line 4414
             LightLock_Lock(&usw.lock);
             job->ticks = svcGetSystemTick() - start;
-            job->state = ok ? UTSFX_JOB_DONE : UTSFX_JOB_FAILED;
+            job->state = ok ? UTSFX_JOB_DONE : UTSFX_JOB_FAILED; usDoneCount = usDoneCount + 1u; // usfast: one more finished
             LightLock_Unlock(&usw.lock);
         }
     }
@@ -4447,10 +4591,10 @@ static const char usVerifyGaveUp[] UTSFX_VERIFY_CONST = "utsfx verify '%s': the 
 // shed and evict), unless the sound got there first, is on its way by the game's own path, or doesn't fit under the
 // cap without pushing something out.
 UTSFX_CODE static void usInstall(void) {
-    CtrAudioSystem* ca = gShutdownTarget;
+    CtrAudioSystem* ca = gShutdownTarget; if (usDoneCount == usDoneSeen) { usFastCheck(); return; } // usfast: none finished
     // The worker's results are read after its lock (the worker may run on another core).
     uint32_t finished = 0;
-    LightLock_Lock(&usw.lock);
+    LightLock_Lock(&usw.lock); usDoneSeen = usDoneCount; // usfast: under the lock, so it covers every state seen below
     for (int i = 0; UTSFX_JOBS > i; i++) {
         if (usw.jobs[i].state == UTSFX_JOB_DONE || usw.jobs[i].state == UTSFX_JOB_FAILED) finished |= 1u << i;
     }
@@ -4460,6 +4604,11 @@ UTSFX_CODE static void usInstall(void) {
         UtSfxJob* job = &usw.jobs[i];
         uint8_t state = job->state;
         usw.workTicks += job->ticks;
+#ifdef CTRPORT_ADPCM_SFXPACK
+        if (job->header == AP_JOB) apFinish(ca, job, state == UTSFX_JOB_DONE);
+        else
+#endif
+#line 4446
         if (state == UTSFX_JOB_FAILED) {
             usw.failed++;
 #ifdef UTSFX_VERIFY
@@ -4889,6 +5038,45 @@ __asm__(".pushsection .text.ctrSetSoundGain, 1\n.space " CREDFIX_SETGAIN_PAD "\n
 __asm__(".pushsection .text.ctrGetSoundGain, 1\n.space " CREDFIX_GETGAIN_PAD "\n.popsection");
 #endif
 
+// sfxcopy (aotprof): with buildSfx's loops in ctr_sfxcopy.inc's late code, prepareAudoSource is 424 B shorter
+// (0x658 -> 0x4b0 on all four targets, GCC 16.1.0). Zero bytes after its code, in a later subsection of its own
+// section and outside its symbol, keep its slot at main's extent; nothing branches there
+// (tools/analysis/check_sfxcopy_slot.py).
+#define SFXCOPY_PAD "424"
+#if defined(__3DS__) && defined(NDEBUG)
+__asm__(".pushsection .text.prepareAudoSource, 1\n.space " SFXCOPY_PAD "\n.popsection");
+#endif
+// usfast (aotprof): usInstall runs on every play, audio update and room change, and took the worker's lock and scanned
+// all its jobs each time. The worker counts finished jobs (done or failed) under its lock, beside the state write
+// (usDoneCount); usInstall reads the count under the lock when it scans (usDoneSeen) and returns at once while the two
+// match: no job has finished since, and every scan frees every job it finds, so nothing waits for a later scan. A
+// count the game core has not seen yet is found by the next call, as if the worker had finished a moment later. The
+// lines above sit on existing lines and this block before the #line below, so no line number moves (__LINE__ trap).
+#ifdef UTSFX_FASTCHECK
+// Gate build only (define it at the top of the utsfx section; never in a shipped build): each time usInstall skips,
+// take the lock and look for a finished job whose count it has already seen. One would be a lost install.
+static uint32_t usFastSkips UTSFX_DATA, usFastLost UTSFX_DATA;
+UTSFX_CODE static void usFastCheck(void) {
+    bool lost = false;
+    LightLock_Lock(&usw.lock);
+    if (usDoneCount == usDoneSeen) {
+        for (int i = 0; UTSFX_JOBS > i; i++) {
+            if (usw.jobs[i].state == UTSFX_JOB_DONE || usw.jobs[i].state == UTSFX_JOB_FAILED) lost = true;
+        }
+    }
+    LightLock_Unlock(&usw.lock);
+    usFastSkips++;
+    if (lost) usFastLost++;
+    if (lost || (usFastSkips & 255u) == 0) {
+        logInfo("utsfx fastcheck: %lu skips, %lu lost, %lu done, %lu installed\n", (unsigned long) usFastSkips,
+                (unsigned long) usFastLost, (unsigned long) usDoneCount, (unsigned long) usw.installed);
+    }
+}
+#else
+static inline void usFastCheck(void) {} // shipped builds: the skip makes no call
+#endif
+#line 4889 // sfxcopy: main's numbering (the __LINE__ trap)
+
 // ===[ flowend: queued sound reads go between the pieces of a cache decode (late code, both games) ]===
 // The loader thread ran a whole-sound decode into the SFX cache to its end (runPrepDecode), and a sound read queued
 // meanwhile waited for all of it: Photoshop Flowey's mouth beam (its beam sound) queued behind the alarm's
@@ -5085,7 +5273,16 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static 
 __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) int __wrap_CtrAudioSystem_preloadSfx(int32_t soundIndex, uint32_t bytes,
                                                                                                            uint32_t floorBytes) {
     flowendKeepSound(soundIndex);
+#ifdef CTRPORT_ADPCM_MUSIC
+    int got = mmSfxAdmit(soundIndex, bytes, floorBytes);
+    if (got < 0) got = __real_CtrAudioSystem_preloadSfx(soundIndex, bytes, floorBytes);
+#elif defined(CTRPORT_ADPCM_SFXPACK)
+    int got = apAdmit(soundIndex, bytes, floorBytes);
+    if (got == -2) got = __real_CtrAudioSystem_preloadSfx(soundIndex, bytes, floorBytes);
+#else
     int got = __real_CtrAudioSystem_preloadSfx(soundIndex, bytes, floorBytes);
+#endif
+#line 5072
     flowendLayer();
     return got;
 }
@@ -5094,7 +5291,14 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) int __w
                                                                                                          uint32_t floorBytes) {
     // A sound preloadSfx couldn't copy in the frame is queued next: it is already in the list.
     if (flowendKeepCount == 0 || flowendKeep[flowendKeepCount - 1] != soundIndex) flowendKeepSound(soundIndex);
+#ifdef CTRPORT_ADPCM_MUSIC
+    int got = mmSfxPlanned(soundIndex) ? -1 : __real_CtrAudioSystem_queueSfx(soundIndex, kib, floorBytes);
+#elif defined(CTRPORT_ADPCM_SFXPACK)
+    int got = apQueue(soundIndex, kib, floorBytes);
+#else
     int got = __real_CtrAudioSystem_queueSfx(soundIndex, kib, floorBytes);
+#endif
+#line 5081
     flowendLayer();
     return got;
 }
@@ -5274,3 +5478,377 @@ __attribute__((noinline, section(".text.stallfix_late"))) uint64_t CtrAudioSyste
     return ((CtrAudioSystem*) audio)->windowLoadTicks;
 }
 #endif
+
+// ADPCM measurement only: same stats critical section as the original log,
+// before it resets its counters. Existing call sites only change targets.
+#ifdef CTRPORT_AUDIO_METRICS
+static u64 amWindowTicks AM_BSS;
+static uint32_t amWindowFrames AM_BSS;
+static uint32_t amTotalFrames AM_BSS;
+#include <malloc.h>
+static const char amTimingLog[] AM_RO =
+    "[audiometrics] decode %llu ticks / %lu game frames = %.6f ms/frame; core %d\n";
+static const char amMemoryLog[] AM_RO =
+    "[audiometrics] sfx %lu B (%lu PCM8, %lu PCM16); adpcm_same_channels %lu B; "
+    "stream_linear %lu B; stream_context_heap %lu B; decoder_heap_usable %lu B; "
+    "decoder_linear_requested %lu B; tracked %lu allocations; overflow %lu\n";
+static const char amSfxHeapLog[] AM_RO =
+    "[audiometrics] sfx_metadata %lu heap B %lu linear B; audo_blobs %lu heap B %lu linear B\n";
+static const char amProcessLog[] AM_RO =
+    "[audio-process] updates %lu; heap_used %lu B; linear_free %lu B; sfx_linear %lu B; heap_capacity %lu B; linear_capacity %lu B\n";
+extern u32 __ctru_heap_size, __ctru_linear_heap_size;
+
+AM_CODE static void amStatsLock(LightLock* lock) {
+    LightLock_Lock(lock);
+    CtrAudioSystem* ca = (CtrAudioSystem*)((uint8_t*)lock - offsetof(CtrAudioSystem, statsLock));
+    amWindowTicks = ca->threadDecodeTicks;
+    amWindowFrames = ca->windowFrames;
+    amTotalFrames += amWindowFrames;
+}
+
+AM_CODE static void amStatsUnlock(LightLock* lock) {
+    LightLock_Unlock(lock);
+    CtrAudioSystem* ca = (CtrAudioSystem*)((uint8_t*)lock - offsetof(CtrAudioSystem, statsLock));
+    uint32_t pcm8 = 0, pcm16 = 0, adpcm = 0, streamBytes = 0, sfxLinear = 0;
+    for (uint32_t i = 0; i < ca->soundCount; ++i) {
+        const CachedSfx* c = &ca->sfxCache[i];
+        if (!c->pcm || !c->bytes) continue;
+        sfxLinear += (uint32_t)linearGetSize(c->pcm);
+        if (((c->format >> 2) & 3u) == NDSP_ENCODING_PCM8) pcm8 += c->bytes;
+        else pcm16 += c->bytes;
+        uint32_t channels = c->format & 3u;
+        // DTAD header, DSP frames, and a history for each 2,044-frame block.
+        // This estimate assumes the cache's existing mono collapse is kept.
+        adpcm += 128u + channels * (8u * ((c->frames + 13u) / 14u) +
+                                   8u * ((c->frames + 2043u) / 2044u));
+    }
+    for (int i = 0; i < STREAM_CONTEXTS; ++i)
+        for (int j = 0; j < STREAM_BUFFERS; ++j)
+            if (ca->streams[i].bufs[j].pcm)
+                streamBytes += STREAM_BUFFER_FRAMES * 2u * sizeof(int16_t);
+    AmAllocationStats stats;
+    amAllocationStats(&stats);
+    uint32_t metadataHeap = 0, metadataLinear = 0, blobHeap = 0, blobLinear = 0;
+    uint32_t count = ca->soundCount ? ca->soundCount : 1;
+    amMemoryUsage(ca->sfxCache, count * sizeof(CachedSfx), &metadataHeap, &metadataLinear);
+    amMemoryUsage(ca->soundLengths, count * sizeof(float), &metadataHeap, &metadataLinear);
+    amMemoryUsage(ca->warned, count * sizeof(bool), &metadataHeap, &metadataLinear);
+    amMemoryUsage(ca->soundForms, count * sizeof(uint8_t), &metadataHeap, &metadataLinear);
+    amMemoryUsage(ca->noBackgroundRead, count * sizeof(bool), &metadataHeap, &metadataLinear);
+    for (int i = 0; i < arrlen(ca->base.audioGroups); ++i) {
+        const DataWin* group = ca->base.audioGroups[i];
+        if (!group || group->mappedFile || !group->lazyLoadAudio) continue;
+        for (uint32_t j = 0; j < group->audo.count; ++j) {
+            const AudioEntry* entry = &group->audo.entries[j];
+            amMemoryUsage(entry->data, entry->dataSize, &blobHeap, &blobLinear);
+        }
+    }
+    logQuiet(amTimingLog, (unsigned long long)amWindowTicks, (unsigned long)amWindowFrames,
+             amWindowFrames ? TICKS_TO_MS(amWindowTicks) / amWindowFrames : 0.0, ca->threadCore);
+    logQuiet(amMemoryLog, (unsigned long)ca->cacheBytes, (unsigned long)pcm8, (unsigned long)pcm16,
+             (unsigned long)adpcm, (unsigned long)streamBytes, (unsigned long)sizeof(ca->streams),
+             (unsigned long)stats.heapBytes, (unsigned long)stats.linearRequestedBytes,
+             (unsigned long)stats.allocations, (unsigned long)stats.overflow);
+    logQuiet(amSfxHeapLog, (unsigned long)metadataHeap, (unsigned long)metadataLinear,
+             (unsigned long)blobHeap, (unsigned long)blobLinear);
+    logQuiet(amProcessLog, (unsigned long)amTotalFrames, (unsigned long)mallinfo().uordblks,
+             (unsigned long)linearSpaceFree(), (unsigned long)sfxLinear,
+             (unsigned long)__ctru_heap_size, (unsigned long)__ctru_linear_heap_size);
+}
+#endif
+
+#ifdef CTRPORT_ADPCM_SFX
+#include "ctr_adpcm_sfx.inc"
+#endif
+
+#ifdef CTRPORT_ADPCM_MUSIC
+#include "ctr_adpcm_music.inc"
+#endif
+
+#ifdef CTRPORT_ADPCM_SFXPACK
+#include "ctr_adpcm_pack.inc"
+#endif
+// ===[ flowpitch: every voice at the game's frame clock (late code, both games; flowend, 2026-10-28) ]===
+// Every rate this file sets goes through here (ctr_audio_utaudio.h's ndspChnSetRate): each voice, music, sound effect
+// or stream, gets its rate times CTR_MUSIC_RATE_SCALE (ctr_music_clock.h), so its samples keep pace with the game's
+// 29.9156 frames a second, as the whole game does (ruling 10-28: no music/sfx split, nothing to classify). Set
+// with the rate, so once per start and per pitch, gain or pause change, as before; nothing per frame. What the game
+// reads stays in the sound's own time: the track position (the DSP's sample position over the sample rate), lengths
+// and loops are counted in samples, and audio_sound_get_pitch returns the game's pitch. The silent path (no DSP)
+// never gets here. The log line is claimed with an atomic exchange: the decode thread (stream opens) and the game
+// thread both set rates.
+#include "ctr_music_clock.h"
+#define FLOWPITCH_LATE __attribute__((noinline, noipa, optimize("Os"), section(".text.flowpitch_late")))
+static bool flowpitchLogged __attribute__((section(".bss.flowpitch_late")));
+static const char flowpitchLog[] __attribute__((section(".rodata.flowpitch_in_text"))) =
+    "Audio: every voice plays at x%.6f of its rate, the game's frame clock (%.4f Hz screens)\n";
+
+FLOWPITCH_LATE static void flowpitchChnSetRate(int id, float rate) {
+    CtrAudioSystem* ca = utaCa;
+    if (ca != NULL && utaPost != NULL && !__atomic_exchange_n(&flowpitchLogged, true, __ATOMIC_RELAXED))
+        utaPost(ca, flowpitchLog, (double) CTR_MUSIC_RATE_SCALE, 60.0 * (double) CTR_MUSIC_RATE_SCALE);
+    utaChnSetRate(id, rate * CTR_MUSIC_RATE_SCALE);
+}
+
+// ctr_video.c's tickClock calls this in place of its u64-to-double conversion (__aeabi_ul2d, base-standard calling
+// convention, so tickClock keeps its code and size): a video's wall clock (one not driven by the game's frame clock)
+// runs at the game's pace too. Without it a video with no audio of its own ran 0.28% ahead of the sound the game plays
+// beside it (DELTARUNE Ch5's garden intro and its OGG: 84 ms over 30 s). It lives here, not in ctr_video.c, because a
+// callee defined in that file reorders its functions.
+__attribute__((noinline, noipa, optimize("Os"), pcs("aapcs"), section(".text.flowpitch_late")))
+double flowpitchVideoUl2d(u64 ticks) {
+    return (double) ticks * (double) CTR_MUSIC_RATE_SCALE;
+}
+
+// ===[ A linear block the DSP still reads is freed only once nothing reads it (late; both games) ]===
+// stopVoice frees the voice at once (kind VOICE_FREE, so sfxInUse no longer sees it), but the uta layer keeps reading
+// the sound's PCM after that: a stopped channel is UTA_PENDING until the next frame callback builds its tail from the
+// PCM (utaStop), and the pieces it had queued (UTA_AHEAD_FRAMES DSP frames of the sound) stay queued or playing out of
+// the PCM until the tail ends (UTA_TAILING, cut at tailEnd). With DSP-ADPCM sound effects (CTRPORT_ADPCM_SFX/SFXPACK,
+// and MUSIC's mono adapter) a channel's decoder also reads the cached copy (adSfx.physical[p].meta->data) until
+// utaForget. A free in that window (evictSfx, CtrAudioSystem_shedSfx, keepLinearFloor's shed) gave the block back
+// while the DSP or the callback still read it, and the next linear allocation (a texture tile, another sound) could
+// take it. The window scales with 1/pitch (tailEnd counts the queued source frames in DSP frames): ~20-70 ms at pitch
+// 1, seconds near the 0.01 floor.
+// Every linearFree in this file goes through CtrAudio_pcmWaitFree: a block a uta channel may still read is noted on a
+// list and freed (through ctr_memory.c's wrap, as before) once no channel reads it; any other block is freed at once,
+// as before. A block that may be read is never freed and nothing waits. Whether it may be read:
+// - uta running (utaActive): a scan of the channels under the uta lock. If the lock is taken (the frame callback, a
+//   reset, adpcm's reaper freeing its rings under it), the answer is "may be read": the block waits for the next check.
+// - uta shut down but the DSP still on (shutdownAudio between ndspSetCallback(NULL) and ndspExit: the channels' states
+//   are no longer kept, the DSP still plays what was queued): every block may be read, so every free waits.
+// - DSP off (no audio system, or its ndspReady false: after ndspExit in shutdownAudio, or a silent start): nothing
+//   reads linear memory, so the whole list is freed and every free is at once. shutdownAudio's frees after ndspExit
+//   (the stream buffers, then the cached sounds) so drain the list after ndspChnReset and ndspExit, at UNDERTALE's exit
+//   and at DELTARUNE's game change (nothing waiting lives on into the next chapter).
+// The list has no size limit and is lock-free (a note is pushed with a compare-and-swap; a flush takes the whole list
+// with an exchange and pushes back what is still read), so any thread may use it, under any lock. Notes come from a
+// fixed pool (PCMWAIT_NOTES, more than the blocks the channels can read at once), then the heap without relief; with
+// neither the block is kept for good (logged), never freed under the DSP.
+// The list is flushed by every free in this file, by the audio update, by this file's linearSpaceFree (a file-local
+// alias like linearFree's: the sound plan's floor checks) and by any linear allocation that fails, in any file
+// (ctr_memory_lock.c's linearAlloc entry calls CtrMemory_linearAllocOnce, which CMakeLists.txt wraps: on failure the
+// idle waiting blocks are freed and the allocation is tried once more; nothing in the game calls linearMemAlign).
+// The cache's byte count drops at the free, as before; the audio update then counts the bytes still waiting against
+// the cache's cap (ca->cacheBytes, the game thread's), until they are freed.
+// The redirections are file-local aliases of the names linearFree and linearSpaceFree (the .set below), not a change
+// to the code above: GCC's call graph, and so every existing function's code and order, stay as they were (a changed
+// call in freeSfx alone moved UNDERTALE's .text.late.utsfx functions); only the branch targets change. The update
+// reaches the list through the vtable (ctrAudioSystemVtable's .update names pcmWaitUpdate, which then runs ctrUpdate;
+// UNDERTALE's sound plan layer and the pause menu call the vtable's update through their copies, so they reach it
+// too).
+// This is a second layer: every free path still skips a sound a voice plays (sfxInUse: kind VOICE_SFX with that sfx,
+// which also holds a start that is deferred and not yet given to the DSP, the voice keeping its kind and sfx until its
+// buffers go out or it is stopped). It covers what sfxInUse can't see, the channel of a voice already stopped.
+// The uta layer's statics and the audio system are read through a literal table (as adpcm's CtrAdpcm_sfxView does): a
+// direct reference from this new code would add references GCC walks, and it then emitted the file's existing BSS in
+// another order.
+#define PCMWAIT_TEXT __attribute__((noinline, section(".text.pcmwait_late")))
+#define PCMWAIT_BSS __attribute__((section(".bss.pcmwait_late")))
+#define PCMWAIT_NOTES 64 // 24 channels: two segments each, plus adpcm's rings, with room to spare
+typedef struct PcmWaitNote {
+    struct PcmWaitNote* next;
+    uint8_t* pcm;
+    size_t size;
+} PcmWaitNote;
+static PcmWaitNote* pcmWaitHead PCMWAIT_BSS; // the waiting blocks' notes
+static uint32_t pcmWaitPending PCMWAIT_BSS; // notes on the list
+static uint32_t pcmWaitBytes PCMWAIT_BSS; // their blocks' bytes
+static uint32_t pcmWaitEver PCMWAIT_BSS; // blocks that had to wait, ever
+static uint32_t pcmWaitUsed[PCMWAIT_NOTES / 32] PCMWAIT_BSS; // the pool's notes in use
+static PcmWaitNote pcmWaitPool[PCMWAIT_NOTES] PCMWAIT_BSS;
+static uint32_t pcmWaitOff PCMWAIT_BSS; // frees made with the DSP off (a new count: what was counted is gone)
+static uint32_t pcmWaitCountedOff PCMWAIT_BSS;
+static uint32_t pcmWaitCounted PCMWAIT_BSS; // bytes the update added to pcmWaitCountedCa's cacheBytes
+static CtrAudioSystem* pcmWaitCountedCa PCMWAIT_BSS;
+void __wrap_linearFree(void* mem);
+u32 __wrap_linearSpaceFree(void);
+void* __real_malloc(size_t size);
+void __real_free(void* ptr);
+void* __real_CtrMemory_linearAllocOnce(size_t size);
+void* __wrap_CtrMemory_linearAllocOnce(size_t size);
+void CtrAudio_pcmWaitFree(void* mem);
+u32 CtrAudio_pcmWaitSpaceFree(void);
+// this file's linearFree and linearSpaceFree calls (and only this file's)
+__asm__(".set linearFree, CtrAudio_pcmWaitFree\n.set linearSpaceFree, CtrAudio_pcmWaitSpaceFree\n");
+
+typedef struct {
+    UtaChan* channels;
+    ndspWaveBuf (*buffers)[UTA_RING];
+    LightLock* lock;
+    volatile bool* active;
+    CtrAudioSystem* volatile* target;
+} PcmWaitUtaView;
+extern const PcmWaitUtaView ctrPcmWaitUta;
+__asm__(".pushsection .rodata.pcmwait_in_text,\"a\",%progbits\n"
+        ".p2align 2\n.global ctrPcmWaitUta\n"
+        ".type ctrPcmWaitUta,%object\nctrPcmWaitUta:\n"
+        ".word utaChan, utaWb, utaLock, utaActive, gShutdownTarget\n"
+        ".size ctrPcmWaitUta, .-ctrPcmWaitUta\n.popsection\n");
+static const char pcmWaitLog[] __attribute__((section(".rodata.pcmwait_in_text"))) =
+    "Audio (pcm wait): a cached sound's PCM (%lu KB) is still read by a stopped channel; its free waits (%lu so far)\n";
+static const char pcmWaitKeptLog[] __attribute__((section(".rodata.pcmwait_in_text"))) =
+    "Audio (pcm wait): no note for a waiting block; its PCM (%lu KB) is kept, never freed\n";
+
+enum { PCMWAIT_SCAN, PCMWAIT_KEEP, PCMWAIT_DSP_OFF };
+// What a check can know: uta running (scan its channels), uta shut down with the DSP still on (keep everything), or
+// the DSP off (nothing reads linear memory).
+PCMWAIT_TEXT static int pcmWaitState(void) {
+    const PcmWaitUtaView* v = &ctrPcmWaitUta;
+    if (*v->active) return PCMWAIT_SCAN;
+    CtrAudioSystem* ca = *v->target;
+    return ca != NULL && ca->ndspReady ? PCMWAIT_KEEP : PCMWAIT_DSP_OFF;
+}
+
+// Whether the uta layer may still read [pcm, pcm + size): a stopped channel's segments (PENDING: its tail is built from
+// them next; TAILING: what it queued before the tail still plays), any queued or playing DSP buffer in the block, or
+// (DSP-ADPCM) a channel's decoder reading the cached copy. Can't tell (the lock taken, uta shut down with the DSP on):
+// true.
+PCMWAIT_TEXT static bool pcmWaitBusy(const uint8_t* pcm, size_t size) {
+    const PcmWaitUtaView* v = &ctrPcmWaitUta;
+    int state = pcmWaitState();
+    if (state != PCMWAIT_SCAN) return state == PCMWAIT_KEEP;
+    if (pcm == NULL || size == 0) return false;
+    // Under the lock the frame callback doesn't run, and once a voice is stopped it moves its channel only toward idle
+    // (PENDING to TAILING after its tail is copied out, buffers QUEUED to PLAYING to DONE); uta shut down after the
+    // check above only freezes the states it saw.
+    if (LightLock_TryLock(v->lock) != 0) return true;
+    bool busy = false;
+    for (int p = 0; UTA_CHANNELS > p && !busy; p++) {
+        const UtaChan* c = &v->channels[p];
+        if (c->state == UTA_PENDING || c->state == UTA_TAILING) {
+            for (int i = 0; c->segs > i && 2 > i; i++) {
+                const uint8_t* d = c->seg[i].data;
+                if (d >= pcm && pcm + size > d) busy = true;
+            }
+        }
+        for (int k = 0; UTA_RING > k && !busy; k++) {
+            const ndspWaveBuf* w = &v->buffers[p][k];
+            const uint8_t* d = (const uint8_t*) w->data_vaddr;
+            if ((w->status == NDSP_WBUF_QUEUED || w->status == NDSP_WBUF_PLAYING) && d >= pcm && pcm + size > d) busy = true;
+        }
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+        const AdSfxMeta* m = adSfx.physical[p].meta;
+        if (m != NULL && m->data != NULL && m->data >= pcm && pcm + size > m->data) busy = true;
+#endif
+    }
+    LightLock_Unlock(v->lock);
+    return busy;
+}
+
+// A note: the pool's first free one (claimed with a compare-and-swap on its word), else the heap (newlib's, without
+// relief: the caller may hold any lock), else NULL.
+PCMWAIT_TEXT static PcmWaitNote* pcmWaitNew(void) {
+    for (int w = 0; PCMWAIT_NOTES / 32 > w; w++) {
+        uint32_t used = __atomic_load_n(&pcmWaitUsed[w], __ATOMIC_RELAXED);
+        while (used != 0xFFFFFFFFu) {
+            uint32_t bit = (uint32_t) __builtin_ctz(~used);
+            if (__atomic_compare_exchange_n(&pcmWaitUsed[w], &used, used | (1u << bit), true, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+                return &pcmWaitPool[w * 32 + bit];
+        }
+    }
+    return (PcmWaitNote*) __real_malloc(sizeof(PcmWaitNote));
+}
+
+PCMWAIT_TEXT static void pcmWaitDelete(PcmWaitNote* n) {
+    if (n >= pcmWaitPool && pcmWaitPool + PCMWAIT_NOTES > n) {
+        uint32_t i = (uint32_t) (n - pcmWaitPool);
+        __atomic_fetch_and(&pcmWaitUsed[i / 32], ~(1u << (i % 32)), __ATOMIC_RELEASE);
+    } else {
+        __real_free(n);
+    }
+}
+
+// Onto the list (any thread). Pushes and whole-list takes only, so a note never comes off between a reader's load of
+// the head and its compare-and-swap.
+PCMWAIT_TEXT static void pcmWaitPush(PcmWaitNote* n) {
+    PcmWaitNote* head = __atomic_load_n(&pcmWaitHead, __ATOMIC_ACQUIRE);
+    do n->next = head;
+    while (!__atomic_compare_exchange_n(&pcmWaitHead, &head, n, true, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+}
+
+// Frees the waiting blocks no channel reads any more, every one with the DSP off (any thread); the rest go back on
+// the list. Nothing comes off while uta is shut down with the DSP still on.
+PCMWAIT_TEXT static void pcmWaitFlush(void) {
+    if (__atomic_load_n(&pcmWaitHead, __ATOMIC_ACQUIRE) == NULL || pcmWaitState() == PCMWAIT_KEEP) return;
+    PcmWaitNote* n = __atomic_exchange_n(&pcmWaitHead, NULL, __ATOMIC_ACQ_REL);
+    while (n != NULL) {
+        PcmWaitNote* next = n->next;
+        if (pcmWaitBusy(n->pcm, n->size)) {
+            pcmWaitPush(n);
+        } else {
+            __wrap_linearFree(n->pcm);
+            __atomic_fetch_sub(&pcmWaitBytes, n->size, __ATOMIC_RELAXED);
+            __atomic_fetch_sub(&pcmWaitPending, 1, __ATOMIC_RELAXED);
+            pcmWaitDelete(n);
+        }
+        n = next;
+    }
+}
+
+// Every linearFree of this file (the .set above).
+PCMWAIT_TEXT void CtrAudio_pcmWaitFree(void* mem) {
+    pcmWaitFlush();
+    uint8_t* pcm = (uint8_t*) mem;
+    int state = pcmWaitState();
+    if (state == PCMWAIT_DSP_OFF) __atomic_fetch_add(&pcmWaitOff, 1, __ATOMIC_RELAXED);
+    size_t size = pcm != NULL && state != PCMWAIT_DSP_OFF ? linearGetSize(pcm) : 0;
+    if (size != 0 && pcmWaitBusy(pcm, size)) {
+        uint32_t ever = __atomic_add_fetch(&pcmWaitEver, 1, __ATOMIC_RELAXED);
+        if (16 >= ever || (ever & (ever - 1)) == 0) // the first 16, then 32, 64...
+            logInfo(pcmWaitLog, (unsigned long) (size / 1024u), (unsigned long) ever);
+        PcmWaitNote* n = pcmWaitNew();
+        if (n == NULL) {
+            logInfo(pcmWaitKeptLog, (unsigned long) (size / 1024u));
+            return;
+        }
+        n->pcm = pcm;
+        n->size = size;
+        __atomic_fetch_add(&pcmWaitBytes, size, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&pcmWaitPending, 1, __ATOMIC_RELAXED);
+        pcmWaitPush(n);
+        return;
+    }
+    __wrap_linearFree(mem);
+}
+
+// Every linearSpaceFree of this file (the .set above): the idle waiting blocks are freed first.
+PCMWAIT_TEXT u32 CtrAudio_pcmWaitSpaceFree(void) {
+    pcmWaitFlush();
+    return __wrap_linearSpaceFree();
+}
+
+// ctr_memory_lock.c's linearAlloc entry (any file, any thread; CMakeLists.txt's wrap): once more
+// after freeing the idle waiting blocks, if that could help. The linear lock isn't held here.
+PCMWAIT_TEXT void* __wrap_CtrMemory_linearAllocOnce(size_t size) {
+    void* p = __real_CtrMemory_linearAllocOnce(size);
+    if (p == NULL && __atomic_load_n(&pcmWaitHead, __ATOMIC_ACQUIRE) != NULL) {
+        pcmWaitFlush();
+        p = __real_CtrMemory_linearAllocOnce(size);
+    }
+    return p;
+}
+
+// Game thread: the bytes still waiting count against the cache's cap (evictSfx, the sound plan) until they are freed.
+// A new audio system, or frees made with the DSP off since (shutdownAudio's), start the count afresh.
+PCMWAIT_TEXT static void pcmWaitCount(void) {
+    CtrAudioSystem* ca = *ctrPcmWaitUta.target;
+    uint32_t off = __atomic_load_n(&pcmWaitOff, __ATOMIC_RELAXED);
+    if (ca != pcmWaitCountedCa || off != pcmWaitCountedOff) {
+        pcmWaitCountedCa = ca;
+        pcmWaitCountedOff = off;
+        pcmWaitCounted = 0;
+    }
+    if (ca == NULL || !ca->ndspReady) return;
+    uint32_t bytes = __atomic_load_n(&pcmWaitBytes, __ATOMIC_RELAXED);
+    ca->cacheBytes += bytes - pcmWaitCounted;
+    pcmWaitCounted = bytes;
+}
+
+// The vtable's update: the waiting blocks first, then the audio update as before.
+PCMWAIT_TEXT static void pcmWaitUpdate(AudioSystem* audio, float deltaTime) {
+    pcmWaitFlush();
+    pcmWaitCount();
+    MENUPAUSE_OPAQUE(&ctrUpdate)(audio, deltaTime);
+}
+
