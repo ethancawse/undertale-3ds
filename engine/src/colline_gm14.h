@@ -23,6 +23,16 @@
 #include "collision_gm14.h"
 #include "vm_builtins.h"
 
+// creddodge lever 3 (3DS): Colline14_box's four bbox reads go through vm_builtins.c's cdBoxSide, which computes the
+// box once at bbox_left and answers the next three reads of the same instance from it (the same values
+// VMBuiltins_getVariable gives). An extern for an extern: only the call targets change.
+#if defined(PLATFORM_3DS) && defined(__GNUC__)
+RValue cdBoxSide(VMContext* ctx, Instance* inst, int16_t builtinVarId, const char* name, int32_t arrayIndex);
+#define COLLINE14_BOX_GET cdBoxSide
+#else
+#define COLLINE14_BOX_GET VMBuiltins_getVariable
+#endif
+
 // collision_line's test of one instance: the end points as float32, x1..y2 in argument order.
 bool Colline14_lineHits(Runner* runner, Instance* inst, float x1, float y1, float x2, float y2, bool prec);
 // collision_circle's test of one instance, not precise (UT's two collision_circle calls pass prec 0; a precise call
@@ -80,7 +90,7 @@ typedef struct {
 // compatibility mode right and bottom less one), so that no copy of Collision_computeBBox (1.6 KB) is linked here.
 // Collision_computeBBox has a box exactly when the instance has a collision sprite.
 static inline __attribute__((always_inline)) int32_t Colline14_boxSide(Runner* runner, Instance* inst, int16_t side) {
-    return (int32_t) VMBuiltins_getVariable(runner->vmContext, inst, side, nullptr, -1).real;
+    return (int32_t) COLLINE14_BOX_GET(runner->vmContext, inst, side, nullptr, -1).real;
 }
 
 static COLLINE14_LATE bool Colline14_box(Runner* runner, Instance* inst, Colline14Box* box) {

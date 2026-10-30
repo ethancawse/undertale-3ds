@@ -296,7 +296,9 @@ class SteamPlatformTests(fixtures.MusicFixtures):
                 probes = discover.Probes(steam_roots=roots, gog_dirs=[], platform=platform)
                 self.assertTrue(discover.verify_copy("undertale", t.folder, probes, ALLOW).accepted)
                 # Unknown bytes and missing ownership still fail on every platform.
+                stamp = os.stat(os.path.join(t.folder, "data.win"))
                 write(os.path.join(t.folder, "data.win"), UT[:-1] + b"!")
+                os.utime(os.path.join(t.folder, "data.win"), ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
                 self.assertFalse(discover.verify_copy("undertale", t.folder, probes, ALLOW).accepted)
 
     def test_native_layouts_refuse_with_player_steps(self):
@@ -334,6 +336,81 @@ class SteamPlatformTests(fixtures.MusicFixtures):
 
 
 class PipelinePlatformTests(unittest.TestCase):
+    def home_mirror(self, tmp):
+        source = Path(fixtures.fake_source(tmp))
+        work = Path(tmp) / 'work'
+        art = ['platform/3ds/assets/' + kind + '-undertale-' + target + '.png'
+               for kind in ('banner', 'icon') for target in ('o3ds', 'n3ds')]
+        art.append('platform/3ds/assets/banner.wav')
+        for rel in art:
+            write(str(source / rel), b'kit art0')
+            os.utime(source / rel, (0, 0))
+        def seal():
+            descriptor = pipeline.products.release_contract.source_descriptor('undertale', '0.1.0',
+                pipeline.products.release_contract.payload_digest(pipeline.source_payload(source, 'undertale')))
+            descriptor['public_commit'] = 'a' * 40
+            import json
+            (source / pipeline.products.release_contract.DESCRIPTOR).write_text(json.dumps(descriptor))
+        def prepare(target):
+            return pipeline.Build(pipeline.products.PRODUCTS['undertale'], tc('win32'),
+                str(work), target, str(Path(tmp) / 'invented-game'), source_root=str(source)).prepare()
+        seal()
+        return source, work / 'src', art, seal, prepare
+
+    def test_verified_unchanged_kit_keeps_both_models_after_generated_home_art(self):
+        for order in (('o3ds', 'n3ds'), ('n3ds', 'o3ds')):
+            with self.subTest(order=order), tempfile.TemporaryDirectory() as tmp:
+                source, dest, art, seal, prepare = self.home_mirror(tmp)
+                prepare(order[0])
+                for rel in art:
+                    write(str(dest / rel), b'generated private HOME art')
+                write(str(dest / 'platform/3ds/assets/home-art.json'), '{}')
+                objects = [dest / 'build' / ('3ds-undertale-' + target) / 'retained.o'
+                           for target in order]
+                objects.append(dest / 'build/aot-undertale-o3ds/retained.c')
+                for obj in objects:
+                    write(str(obj), b'compiled fixture')
+                _, copied, removed = prepare(order[1])
+                self.assertEqual((copied, removed), (5, 1))
+                for obj in objects:
+                    self.assertEqual(obj.read_bytes(), b'compiled fixture')
+                for rel in art:
+                    self.assertEqual((dest / rel).read_bytes(), (source / rel).read_bytes())
+                self.assertFalse((dest / 'platform/3ds/assets/home-art.json').exists())
+
+    def test_verified_source_change_or_non_art_damage_still_invalidates_both_models(self):
+        for kind in ('source-art', 'source-code', 'mirror-code', 'missing-stamp', 'bad-stamp'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                source, dest, art, seal, prepare = self.home_mirror(tmp)
+                prepare('o3ds')
+                for rel in art:
+                    write(str(dest / rel), b'generated private HOME art')
+                for target in ('o3ds', 'n3ds'):
+                    write(str(dest / 'build' / ('3ds-undertale-' + target) / 'retained.o'), b'old object')
+                if kind == 'source-art':
+                    write(str(source / art[0]), b'kit art1')
+                    os.utime(source / art[0], (0, 0))
+                    seal()
+                elif kind == 'source-code':
+                    write(str(source / 'engine/src/vm.c'), b'int y;\n')
+                    seal()
+                elif kind == 'mirror-code':
+                    write(str(dest / 'engine/src/vm.c'), b'int y;\n')
+                else:
+                    stamp = dest / '.builder-source.json'
+                    self.assertTrue(stamp.is_file())
+                    if kind == 'missing-stamp':
+                        stamp.unlink()
+                    else:
+                        stamp.write_bytes(b'bad metadata')
+                # Invalidate before any copy; failure cannot leave old objects beside changed inputs.
+                with mock.patch.object(pipeline.shutil, 'copy2', side_effect=OSError('fixture interrupted')):
+                    with self.assertRaisesRegex(OSError, 'fixture interrupted'):
+                        prepare('n3ds')
+                self.assertFalse((dest / 'build').exists())
+                prepare('n3ds')
+                self.assertFalse((dest / 'build').exists())
+
     def test_same_size_epoch_update_invalidates_objects_before_copy_even_if_interrupted(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, dest = Path(tmp) / 'kit', Path(tmp) / 'work/src'

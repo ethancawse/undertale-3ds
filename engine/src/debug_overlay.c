@@ -1,6 +1,11 @@
 #include "debug_overlay.h"
 
 #include "collision.h"
+#if defined(__3DS__) && defined(ENABLE_WAD16) && !defined(USE_FLOAT_REALS)
+#define CTRPORT_COLEXACT_OVERLAY_BBOX
+#define Collision_computeBBox Colexact_sharedBBox
+#endif
+#line 4
 #include "real_type.h"
 #include "utils.h"
 
@@ -86,3 +91,8 @@ void DebugOverlay_drawCollisionMasks(Runner* runner) {
         renderer->vtable->flush(renderer);
     }
 }
+
+// colexact: retain the original 2,312 B input slot after sharing the bbox helper.
+#if defined(CTRPORT_COLEXACT_OVERLAY_BBOX) && defined(CTRPORT_LAYERFIX_RELEASE_LAYOUT)
+__asm__(".pushsection .text.DebugOverlay_drawCollisionMasks,\"ax\",%progbits\n.subsection 1\n.org 2312, 0\n.popsection\n");
+#endif

@@ -9,11 +9,9 @@
 // AOT budget, so both run in the interpreter: consoles cf1026-dodge-o3-b1 and -o2-b2 held 169 and 167 frames for 3
 // vblanks there, CPU (Draw) bound, the GPU under 5 ms.
 //
-// What: for a line without "#" the scaled script's single-line path is
-//   display_scale = surface_get_width(application_surface) / view_wview[view_current];
-//   yy = round(yy * display_scale) / display_scale;
-//   width = string_width(text) * xscale;
-//   draw_text_transformed(round(xx - width / 2), yy, text, xscale, yscale, 0);
+// What: for a line without "#" the scaled script's single-line path works out the display scale (the application
+// surface's width over the view's width), snaps the y to the display's pixels, measures the scaled text and draws it
+// centred on xx at a rounded x.
 // Its string_height(" ") (the line height, used only between lines) and string_pos("#", text) (0 here) only read, so
 // the front leaves them out. Every other step is what the interpreter does: the builtins from the same call cache with
 // the same arguments in the same order, view_wview as the builtin variable reads it (Runner_getCameraForView), and
@@ -146,10 +144,10 @@ static DF_CODE RValue dfFront(VMContext* ctx) {
         dfFree(&v[1]);
         return aotx_executeLoop(ctx);
     }
-    // display_scale = surface_get_width(application_surface) / view_wview[view_current]
+    // The display scale: the application surface's width over the view's width.
     GMLReal scale = v[1].real / (GMLReal) camera->viewWidth;
     DF_OPAQUE(scale);
-    // yy = round(yy * display_scale) / display_scale
+    // y snapped to the display's pixels.
     GMLReal t = (yy->type == RVALUE_INT32 ? (GMLReal) yy->int32 : yy->real) * scale;
     DF_OPAQUE(t);
     v[0] = RValue_makeReal(t);
@@ -163,7 +161,7 @@ static DF_CODE RValue dfFront(VMContext* ctx) {
     }
     GMLReal y = v[1].real / scale;
     DF_OPAQUE(y);
-    // draw_text_transformed(round(xx - width / 2), yy, text, xscale, yscale, 0), width = string_width(text) * xscale
+    // The draw centred on xx at a rounded x (draw_text_transformed), from the scaled text width
     GMLReal half = v[3].real / (GMLReal) 2;
     DF_OPAQUE(half);
     t = (xx->type == RVALUE_INT32 ? (GMLReal) xx->int32 : xx->real) - half;

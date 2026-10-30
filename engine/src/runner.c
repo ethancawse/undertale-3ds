@@ -35,7 +35,7 @@ CollisionTrigSlot Collision_trigSlots[COLLISION_TRIG_SLOTS];
 #ifdef ENABLE_VM_GML_PROFILER
 #define RUNNER_PHASE(runner, name) do { RUNNER_ZONE_EXIT(runner); RUNNER_ZONE_ENTER(runner, name); } while (0)
 #else
-#define RUNNER_PHASE(runner, name) ((void) 0)
+#define RUNNER_PHASE(runner, name) RUNNER_PHASE_PROBE(name) // nothing, but in the asgprobe test build (runner.h)
 #endif
 
 // ===[ Runtime Layer Teardown Helpers ]===
@@ -576,7 +576,7 @@ void Runner_executeEventForAll(Runner* runner, int32_t eventType, int32_t eventS
                 if (isEventBlockedByPendingRoom(runner, inst, eventType) || runner->shouldExit) continue;
                 if (codeId != runCodeId || ownerObjectIndex != runOwner) {
                     if (runCodeId >= 0) VM_endEventRun(vm, &run);
-                    VM_beginEventRun(vm, &run, codeId, eventType, eventSubtype, ownerObjectIndex);
+                    VM_BEGIN_EVENT_RUN(vm, &run, codeId, eventType, eventSubtype, ownerObjectIndex);
                     runCodeId = codeId;
                     runOwner = ownerObjectIndex;
                 }
@@ -7072,6 +7072,16 @@ __attribute__((noinline, section(".text.late.utorder"))) void Utorder_keep(Runne
 // (nm -S). It keeps its slot, so that nothing after it moves: the padding is subsection 1 of its own section, after its
 // code and literal pool, outside its symbol size (as Runner_destroyInstance's in runner.c; proven by
 // tools/analysis/check_simplefix_layout.py).
+// colexact: section-relative .org retains that 1,588 B extent as the corrected body changes size.
 #if defined(CTRPORT_LAYERFIX_RELEASE_LAYOUT) && defined(CTRPORT_BBOX_ROUND) && defined(__3DS__) && defined(__GNUC__)
-__asm__(".pushsection .text.Collision_computeBBox,\"ax\",%progbits\n.subsection 1\n.space 592\n.popsection\n");
+__asm__(".pushsection .text.Collision_computeBBox,\"ax\",%progbits\n.subsection 1\n.org 1588, 0\n.popsection\n");
+#endif
+
+// colexact: grid/overlay share the retained warm bbox; do not duplicate its
+// generic rotated/fallback body in late text. This wrapper does not inline it.
+#if defined(ENABLE_WAD16) && defined(__3DS__) && !defined(USE_FLOAT_REALS)
+__attribute__((noinline, section(".text.late.colexact")))
+InstanceBBox Colexact_sharedBBox(Runner* runner, Instance* inst) {
+    return Collision_computeBBox(runner, inst);
+}
 #endif

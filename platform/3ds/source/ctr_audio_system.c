@@ -3708,8 +3708,11 @@ UTA_LATE static void utaChnReset(int id) {
     }
     UtaChan* c = &utaChan[p];
     memset(c, 0, sizeof(UtaChan));
-    utaForget(p, c);
+    // Reset first, then zero the pieces: until the reset, libctru's list still links them and the NDSP thread can
+    // walk it at any moment (a zeroed piece ends the list early: the 10-30 o3ds and 10-22 o2ds crashes at
+    // ndspiReadChnState, docs/3ds-hardware.md).
     UTA_PHYS_RESET(p);
+    utaForget(p, c);
     LightLock_Unlock(&utaLock);
 }
 
@@ -5642,10 +5645,109 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static 
     flowendAheadState = 0;
 }
 
+#ifdef ENABLE_WAD16
+// flowend r20 (UNDERTALE): Photoshop Flowey's phase songs are opened ahead into a second spare. The fight's bullet
+// master plays its phase song at its Create and its SOUL warning a fixed frame count later (754 frames into part1,
+// 678 into part2), so a song that opens late (part1 195-231 ms, part2 again 146-167 ms on the Old models, cand26)
+// puts every warning that far ahead of the music, where PC's lands on it. The number guess cannot reach them: part1
+// follows the laugh, part2's own guess is part3 (never played), and the one spare is kept 120 s for the SOUL songs.
+// This table names the song after each, as the FNV-1a hash of its file name before the extension (the data's own
+// names are looked up, as z_textfront.c's scripts are): intro and laugh -> part1 (the laugh plays from memory, with
+// no open to guess from), part1 -> part2, part2 -> part1 (the second round), destroyed3 -> wind2 (the end-choice
+// room after the restart); a 0 closes the spare (the finale: part1 is not played again). Its own spare, so the 6s_N
+// chain keeps the first; a table name skips the number guess. Same quiet second and take as the first spare; each
+// open is followed by a quiet second before the other spare's.
+uint32_t RoomPlan_fnv1a(const uint8_t* data, size_t size); // z_roomplan.c
+static CtrDecoder flowendSong __attribute__((section(".bss.flowpre_late")));
+static char flowendSongPath[FLOWEND_AHEAD_PATH] __attribute__((section(".bss.flowpre_late")));
+static uint8_t flowendSongState __attribute__((section(".bss.flowpre_late"))); // 0 none, 1 path wanted, 2 open
+static const uint32_t flowendSongs[][2] __attribute__((section(".rodata.flowend_in_text"))) = {
+    {0x26B8DF80u, 0x5638720Au}, {0x328062AFu, 0x5638720Au}, {0x5638720Au, 0x55387077u}, {0x55387077u, 0x5638720Au},
+    {0x3B1C020Eu, 0}, {0x3EE40FFEu, 0x9B1C49AAu}};
+static const char flowendSongName[] __attribute__((section(".rodata.flowend_in_text"))) = "%.*s%.*s%s\0\0\0\0"; // NULs after: a phase pad
+
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static void flowendSongDrop(void) {
+    if (flowendSongState == 2) CtrDecoder_close(&flowendSong);
+    flowendSongState = 0;
+}
+
+// The FNV-1a hash of a file name's last part before its extension; *len gets that length.
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static uint32_t flowendSongHash(const char* file, const char** start, size_t* len) {
+    const char* base = strrchr(file, '/');
+    base = base != NULL ? base + 1 : file;
+    const char* dot = strrchr(base, '.');
+    *start = base;
+    *len = dot != NULL ? (size_t) (dot - base) : strlen(base);
+    return RoomPlan_fnv1a((const uint8_t*) base, *len);
+}
+
+// Opener thread, at the quiet second after opening path: true when the table names path (its number guess is skipped).
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static bool flowendSongGuess(CtrAudioSystem* ca, const char* path) {
+    __asm__ volatile("nop"); // phase pad: the loader and update code after keeps stage72's phase
+    const char* base;
+    size_t len;
+    uint32_t h = flowendSongHash(path, &base, &len);
+    for (size_t k = 0; sizeof(flowendSongs) / sizeof(flowendSongs[0]) > k; k++) {
+        if (flowendSongs[k][0] != h) continue;
+        if (flowendSongs[k][1] == 0) {
+            flowendSongDrop();
+            return false;
+        }
+        for (uint32_t i = 0; ca->base.audioGroups[0]->sond.count > i; i++) {
+            const char* file = ca->base.audioGroups[0]->sond.sounds[i].file;
+            const char* fb;
+            size_t fl;
+            if (file == NULL || flowendSongHash(file, &fb, &fl) != flowendSongs[k][1]) continue;
+            char guess[FLOWEND_AHEAD_PATH];
+            int n = snprintf(guess, sizeof(guess), flowendSongName, (int) (base - path), path, (int) fl, fb, base + len);
+            if (n > 0 && FLOWEND_AHEAD_PATH > n && (flowendSongState == 0 || strcmp(flowendSongPath, guess) != 0)) {
+                flowendSongDrop();
+                memcpy(flowendSongPath, guess, (size_t) n + 1);
+                flowendSongState = 1;
+            }
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+// Opener thread: the play that asks for the spare's path takes it as it is (as the first spare's take does).
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static bool flowendSongTake(CtrDecoder* dec, const char* path) {
+    if (flowendSongState != 2 || strcmp(flowendSongPath, path) != 0) return false;
+    memcpy(dec, &flowendSong, sizeof(*dec));
+    dec->vf.datasource = dec; // Tremor's callbacks get the decoder
+    if (dec->vf.ready_state >= FLOWEND_INITSET) dec->vf.vb.vd = &dec->vf.vd;
+    flowendSongState = 0;
+    return true;
+}
+
+// Opener thread, at a quiet second: open the wanted song (true: this quiet second is used).
+__attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static bool flowendSongOpen(CtrAudioSystem* ca, u64 t0) {
+    if (flowendSongState != 1) return false;
+    bool ok = __real_CtrDecoder_openFile(&flowendSong, flowendSongPath);
+    if (ok && flowendSong.kind != CTR_DECODER_VORBIS) {
+        CtrDecoder_close(&flowendSong);
+        ok = false;
+    }
+    flowendSongState = ok ? 2 : 0;
+    flowendLastOpen = svcGetSystemTick(); // the first spare waits for a quiet second of its own
+    if (ok) postMessage(ca, flowendAheadLog, flowendSongPath, TICKS_TO_MS(flowendLastOpen - t0));
+    return true;
+}
+#define FLOWEND_SONG_OPEN \
+    if (flowendSongOpen(ca, t0)) return;
+#else
+#define FLOWEND_SONG_OPEN
+#endif
+
 // Opener thread, at the quiet second after opening path: the next created stream's path, if path is a created
 // stream's. The main thread owns the entries; a path read here is copied at once and only ever opened (a stale one
 // fails to open or is not asked for).
 __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static void flowendGuessNext(CtrAudioSystem* ca, const char* path) {
+#ifdef ENABLE_WAD16
+    if (flowendSongGuess(ca, path)) return;
+#endif
     // An unused spare stays a while: the next part often follows other music (part1, alarm, 6s_1, saved, part2).
     if (flowendAheadState == 2 && FLOWEND_AHEAD_KEEP_MS > TICKS_TO_MS(svcGetSystemTick() - flowendAheadTick)) return;
     int i = 0;
@@ -5687,7 +5789,12 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static 
 __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) bool __wrap_CtrDecoder_openFile(CtrDecoder* dec, const char* path) {
     CtrAudioSystem* ca = gShutdownTarget;
     if (ca == NULL || ca->opener == NULL || threadGetCurrent() != ca->opener) return __real_CtrDecoder_openFile(dec, path);
-    if (flowendAheadOwner != ca) flowendDropAhead();
+    if (flowendAheadOwner != ca) {
+        flowendDropAhead();
+#ifdef ENABLE_WAD16
+        flowendSongDrop();
+#endif
+    }
     flowendAheadOwner = ca;
     flowendLastOpen = svcGetSystemTick();
     bool ok = true;
@@ -5696,7 +5803,11 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) bool __
         dec->vf.datasource = dec; // Tremor's callbacks get the decoder
         if (dec->vf.ready_state >= FLOWEND_INITSET) dec->vf.vb.vd = &dec->vf.vd;
         flowendAheadState = 0;
-    } else {
+    } else
+#ifdef ENABLE_WAD16
+    if (!flowendSongTake(dec, path))
+#endif
+    {
         ok = __real_CtrDecoder_openFile(dec, path);
     }
     // The guess (its SD lookups cost 20-45 ms) waits for the quiet second with the open ahead, off the cue's path.
@@ -5709,6 +5820,13 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) bool __
 }
 
 __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) void __wrap_CtrWatchdog_note(const char* state) {
+#ifdef ENABLE_WAD16 // phase pad: the late code after this keeps stage72's phase mod 32
+#ifdef CTRPORT_TARGET_O3DS
+    __asm__ volatile("nop; nop; nop; nop; nop; nop");
+#else
+    
+#endif
+#endif
     __real_CtrWatchdog_note(state);
     CtrAudioSystem* ca = gShutdownTarget;
     if (ca == NULL || ca->opener == NULL || threadGetCurrent() != ca->opener || strcmp(state, flowendWaiting) != 0) return;
@@ -5723,15 +5841,23 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) void __
         flowendCtxSig = sig;
         flowendLastOpen = t0;
     }
+#ifdef ENABLE_WAD16
+    if ((flowendAheadState != 1 && !flowendGuessDue && flowendSongState != 1) || flowendAheadOwner != ca || ca->openerQuit ||
+        FLOWEND_AHEAD_IDLE_MS > TICKS_TO_MS(t0 - flowendLastOpen))
+        return;
+#else
     if ((flowendAheadState != 1 && !flowendGuessDue) || flowendAheadOwner != ca || ca->openerQuit || FLOWEND_AHEAD_IDLE_MS > TICKS_TO_MS(t0 - flowendLastOpen)) return;
+#endif
     for (int i = 0; STREAM_CONTEXTS > i; i++) {
         if (ca->streams[i].state == CTX_OPEN_REQUESTED) return;
     }
     if (flowendGuessDue) {
         flowendGuessDue = 0;
         flowendGuessNext(ca, flowendLastPath);
+        FLOWEND_SONG_OPEN
         if (flowendAheadState != 1) return;
     }
+    FLOWEND_SONG_OPEN
     bool ok = __real_CtrDecoder_openFile(&flowendAhead, flowendAheadPath);
     if (ok && flowendAhead.kind != CTR_DECODER_VORBIS) {
         CtrDecoder_close(&flowendAhead);
@@ -6248,6 +6374,12 @@ PCMWAIT_TEXT static void pcmWaitUpdate(AudioSystem* audio, float deltaTime) {
 //   CIA), the address goes aside until svcExitProcess, where libctru's __libctru_exit would have called it (after
 //   envDestroyHandles and __sync_fini). Main never reads the return address. A loader that gave an address of its
 //   own keeps the old exit: it gets its memory back as before.
+// - A keep on a record of "no loader address" is final (rev 5, c26rev r11f): it sets usVeto, and every MEMOP_FREE
+//   after that is skipped below z_leavekeep.c's test (its call to the real svcControlMemory comes here first). That
+//   test also wants a NULL return address, and a lab leave's aptExit that overlaps the owner's (past its last
+//   reference, not yet at its store of aptExitProcess) can set one after the owner's wrap has looked: the frees
+//   would then go through. Nothing clears usVeto. That late address is libctru's own hand-back, called once by
+//   __libctru_exit after the skipped frees, as without this fix.
 // - svcExitProcess's wrap lets only the owner take the set-aside address, with an atomic exchange: the 15 s waiter in
 //   CTR_EXIT_ONCE and main.c's out-of-memory exit go straight to svcExitProcess as before (c26rev r10 F4).
 bool CtrLeavekeep_ownerKeep(bool want);
@@ -6258,12 +6390,15 @@ extern void (*__system_retAddr)(void);
 static bool usWant USSTOP_BSS;            // the wait ran out with a copy still under way
 static void (*usExitTo)(void) USSTOP_BSS; // aptExit's return address, set aside by the owner until svcExitProcess
 static u32 usLoader USSTOP_BSS;           // 0 before the first aptExit, then 1: the loader gave none, 2: it gave one
+// usVeto: the owner kept the heap with no loader address, so no more heap frees. Its own section, placed after every
+// existing late BSS selector (c26rev r11g): in .bss.usstop_late it would move usExitTo and the late statics after it.
+static bool usVeto __attribute__((section(".bss.usstop_veto")));
 #ifdef CTRPORT_EXITTRAIL
 // The provoke test (exit trail builds only, --ini usprovoke=N, or N in the game folder's usprovoke.txt for Azahar,
 // which passes no arguments): a thread like the worker (its core, priority and stack size) holds a job slot BUSY and
 // reads the data file in 32 KB pieces into usw.piece, back to back, so an FS read is in flight when the exit frees
 // memory. 1: the stop is skipped (cand25's exit: the reads run until the process ends). 2: the stop holds it; the
-// reader ends its job at the next piece, as the worker would after its copy. 3 to 10: the reader never ends its job
+// reader ends its job at the next piece, as the worker would after its copy. 3 to 12: the reader never ends its job
 // (a copy whose read does not come back), so the wait runs out:
 // 3: main owns the exit; the heap is kept (rev 3).
 // 4: as 3 without the keep (099bfe4c4's exit, the control arm: the heap is unmapped under the reader).
@@ -6279,12 +6414,18 @@ static u32 usLoader USSTOP_BSS;           // 0 before the first aptExit, then 1:
 //    the exit gate (ctr_lab.c) and returns (it is the first aptExit: the real one sets aptExitProcess as the return
 //    address); only then does G go into its aptExit.
 // 10: as 9 with rev 3's own read of the return address at G's aptExit, the control arm for r11b.
+// 11: c26rev r11f on rev 5: as 9, but L stops INSIDE the real aptExit, past its last reference and before its
+//    store of aptExitProcess (at its first srvGetServiceHandleDirect: the APT command aptExit sends just before that
+//    store). Main marks once L has stopped; G runs its whole aptExit wrap (the keep and the veto, with no address to
+//    set aside), then lets L go on and waits until L's aptExit has returned (the store done) before its frees.
+// 12: as 11 without the veto (rev 4), the control arm for r11f.
 // The exit's log is closed before atexit runs shutdownAudio, so the test's lines go to the boot trail (labboot.txt,
 // lab runs), to usstop.txt in the game folder, and to Azahar's log (svcOutputDebugString; usSay makes Azahar flush).
 // With usprovoke.txt (Azahar), the run also leaves after its bench as --exit-after would.
 // The test's code and constants go in the ordinary .text and .rodata (test builds only: the late code reserve
-// has no room for them).
-#define USSTOP_TTEXT __attribute__((noinline, section(".text.usstop_test")))
+// has no room for them), compiled for size: in these builds the late code starts after the ordinary code, so test
+// code also comes out of the late reserve.
+#define USSTOP_TTEXT __attribute__((noinline, optimize("Os"), section(".text.usstop_test")))
 #define USSTOP_TRO __attribute__((section(".rodata.usstop_test")))
 #include <stdio.h>
 #include "ctr_launch_args.h"
@@ -6311,13 +6452,17 @@ static const char usRetLog[] USSTOP_TRO = "usstop: loader return address 0x%08lx
 static const char usNotePath[] USSTOP_TRO = "sdmc:/3ds/undertale-3ds/usstop.txt";
 static const char usNoteMode[] USSTOP_TRO = "a";
 static char usNoteText[160] USSTOP_BSS;
-static volatile uint32_t usG USSTOP_BSS;      // 5, 6, 9, 10: G's thread id + 1
-static volatile uint32_t usMarked USSTOP_BSS; // 5, 6, 9, 10: main's wait has run out and marked
+static volatile uint32_t usG USSTOP_BSS;      // 5, 6, 9 to 12: G's thread id + 1
+static volatile uint32_t usMarked USSTOP_BSS; // 5, 6, 9 to 12: main's wait has run out and marked
 static volatile uint32_t usW USSTOP_BSS;      // 7, 8: W's thread id + 1
 static volatile uint32_t usWGo USSTOP_BSS;    // 7, 8: the owner holds the loaded address
 static volatile uint32_t usWDone USSTOP_BSS;  // 7, 8: W has taken it or gone past
 static bool usR2Keep USSTOP_BSS;              // 6: rev 2's decision (return address NULL at the timeout)
-static volatile uint32_t usLDone USSTOP_BSS;  // 9, 10: L's aptExit has returned
+static volatile uint32_t usLDone USSTOP_BSS;  // 9 to 12: L's aptExit has returned
+static volatile uint32_t usL USSTOP_BSS;      // 11, 12: L's thread id + 1
+static volatile uint32_t usLParked USSTOP_BSS; // 11, 12: L has stopped inside the real aptExit
+static volatile uint32_t usLGo USSTOP_BSS;    // 11, 12: G's aptExit wrap is done; L goes on
+static volatile uint32_t usVetoed USSTOP_BSS; // MEMOP_FREE calls the veto skipped
 #define US_G(m) ((m) == 5 || (m) == 6 || (m) >= 9) // the modes with G
 #define US_W(m) ((m) == 7 || (m) == 8)             // the modes with W
 #include <stdarg.h>
@@ -6361,10 +6506,11 @@ USSTOP_TTEXT static void usState(const char* head, u32* state) {
     usSay(line);
     CtrBootTrail_mark(line);
 }
-// 3 to 10: right after __libctru_exit's heap frees (its next call is envDestroyHandles; svcExitProcess follows), is
+// 3 to 12: right after __libctru_exit's heap frees (its next call is envDestroyHandles; svcExitProcess follows), is
 // the stalled copy's memory still there? svcQueryMemory says, deterministically; the boot trail (its file system
-// session still open here) and Azahar's log carry it. No stdio or heap: in 4, 6 and 10 the heap is gone.
+// session still open here) and Azahar's log carry it. No stdio or heap: in 4, 6, 10 and 12 the heap is gone.
 static const char usAfterHead[] USSTOP_TRO = "usstop: after the frees: leavekeep state";
+static const char usVetoSkipped[] USSTOP_TRO = "usstop: after the frees: the veto skipped them";
 void __real_envDestroyHandles(void);
 void __wrap_envDestroyHandles(void);
 USSTOP_TTEXT void __wrap_envDestroyHandles(void) {
@@ -6379,8 +6525,9 @@ USSTOP_TTEXT void __wrap_envDestroyHandles(void) {
         CtrBootTrail_mark(text);
         u32 state[6];
         usState(usAfterHead, state);
-        // Give the stalled copy 50 ms to run (it writes its buffer and stack every 1 ms): in 4, 6 and 10 Azahar logs each
-        // write to the unmapped memory as an error (a console faults on the first).
+        if (usVetoed != 0) usSay(usVetoSkipped);
+        // Give the stalled copy 50 ms to run (it writes its buffer and stack every 1 ms): in 4, 6, 10 and 12 Azahar
+        // logs each write to the unmapped memory as an error (a console faults on the first).
         uint32_t spins = usSpinCount;
         svcSleepThread(50000000LL);
         text = usSpinCount != spins ? usExitRan : usExitStill;
@@ -6390,11 +6537,12 @@ USSTOP_TTEXT void __wrap_envDestroyHandles(void) {
     __real_envDestroyHandles();
 }
 // srvExit, after z_exittrail.c's wrap (exit trail builds only): 6 does rev 2's srvExit (a return address aptExit set
-// goes aside when rev 2's timeout saw none); 3 to 10 say, before __libctru_exit's frees, what z_leavekeep.c's test
+// goes aside when rev 2's timeout saw none); 3 to 12 say, before __libctru_exit's frees, what z_leavekeep.c's test
 // will decide (it runs on the same values next).
 static const char usBeforeHead[] USSTOP_TRO = "usstop: before the frees: leavekeep state";
 static const char usWillSkip[] USSTOP_TRO = "usstop: before the frees: the heap frees will be SKIPPED";
 static const char usWillFree[] USSTOP_TRO = "usstop: before the frees: the heap frees will go THROUGH";
+static const char usVetoSet[] USSTOP_TRO = "usstop: before the frees: the owner's veto is set";
 void __real_srvExit(void);
 void CtrSrvExit_chainUsstop(void);
 USSTOP_TTEXT void CtrSrvExit_chainUsstop(void) {
@@ -6406,7 +6554,10 @@ USSTOP_TTEXT void CtrSrvExit_chainUsstop(void) {
     if (usMode >= 3) {
         u32 s[6];
         usState(usBeforeHead, s);
-        usSay(s[3] == 0 && ((s[0] != 0 && s[0] == s[1]) || s[2] > 1) ? usWillSkip : usWillFree);
+        // Rev 5: the veto skips them whatever z_leavekeep.c's test says.
+        bool veto = __atomic_load_n(&usVeto, __ATOMIC_ACQUIRE);
+        if (veto) usSay(usVetoSet);
+        usSay(veto || (s[3] == 0 && ((s[0] != 0 && s[0] == s[1]) || s[2] > 1)) ? usWillSkip : usWillFree);
     }
 }
 int __real_CtrLaunchArgs_sendFilesMB(const CtrLaunchArgs* args);
@@ -6437,7 +6588,7 @@ USSTOP_TTEXT static void usProvokeMain(void* arg) {
         LightLock_Unlock(&usw.lock);
         if (stop) break;
         if (usw.held) {
-            // 3 to 10: the read that does not come back. The job stays BUSY and the thread goes on using its stack
+            // 3 to 12: the read that does not come back. The job stays BUSY and the thread goes on using its stack
             // and usw.piece (heap and linear heap), 1 ms apart, until the process ends it or an unmap faults it.
             volatile uint32_t mark[8];
             usStackAt = (uint32_t) (uintptr_t) &mark[0];
@@ -6467,7 +6618,7 @@ USSTOP_TTEXT static int usProvoke(void) {
             fclose(f);
         }
     }
-    if (1 > mode || mode > 10) return 0;
+    if (1 > mode || mode > 12) return 0;
     usMode = mode;
     UtSfxJob* job = NULL;
     LightLock_Lock(&usw.lock);
@@ -6489,7 +6640,7 @@ USSTOP_TTEXT static int usProvoke(void) {
     }
     svcSleepThread(200000000LL); // reading by now
     usNote(usProvokeLog, mode, (unsigned long) usSpinCount);
-    // 3 to 10: the loader's return address (NULL on Luma3DS's hb:ldr and on Azahar; aptExit may set its own later).
+    // 3 to 12: the loader's return address (NULL on Luma3DS's hb:ldr and on Azahar; aptExit may set its own later).
     if (mode >= 3) {
         // The boot trail outlives fsExit (z_exittrail.c); a lab run has it open already (labboot.txt).
         CtrBootTrail_open(usTrailPath);
@@ -6497,7 +6648,7 @@ USSTOP_TTEXT static int usProvoke(void) {
     }
     return mode;
 }
-// 5, 6, 9, 10: G, a thread that takes the exit as filesRecover does (ctr_exit_files.c: CtrLeavekeep_exit).
+// 5, 6, 9 to 12: G, a thread that takes the exit as filesRecover does (ctr_exit_files.c: CtrLeavekeep_exit).
 static const char usGTakes[] USSTOP_TRO = "usstop: G takes the exit (CtrLeavekeep_exit, as filesRecover)";
 static const char usGWaits[] USSTOP_TRO = "usstop: G owns the exit and waits before aptExit for main's timeout";
 static const char usGGoes[] USSTOP_TRO = "usstop: G goes on with aptExit";
@@ -6516,14 +6667,20 @@ USSTOP_TTEXT static void usWMain(void* arg) {
     for (int ms = 0; 30000 > ms && !usWGo; ms++) svcSleepThread(1000000LL);
     svcExitProcess();
 }
-// 9, 10: L, a lab leave's aptExit before the exit gate (ctr_lab.c leave: aptExit, then CtrExitFiles_labExit). L is
+// 9 to 12: L, a lab leave's aptExit before the exit gate (ctr_lab.c leave: aptExit, then CtrExitFiles_labExit). L is
 // not the exit's owner; after its aptExit it stays parked (a leave would wait at the gate behind G).
 static const char usLCalls[] USSTOP_TRO = "usstop: L calls aptExit before the exit gate (as a lab leave)";
 static const char usLAfter[] USSTOP_TRO = "usstop: L's aptExit returned; return address now 0x%08lx\n";
 static const char usLReturned[] USSTOP_TRO = "usstop: L's aptExit is done; main marks next, then G goes into its aptExit";
-static const char usLStuck[] USSTOP_TRO = "usstop: L's aptExit did NOT return in 5 s";
+static const char usLStuck[] USSTOP_TRO = "usstop: L's aptExit did NOT return (or stop) in 5 s";
+static const char usLStopped[] USSTOP_TRO = "usstop: L has stopped inside the real aptExit; main marks next, then G goes in";
+static const char usLParks[] USSTOP_TRO = "usstop: L stops inside the real aptExit (past its last reference, before its store)";
+static const char usLGoesOn[] USSTOP_TRO = "usstop: L goes on inside the real aptExit";
+static const char usGWrapDone[] USSTOP_TRO = "usstop: G's aptExit wrap is done; it lets L go on and waits for L's aptExit";
+static const char usGAfterL[] USSTOP_TRO = "usstop: L's aptExit has returned; G goes on to its frees";
 USSTOP_TTEXT static void usLMain(void* arg) {
     (void) arg;
+    usL = usSelf();
     usSay(usLCalls);
     aptExit();
     usNote(usLAfter, (unsigned long) (uintptr_t) __system_retAddr);
@@ -6539,8 +6696,9 @@ USSTOP_TTEXT static void usStartTest(ThreadFunc main) {
 USSTOP_TTEXT static void usAfterMark(int mode) {
     if (mode >= 9) {
         usStartTest(usLMain);
-        for (int ms = 0; 5000 > ms && !usLDone; ms++) svcSleepThread(1000000LL);
-        usSay(usLDone ? usLReturned : usLStuck);
+        volatile uint32_t* until = mode >= 11 ? &usLParked : &usLDone;
+        for (int ms = 0; 5000 > ms && !*until; ms++) svcSleepThread(1000000LL);
+        usSay(!*until ? usLStuck : mode >= 11 ? usLStopped : usLReturned);
     }
     if (US_G(mode)) {
         usSay(usMainMarked);
@@ -6548,6 +6706,28 @@ USSTOP_TTEXT static void usAfterMark(int mode) {
         svcSleepThread(8000000000LL);
     }
     if (US_W(mode)) usStartTest(usWMain);
+}
+// 11, 12: L's stop inside the real aptExit. Its first call out of apt.o after the last reference is
+// srvGetServiceHandleDirect (srv.o), in the APT command it sends just before it stores aptExitProcess.
+Result __real_srvGetServiceHandleDirect(Handle* out, const char* name);
+Result __wrap_srvGetServiceHandleDirect(Handle* out, const char* name);
+USSTOP_TTEXT Result __wrap_srvGetServiceHandleDirect(Handle* out, const char* name) {
+    if (usMode >= 11 && usL != 0 && usSelf() == usL && !usLParked) {
+        usSay(usLParks);
+        usLParked = 1;
+        for (int ms = 0; 10000 > ms && !usLGo; ms++) svcSleepThread(1000000LL);
+        usSay(usLGoesOn);
+    }
+    return __real_srvGetServiceHandleDirect(out, name);
+}
+// 11, 12: the end of G's aptExit wrap: L goes on, and G waits until L's aptExit has returned.
+USSTOP_TTEXT static void usGWrapEnd(void) {
+    if (usMode >= 11 && usSelf() == usG) {
+        usSay(usGWrapDone);
+        usLGo = 1;
+        for (int ms = 0; 5000 > ms && !usLDone; ms++) svcSleepThread(1000000LL);
+        usSay(usLDone ? usGAfterL : usLStuck);
+    }
 }
 // svcExitProcess's hooks (7, 8): the owner, holding the loaded address, lets W in and waits for it (up to 500 ms).
 static const char usClaimOwner[] USSTOP_TRO = "usstop: svcExitProcess: the exit's owner takes the set-aside return address";
@@ -6660,16 +6840,43 @@ USSTOP_TEXT void USSTOP_APT_EXIT(void) {
     if (usMode != 6)
 #endif
     if (none && CtrLeavekeep_ownerKeep(__atomic_load_n(&usWant, __ATOMIC_ACQUIRE))) {
+        // Rev 5: final. A return address another thread's aptExit stores after this can no longer let the frees go.
+#ifdef CTRPORT_EXITTRAIL
+        if (usMode != 12) // 12: rev 4 (control arm)
+#endif
+        __atomic_store_n(&usVeto, true, __ATOMIC_RELEASE);
         void (*to)(void) = __system_retAddr;
         if (to != NULL) {
             __atomic_store_n(&usExitTo, to, __ATOMIC_RELEASE);
             __system_retAddr = NULL;
         }
     }
+#ifdef CTRPORT_EXITTRAIL
+    usGWrapEnd();
+#endif
 }
+// Rev 5: z_leavekeep.c's __wrap_svcControlMemory calls this for every svcControlMemory it passes on (UNDERTALE: its
+// __real_svcControlMemory is renamed to this). After the owner's veto, a MEMOP_FREE is skipped (the kernel frees the
+// process's memory when it ends the process); every other call goes on to the real svcControlMemory.
+Result __real_svcControlMemory(u32* addr_out, u32 addr0, u32 addr1, u32 size, MemOp op, MemPerm perm);
+Result CtrSvcControlMemory_usstop(u32* addr_out, u32 addr0, u32 addr1, u32 size, MemOp op, MemPerm perm);
+USSTOP_TEXT Result CtrSvcControlMemory_usstop(u32* addr_out, u32 addr0, u32 addr1, u32 size, MemOp op, MemPerm perm) {
+    if ((op & MEMOP_OP_MASK) == MEMOP_FREE && __atomic_load_n(&usVeto, __ATOMIC_ACQUIRE)) {
+#ifdef CTRPORT_EXITTRAIL
+        usVetoed = usVetoed + 1u;
+#endif
+        return 0;
+    }
+    return __real_svcControlMemory(addr_out, addr0, addr1, size, op, perm);
+}
+// Rev 5 pad (lead 10-29): rev 5 grew this file's .text.usstop_late by 92 B (aptExit +16, the function above 76), so
+// everything after it lost its cand26 cache-line phase (92 = 28 mod 32), the per-frame flowend burst code too. The
+// svcExitProcess wrap therefore has its own section, and late_reserve.ld puts this 4 B word between the two: 92 + 4 =
+// 96 = 3 x 32, every later late symbol keeps its cand26 phase. Never executed. Re-check if usstop's code size changes.
+__attribute__((used, section(".text.usstop_pad"))) static const u32 usstopPad = 0;
 void __real_svcExitProcess(void) __attribute__((noreturn));
 void __wrap_svcExitProcess(void) __attribute__((noreturn));
-USSTOP_TEXT void __wrap_svcExitProcess(void) {
+__attribute__((noinline, section(".text.usstop_exit"))) void __wrap_svcExitProcess(void) {
 #ifdef CTRPORT_EXITTRAIL
     if (usMode == 6 || usMode == 8) usRev2ExitTo();
 #endif

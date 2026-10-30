@@ -50,9 +50,9 @@ static inline Instance* utfSelf(VMContext* ctx) {
 // the ~136 one-pixel rows of draw_sprite_part_ext it draws. utfWaver is a builtin of the script's name, registered
 // before VM_create builds the function cache, so every direct call of the script (interpreted or generated) comes here
 // (script_execute by index still runs the script itself, with the same result):
-//     b = argument0; c = argument1; a += 1;
-//     for (i = 0; i < sprite_height; i++) { a += 1; draw_sprite_part_ext(sprite_index, image_index, 0, i,
-//         sprite_width, 1, x + sin(a / b) * c, y + i, 1, 1, c_white, image_alpha); }
+//     it takes its period and size from the arguments, advances its own phase counter, and draws each one-pixel row
+//     of the sprite from the top down, shifted sideways by a sine of the phase (which goes up by one a row), in white
+//     at the instance's alpha.
 // The script is found by its bytecode, the one this was written from (UTF_WAVER_LENGTH bytes whose digest over the
 // loaded and patched bytes is UTF_WAVER_DIGEST), so no game name is written here; a, b, c and i come from its
 // operands. Data whose bytes differ registers nothing, and the script runs as it is. Each value is worked out as the
@@ -125,19 +125,19 @@ static RValue utfWaver(VMContext* ctx, RValue* args, int32_t argCount) {
     RValue t, kv;
     AOT_SET_INT(&kv, 1, GML_TYPE_INT16);
 
-    // 0000-0018: b = argument0; c = argument1 (Push.v of the argument, Pop.v.v), in that order (an insert of each).
+    // 0000-0018: the period and the size from the two arguments (Push.v of the argument, Pop.v.v), in that order (an insert of each).
     vmWeakCopyInto(&t, &args[0]);
     *utfInsert(inst, w->varB) = t;
     vmWeakCopyInto(&t, &args[1]);
     *utfInsert(inst, w->varC) = t;
 
-    // 0020-0030: a += 1. From here a holds a's value as its slot would after each store (a real stays a real).
+    // 0020-0030: the phase steps by one. From here a holds a's value as its slot would after each store (a real stays a real).
     RValue a;
     vmWeakCopyInto(&a, utfFind(inst, w->varA));
     vmArithNumbers(&a, &kv, VM_ARITH_ADD, GML_TYPE_VARIABLE);
     *utfFind(inst, w->varA) = a;
 
-    // 0038-003C: i = 0 (PushI.e, Pop.v.i: an int store, made a real). Then the loop's operands: no step of it can
+    // 0038-003C: the row counter starts at 0 (PushI.e, Pop.v.i: an int store, made a real). Then the loop's operands: no step of it can
     // change b, c, the instance or its sprite (draw_sprite_part_ext only draws).
     RValue i;
     AOT_SET_INT(&i, 0, GML_TYPE_INT16);
@@ -164,15 +164,15 @@ static RValue utfWaver(VMContext* ctx, RValue* args, int32_t argCount) {
     float left = 0.0f;
     __asm__("" : "+m"(left));
 
-    // 0044-0134: the rows, while i < sprite_height (the interpreter's compare, with its epsilon).
+    // 0044-0134: the rows, down to the sprite's height (the interpreter's compare, with its epsilon).
     while (vmCmpNumbers(&i, &h, CMP_LT) != 0) {
         vmArithNumbers(&a, &kv, VM_ARITH_ADD, GML_TYPE_VARIABLE);
         __asm__("" : "+m"(a));
-        RValue yi;   // y + i
+        RValue yi;   // the row's y
         AOT_SET_REAL(&yi, y, GML_TYPE_VARIABLE);
         vmArithNumbers(&yi, &i, VM_ARITH_ADD, GML_TYPE_VARIABLE);
         __asm__("" : "+m"(yi));
-        RValue q = a;   // x + sin(a / b) * c
+        RValue q = a;   // the row's x, shifted by the sine
         vmDivNumbers(&q, &b, false, GML_TYPE_VARIABLE, ctx->currentCodeName);
         __asm__("" : "+m"(q));
         AOT_SET_REAL(&q, aotMathSin(q.real), GML_TYPE_VARIABLE);
@@ -188,7 +188,7 @@ static RValue utfWaver(VMContext* ctx, RValue* args, int32_t argCount) {
                                        (float) xs.real, (float) yi.real, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f,
                                        colour, alpha);
         }
-        vmArithNumbers(&i, &kv, VM_ARITH_ADD, GML_TYPE_VARIABLE);   // i += 1 (a weak copy of i, so typed a variable)
+        vmArithNumbers(&i, &kv, VM_ARITH_ADD, GML_TYPE_VARIABLE);   // the next row (a weak copy of i, so typed a variable)
         __asm__("" : "+m"(i));
     }
     *utfFind(inst, w->varA) = a;

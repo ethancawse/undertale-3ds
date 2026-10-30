@@ -3234,7 +3234,7 @@ static void flushBatch(CtrRenderer* r) {
 //
 // DELTARUNE Chapter 3's Roaring Knight fills its 640x480 ball surface each
 // frame with four identical passes of one tiled sprite under bm_add
-// (obj_knight_roaring2: repeat(4) draw_sprite_tiled), each a full surface of
+// (obj_knight_roaring2's Draw), each a full surface of
 // fill. With the blend factors (src_alpha, one) for colour and alpha, a white
 // vertex colour of alpha 1 and a texture whose alpha is 0 or 1 at every
 // texel, n such passes add n times the texel's colour to the target, clamped
@@ -9985,7 +9985,7 @@ SCREENS_LATE static void screensClearBuffers(gfxScreen_t screen) {
 // The top backlight: off for Off with the game on the bottom screen, except on the original 2DS. gsp::Lcd is opened
 // only for the call, as in applyBottomBacklight. (A screen without wide mode is an original 2DS's, and shared too;
 // reading r keeps this function's shape, and so the order GCC emits main's functions in: docs/3ds-hardware.md.)
-SCREENS_LATE static void screensTopBacklight(CtrRenderer* r, bool off) {
+SCREENS_LATE CTR_COLD_OS static void screensTopBacklight(CtrRenderer* r, bool off) {
     off = off && !CtrScreens_sharedBacklight && r->displayCaps.wide;
     if (off != CtrScreens_topBacklightOff && R_SUCCEEDED(gspLcdInit())) {
         if (off) GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP);
@@ -10004,7 +10004,7 @@ SCREENS_LATE static void screensTopBacklight(CtrRenderer* r, bool off) {
 
 // Copies the frame on screen `from` (the game's) into the buffer on screen `to`, whose consoles move anyway, and
 // returns that buffer; nullptr in wide mode or with unexpected buffers, the screen then starting black.
-SCREENS_LATE static u8* screensCarry(gfxScreen_t from, gfxScreen_t to) {
+SCREENS_LATE CTR_COLD_OS static u8* screensCarry(gfxScreen_t from, gfxScreen_t to) {
     if (gfxIsWide() || gfxGetScreenFormat(from) != GSP_BGR8_OES) return nullptr;
     u16 fw = 0, fh = 0, tw = 0, th = 0;
     u8* src = CtrPacer_shownFramebuffer(from, GFX_LEFT, &fw, &fh);
@@ -10020,7 +10020,7 @@ SCREENS_LATE static u8* screensCarry(gfxScreen_t from, gfxScreen_t to) {
 
 // After the move, the carried frame in both of the game screen's buffers (the top screen's sides black); false if
 // carried isn't one of them any more, for the caller to clear them instead.
-SCREENS_LATE static bool screensShowCarried(gfxScreen_t screen, u8* carried) {
+SCREENS_LATE CTR_COLD_OS static bool screensShowCarried(gfxScreen_t screen, u8* carried) {
     u16 w = 0, h = 0;
     u8* shown = CtrPacer_shownFramebuffer(screen, GFX_LEFT, &w, &h);
     u8* back = CtrPacer_backFramebuffer(screen, GFX_LEFT);
@@ -10047,7 +10047,7 @@ SCREENS_LATE static bool screensShowCarried(gfxScreen_t screen, u8* carried) {
 // cleared only when that can't be done. libctru 2.7's gfxSetScreenFormat reallocates a screen's buffers only for
 // more bytes per pixel than they were made for, and gfxInitDefault made both screens' for RGB8, so the buffers never
 // move.
-SCREENS_LATE static void screensMoveGame(CtrRenderer* r, bool onBottom) {
+SCREENS_LATE CTR_COLD_OS static void screensMoveGame(CtrRenderer* r, bool onBottom) {
     gfxScreen_t game = onBottom ? GFX_BOTTOM : GFX_TOP, other = onBottom ? GFX_TOP : GFX_BOTTOM;
     // The last frame's transfer from the target done first.
     CtrGpu_waitIdle();
@@ -10075,7 +10075,7 @@ SCREENS_LATE static void screensMoveGame(CtrRenderer* r, bool onBottom) {
     // Its new format with the frame, before the game's next frame flips the screen (not counted as one).
     if (shown) CtrScreens_pacerShow(game);
     CtrLog_endConsole();
-    if (shown) gspWaitForVBlank();
+    if (shown) { void CtrScreens_pacerWaitShown(gfxScreen_t, bool); CtrScreens_pacerWaitShown(game, true); }
     logInfo(screensMoved, onBottom ? screensBottom : screensTop);
 }
 #if defined(ENABLE_WAD17) // UNDERTALE never runs this (argcheck, UT late-text reclaim)
@@ -13367,6 +13367,14 @@ static void utxEmitPageRegion(CtrRenderer* r, CtrPage* page, float sx0, float sy
                               const CtrColor* c);
 #define emitPageRegion utxEmitPageRegion
 #endif
+// creddodge tbox (UNDERTALE only): the string test's box comes from cdReachBox (this file's end), which fits it
+// to the alignment for fonts whose cursor never steps back. Declared without a body here: it is a thunk in assembly
+// (see there), so this call is built as for any outside function. DELTARUNE keeps fontReach.
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_RENDER_TIMING)
+const struct CtrFontReach* cdReachBox(CtrRenderer* r, int32_t fontIndex, Font* font);
+#else
+#define cdReachBox fontReach
+#endif
 #line 12032
 // Port of the GL renderers' text layout: line breaks, alignment, kerning and
 // per-glyph horizontal gradients (c1..c4 are TL, TR, BR, BL).
@@ -13403,7 +13411,7 @@ static void drawTextImpl(CtrRenderer* r, const char* text, float x, float y, flo
     // Such text no longer pulls the magnifier towards it either.
     r->depth.flat = true;
     if (!font->isSpriteFont && r->gameProjection) {
-        const struct CtrFontReach* reach = fontReach(r, fontIndex, font);
+        const struct CtrFontReach* reach = cdReachBox(r, fontIndex, font);
         float reachX = (float) textLen * reach->advance * (r->base.drawHalign != 0 ? 2.0f : 1.0f) + reach->extent;
         float top = valignOffset - (float) font->ascenderOffset;
         float bottom = top + (float) (lineCount - 1) * lineStride;
@@ -19870,8 +19878,16 @@ static void screenProjection(CtrRenderer* r) {
 
 // Draws the application surface (srcX..srcX+srcW texels, shifted by offX/offY
 // texels) into dst on the bound screen target.
+#if defined(ENABLE_WAD16)
+#include "ctr_utwindow.h"
+static void blitApp(void* renderer, C3D_Tex* tex, float srcX, float srcY, float srcW, float srcH, float offX, float offY, const float* dst,
+                    bool linear) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+#else
 static void blitApp(CtrRenderer* r, C3D_Tex* tex, float srcX, float srcY, float srcW, float srcH, float offX, float offY, const float* dst,
                     bool linear) {
+#endif
+#line 18404
     copyState(r);
     screenProjection(r);
     float px[4] = { dst[0], dst[0] + dst[2], dst[0] + dst[2], dst[0] };
@@ -20488,6 +20504,7 @@ static void presentBottom(CtrRenderer* r, const CtrSurface* app, C3D_Tex* tex) {
 // (with each eye sampling alternate columns in stereo HD, and the right eye
 // showing its own half-width copy in depth mode), and the area around
 // small text 1:1 on the bottom screen in magnifier mode.
+#line 19019
 static void present(CtrRenderer* r) {
     CtrSurface* app = getSurface(r, r->base.runner->applicationSurfaceId);
     if (app == nullptr) return;
@@ -20601,6 +20618,7 @@ static void present(CtrRenderer* r) {
     presentBottom(r, app, tex);
 }
 
+#line 19132
 // What the magnifier did with the bottom screen since the last call.
 static void logMagnifierStats(CtrRenderer* r) {
     uint32_t frames = r->magnifier.shownFrames + r->magnifier.blankFrames + r->magnifier.keptFrames;
@@ -22603,7 +22621,7 @@ SCREENS_LATE static void screensAptEvent(APT_HookType hook, void* param) {
 
 // ctrDestroy, with the game moved back to the top screen first: the next chapter's renderer starts as at boot.
 #line 21177
-SCREENS_LATE static void screensDestroy(Renderer* renderer) {
+SCREENS_LATE CTR_COLD_OS static void screensDestroy(Renderer* renderer) {
     extern __typeof__(ctrDestroy) screensCtrDestroy __asm__("ctrDestroy");
 #ifdef ENABLE_WAD17
 #define screensCtrDestroy pillarDestroy
@@ -22619,7 +22637,7 @@ SCREENS_LATE static void screensDestroy(Renderer* renderer) {
 static const char screensSharedLog[84] SCREENS_RO =
     "Display: Off uses a blank screen; shared or unconfirmed backlight kept on (2DS)\n";
 
-SCREENS_LATE Renderer* __wrap_CtrRenderer_create(FileSystem* fileSystem, int32_t appW, int32_t appH, const char* screenshotDir) {
+SCREENS_LATE CTR_COLD_OS Renderer* __wrap_CtrRenderer_create(FileSystem* fileSystem, int32_t appW, int32_t appH, const char* screenshotDir) {
     extern __typeof__(ctrVtable) screensVtable __asm__("ctrVtable");
     static bool queried __attribute__((section(".bss.late.screens")));
     Renderer* renderer = __real_CtrRenderer_create(fileSystem, appW, appH, screenshotDir);
@@ -24585,11 +24603,11 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawSprit
 // frame after one with at least UTA_GATE_CALLS such calls. On Old a call into utaFineSprite's late page costs about
 // 1.3 us even when it only jumps on (o3ds utasgore9h: +0.16 ms in Asgore), and where few of a frame's fine draws can
 // take the path (Asgore's attacks outside the helix: about 90-105 held calls a frame) the trips cost more than the path
-// saves; in the helix (about 220-340 a frame, most on the path) it saves 3.7 ms. The count is the same whatever the
-// gate says (a draw the path refuses goes the full way, which leaves what the path would), and any draw may go the
-// full way, so the gate never changes a pixel. Here, in utkDrawSprite, so every other fine sprite keeps its tail call.
+// saves; in the helix (220-340 a frame) it saves 3.7 ms, in helix 1b (110-157; asgore30, o2ds) 1.3-2.1 ms: 110, as no
+// attack without helix flames passes 106. The count is the same whatever the gate says, and any draw may go the full
+// way, so the gate never changes a pixel. Here, in utkDrawSprite, so every other fine sprite keeps its tail call.
 #if !defined(ENABLE_WAD17) && !defined(CTRPORT_RENDER_TIMING) && ASG_FORCE_SPLIT == 0
-#define UTA_GATE_CALLS 160
+#define UTA_GATE_CALLS 110
 static uint32_t utaGateFrame __attribute__((section(".bss.late.utasgore")));
 static uint32_t utaGateCalls __attribute__((section(".bss.late.utasgore")));
 static uint8_t utaGateOn __attribute__((section(".bss.late.utasgore")));
@@ -26852,6 +26870,15 @@ void __wrap_C3D_TexDelete(C3D_Tex* tex) {
 #if defined(UTX_SHADOW)
 static uint32_t utxsFast, utxsOut, utxsFull, utxsBad __attribute__((section(".bss.utext_late")));
 #endif
+// utxEmitPageRegion's per-glyph view test goes to cdGlyphOutside (creddodge, at the end of the file); only its
+// call target changes.
+static __attribute__((pure)) bool cdGlyphOutside(CtrRenderer* r, const float* px, const float* py);
+static inline __attribute__((always_inline)) bool cdQuadOutsideView(CtrRenderer* r, const float* px, const float* py) {
+    if (!r->gameProjection) return false;
+    return cdGlyphOutside(r, px, py);
+}
+#define quadOutsideView cdQuadOutsideView
+#line 24095
 // quadPosition, inlined here (a call would give quadPosition an out-of-line copy in the early text).
 static inline __attribute__((always_inline)) void utxQuadPosition(const float* px, const float* py, float s, float t, float* outX, float* outY) {
     float topX = px[0] + (px[1] - px[0]) * s;
@@ -27019,5 +27046,141 @@ full:
     utxsFull++;
 #endif
     emitPageRegion(r, page, sx0, sy0, sx1, sy1, ax, ay, c);
+}
+#undef quadOutsideView
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_RENDER_TIMING)
+// ===[ Glyph view test with integer compares (creddodge) ]===
+// The credits dodger (room 284) draws up to 80 names a frame, each glyph through utxEmitPageRegion's
+// quadOutsideView. That makes 4 float compares a corner, and on the VFP11 every one stalls the core on the move of
+// the flags (vmrs). The usual game projection is affine with w = 1 (row 3 = 0, 0, 0, 1), so reach is exactly 1:
+// x < -1 holds exactly when x's bits, read as unsigned, exceed those of -1.0f, and x > 1 when they exceed those
+// of 1.0f read as signed. x and y are made the same way as quadOutsideView's: the two products added, then the
+// offset. A non-finite x or y (w is then not 1, or a compare is unordered), depth mode and any other projection take quadOutsideView's own test: its
+// out-of-line part (GCC splits the gameProjection check off into utxEmitPageRegion), named by its assembler name
+// so that no copy is made; the build fails at link time if GCC ever stops splitting it.
+__attribute__((pure)) bool cdOutsideFull(CtrRenderer* r, const float* px, const float* py) __asm__("quadOutsideView.part.0");
+static inline __attribute__((always_inline)) uint32_t cdBits(float f) {
+    uint32_t u;
+    memcpy(&u, &f, sizeof u);
+    return u;
+}
+static __attribute__((noinline, noclone, section(".text.creddodge_late"))) bool cdGlyphOutside(CtrRenderer* r, const float* px,
+                                                                                               const float* py) {
+    const C3D_Mtx* m = &r->projection;
+    if (!r->depth.active && cdBits(m->r[3].x) == 0 && cdBits(m->r[3].y) == 0 && cdBits(m->r[3].w) == 0x3f800000u) {
+        uint32_t ok = 1, left = 1, right = 1, top = 1, bottom = 1;
+        for (int32_t i = 0; 4 > i; i++) {
+            uint32_t x = cdBits(m->r[0].y * py[i] + m->r[0].x * px[i] + m->r[0].w);
+            uint32_t y = cdBits(m->r[1].y * py[i] + m->r[1].x * px[i] + m->r[1].w);
+            // A non-finite px or py makes x non-finite (0 * inf is NaN), and w with it.
+            ok &= (x & 0x7fffffffu) < 0x7f800000u && (y & 0x7fffffffu) < 0x7f800000u;
+            left &= x > 0xbf800000u;
+            right &= (int32_t) x > 0x3f800000;
+            top &= y > 0xbf800000u;
+            bottom &= (int32_t) y > 0x3f800000;
+        }
+        if (ok) return (left | right | top | bottom) != 0;
+    }
+    return cdOutsideFull(r, px, py);
+}
+// ===[ String box fitted to the alignment (creddodge, tbox) ]===
+// drawTextImpl drops a string whose box is wholly out of view. The box is +-reachX across, reachX = textLen x advance
+// x (2 when aligned) + extent: room for the alignment to move the start by a whole line's width either way and for
+// the cursor to move a whole advance either way per character. In the credits dodger that box is about four times as
+// wide as a centred name can reach: a quarter of the strings that pass it draw nothing (every glyph out of view), each
+// laid out glyph by glyph only to be dropped.
+//
+// For a font whose cursor never steps back (every glyph's shift >= 0 and every kerning amount >= 0), a line's cursor
+// runs from the alignment offset to that plus W, the line's measured width (TextUtils_measureLineWidth, which the
+// alignment uses): each step of the draw loop is shift, plus the kerning only when the glyph drew, so between 0 and the
+// measured step, and the cursor never passes the measured sum. W <= lineLen x advance <= textLen x advance = La, as
+// every measured step is at most |shift| + the largest |kerning| <= advance. So with halign 1 (centre) the cursor stays
+// in [-La/2, La/2], with halign 2 (right) in [-La, 0], and every glyph quad within extent of its cursor (|offset| +
+// sourceWidth <= extent). A symmetric box of reachX' = La/2 + extent (centre) or La + extent (right) holds them all,
+// which drawTextImpl makes from a copy of the font's reach with the advance scaled by 1/4 or 1/2 (it doubles it for
+// alignment). halign 0 already gets La + extent, and any other value keeps the font's own reach.
+//
+// All of that is exact in float only while the sums stay integers below 2^24: TextUtils_measureLineWidth adds in
+// single precision (c26rev r17: shift 32,767 x 1,000 characters gives W = 32,767,488 > La = 32,767,000). So the box
+// is fitted only while La = (float) textLen x advance <= 2^23 glyph pixels; any longer string keeps the font's own
+// reach. Below that every step, partial sum, W and W / 2 is an integer or half-integer under 2^23, all exact, and
+// so are the fitted box's La / 2 and La.
+//
+// textLen is drawTextImpl's own, read from r9: cdReachBox is a thunk that passes r9 on as cdReachBoxLen's fourth
+// argument. drawTextImpl keeps textLen in r9 across this call, and r9 is callee-saved, so it holds textLen on entry.
+// Nothing in C can promise that, so tools/analysis/check_creddodge_layout.py --unit tbox proves it on each build: the
+// four words after the call must be exactly the source's (float) textLen x reach->advance, with textLen read from
+// r9 and advance from [r0, #4]. A build where GCC keeps textLen elsewhere fails the verifier instead of fitting a
+// wrong box. The call is to a bodiless declaration, so GCC assumes the full call clobber set there, as for any
+// outside function; drawTextImpl's words are the stage's own apart from the call target.
+//
+// The extent grows by 2 glyph pixels: upright text in 2x pixels is put on the grid after the box test (snapText),
+// moving each line by at most 1.5 surface pixels (gridExcess), and snapText needs at least 0.99 surface pixels per
+// glyph pixel, so at most 1.52 glyph pixels; the rest covers rounding in the corners' transform.
+// The box's height is the font's own, so the test only drops more strings off the left or right. A glyph quad lies in
+// the box (convex, the same affine transform), so a box wholly past one edge (a linear test on each corner,
+// quadOutsideView) has each glyph wholly past it too: the strings it adds are ones whose every glyph
+// utxEmitPageRegion would have dropped.
+//
+// A font's verdict is kept by its index (fonts are only ever added at new indexes, as fontReach also assumes), for the
+// first 64 fonts (two bits each); any later font keeps its own reach.
+#define CD_TBOX_FONTS 64
+static uint32_t cdTbSeen[CD_TBOX_FONTS / 32] __attribute__((section(".bss.tbox_late"))); // looked at
+static uint32_t cdTbBack[CD_TBOX_FONTS / 32] __attribute__((section(".bss.tbox_late"))); // may step back
+static struct CtrFontReach cdTbReach __attribute__((section(".bss.tbox_late")));
+_Static_assert(offsetof(struct CtrFontReach, advance) == 4, "check_creddodge_layout.py --unit tbox reads advance at [r0, #4]");
+static __attribute__((used, noipa, section(".text.tbox_late"))) const struct CtrFontReach* cdReachBoxLen(CtrRenderer* r, int32_t fontIndex,
+                                                                                                       Font* font, int32_t textLen) {
+    const struct CtrFontReach* reach = fontReach(r, fontIndex, font);
+    int32_t halign = r->base.drawHalign;
+    if ((halign != 1 && halign != 2) || (uint32_t) fontIndex >= CD_TBOX_FONTS) return reach;
+    if ((float) textLen * reach->advance > 8388608.0f) return reach; // 2^23: see above
+    uint32_t word = (uint32_t) fontIndex / 32, bit = 1u << ((uint32_t) fontIndex % 32);
+    if ((cdTbSeen[word] & bit) == 0) {
+        bool back = false;
+        for (uint32_t i = 0; font->glyphCount > i; i++) {
+            const FontGlyph* g = &font->glyphs[i];
+            if (0 > g->shift) back = true;
+            for (uint32_t k = 0; g->kerningCount > k; k++) {
+                if (0 > g->kerning[k].shiftModifier) back = true;
+            }
+        }
+        cdTbSeen[word] |= bit;
+        if (back) cdTbBack[word] |= bit;
+    }
+    if ((cdTbBack[word] & bit) != 0) return reach;
+    cdTbReach = *reach;
+    cdTbReach.advance = reach->advance * (halign == 1 ? 0.25f : 0.5f);
+    cdTbReach.extent = reach->extent + 2.0f;
+    return &cdTbReach;
+}
+__asm__(".pushsection .text.tbox_late, \"ax\", %progbits\n"
+        "\t.balign 4\n"
+        "\t.global cdReachBox\n"
+        "\t.type cdReachBox, %function\n"
+        "\t.arm\n"
+        "cdReachBox:\n"
+        "\tmov r3, r9\n"
+        "\tb cdReachBoxLen\n"
+        "\t.size cdReachBox, . - cdReachBox\n"
+        "\t.popsection\n");
+#endif
+
+#endif
+
+#if defined(ENABLE_WAD16)
+// Keep the original private blitter and its warm callers at their existing addresses.
+const CtrUtWindowBlit CtrUtWindow_originalBlit __attribute__((section(".rodata.utbugs4_late"))) = blitApp;
+#endif
+
+#ifdef CTRPORT_ASG_PROBE
+// asgprobe (test build only, asgore30): the frame's draw calls so far, vertices, and the open batch's texture,
+// for its draw-sequence dump (ctr_asgprobe.c).
+__attribute__((noinline, section(".text.late.utasgore.probe"))) uint32_t CtrRenderer_probeCalls(Renderer* renderer, uint32_t* vertices,
+                                                                                               const void** tex) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    *vertices = r->vertexCount;
+    *tex = r->batchTex;
+    return r->frameStats.drawCalls;
 }
 #endif

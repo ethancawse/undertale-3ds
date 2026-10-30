@@ -175,7 +175,14 @@ def generator_stamp():
     here = os.path.dirname(os.path.abspath(__file__))
     gen = hashlib.sha1()
     for f in ('stpack.py', 'stglyphs.py', 'fontverdict.py', 'stmenu.py', 'stasrtext.py'):
-        with open(os.path.join(here, f), 'rb') as fh:
+        path = os.path.join(here, f)
+        if f == 'stmenu.py' and not os.path.isfile(path):
+            # UNDERTALE's Smoothing menu data: DELTARUNE's builder source kit leaves it out (pipeline.py), and
+            # DELTARUNE never imports it. Named as absent (a present file hashes exactly as before), so the kit
+            # still packs DELTARUNE's Crisp text (integrate21 stage73: the DR builder had no glyphs).
+            gen.update(b'absent:stmenu.py')
+            continue
+        with open(path, 'rb') as fh:
             gen.update(fh.read())
     tables = repr((sorted(sg.DEFAULT_PARAMS.items()), sorted(sg.FONT_PARAMS.items()), sorted(sg.PATCHES.items()),
                    sorted(sg.PATCHES_PC.items())))

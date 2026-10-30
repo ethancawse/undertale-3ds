@@ -96,7 +96,7 @@ static const char gdFolder[] GD_RO = GD_GAME;          // "sdmc:/3ds/<game>-3ds"
 static const char gdSettings[] GD_RO = "settings.ini";
 // Retired with lab mode's borrowing of the old folder (hashfix, 2026-10-27); kept so the late constants after
 // them don't move.
-static const char gdOldSettings[] GD_RO __attribute__((used)) = "deltatale.ini";
+static const char gdOldSettings[] GD_RO __attribute__((used)) = "legacycfg.ini";
 static const char gdRefused[] GD_RO = "\\:*?\"<>|";
 // Written straight through the FS service (ctr_lab.c, ctr_watchdog.c, ctr_boot_trail.c), not through this layer.
 static const char gdDirect[] GD_RO = "crash.txt\0hang.txt\0labboot.txt\0";

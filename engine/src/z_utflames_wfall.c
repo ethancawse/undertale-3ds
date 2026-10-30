@@ -101,13 +101,9 @@ static bool utfViewRect(Renderer* renderer, UtfView* out) {
 #endif
 
 // Draw of a falling-water foreground strip (UTF_NATIVE's waterfall shape):
-//     v0 += 3;
-//     for (v1 = 0; v1 < 20; v1 += 1) draw_sprite_ext(sprite_index, 0, x, -210 + y + v1 * 30 + v0, 2, 2, 0, c_white, 0.2);
-//     if (v0 > 180) v0 -= 180;
-//     v2 = 0;
-//     if (view_xview[0] > 0 && view_xview[0] < <the room's width> - view_wview[0]) v2 = view_xview[0];
-//     if (view_xview[0] >= <the room's width> - view_wview[0]) v2 = <the room's width> - view_wview[0];
-//     x = xstart - v2 * 0.5;
+//     its scroll (v0) moves down a few pixels and draws a column of twenty faint, doubled-size copies of the sprite's
+//     first frame spaced down the strip, then wraps the scroll; v2 follows the view's left edge, held between 0 and
+//     the room's right end, and the strip sits at its start less half of that for parallax.
 // a: v0, v1 and v2's IDs, draw_sprite_ext's function index, the operands of view_xview (0x11C), the room's width (0x140),
 // view_wview (0x150), xstart (0x1DC) and x (0x200). Eleven run a frame in the falling-water rooms, 220 rows. Each value
 // is worked out as the generated code works it (the same helpers, a barrier after each step); the rows go to the
@@ -124,7 +120,7 @@ RValue UtFlames_wfallDraw(VMContext* ctx, uint32_t k, AotFn generated, const int
         p2->ownsReference || !vmIsPlainNumber(p0->type) || (uint32_t) a[3] >= ctx->funcCallCacheCount ||
         ctx->funcCallCache[a[3]].builtin == nullptr)
         return generated(ctx);
-    // draw_sprite_ext(sprite_index, 0, ...) draws the sprite's first frame (Renderer_drawSpriteExt: none for a sprite
+    // The rows draw the sprite's first frame (draw_sprite_ext) (Renderer_drawSpriteExt: none for a sprite
     // that isn't there; a nine-slice sprite, scaled, takes its other path, left to the generated code).
     DataWin* dw = renderer->dataWin;
     int32_t spriteIndex = inst->spriteIndex;
@@ -135,13 +131,13 @@ RValue UtFlames_wfallDraw(VMContext* ctx, uint32_t k, AotFn generated, const int
     __asm__("" : "+r"(S));
     RValue kv;
 
-    // 0000-0010: v0 += 3.
+    // 0000-0010: the scroll steps.
     vmWeakCopyInto(&S[0], p0);
     AOT_SET_INT(&kv, 3, GML_TYPE_INT16);
     utfArith(&S[0], &kv, VM_ARITH_ADD);
     *p0 = S[0];
 
-    // 0018-001C: v1 = 0 (Pop.v.i: stored as a real).
+    // 0018-001C: the row counter from 0 (Pop.v.i: stored as a real).
     AOT_SET_INT(&S[0], 0, GML_TYPE_INT16);
     coerceIntStoreToRealInPlace(&S[0], GML_TYPE_INT32);
     *p1 = S[0];
@@ -201,14 +197,14 @@ RValue UtFlames_wfallDraw(VMContext* ctx, uint32_t k, AotFn generated, const int
         if (tpagIndex >= 0)
 #endif
             renderer->vtable->drawSprite(renderer, tpagIndex, x, y, originX, originY, scale, scale, rot, 0xFFFFFFu, alpha);
-        // v1 += 1
+        // the next row
         vmWeakCopyInto(&S[0], p1);
         AOT_SET_INT(&kv, 1, GML_TYPE_INT16);
         utfArith(&S[0], &kv, VM_ARITH_ADD);
         *p1 = S[0];
     }
 
-    // 00DC-0100: if (v0 > 180) v0 -= 180.
+    // 00DC-0100: the scroll wraps.
     vmWeakCopyInto(&S[0], p0);
     AOT_SET_INT(&kv, 180, GML_TYPE_INT16);
     int r = utfCmp(&S[0], &kv, CMP_GT);
@@ -221,13 +217,13 @@ RValue UtFlames_wfallDraw(VMContext* ctx, uint32_t k, AotFn generated, const int
         *p0 = S[0];
     }
 
-    // 0108-010C: v2 = 0 (Pop.v.i: stored as a real).
+    // 0108-010C: the view follow from 0 (Pop.v.i: stored as a real).
     AOT_SET_INT(&S[0], 0, GML_TYPE_INT16);
     coerceIntStoreToRealInPlace(&S[0], GML_TYPE_INT32);
     *p2 = S[0];
 
-    // 0114-017C: if (view_xview[0] > 0 && view_xview[0] < <the room's width> - view_wview[0]) v2 = view_xview[0];
-    // 0184-01D4: if (view_xview[0] >= <the room's width> - view_wview[0]) v2 = <the room's width> - view_wview[0];
+    // 0114-017C: the view's left edge when inside the room's range;
+    // 0184-01D4: the range's right end when the view is at or past it.
     // Every operand is a real (VMBuiltins_getVariable's), so each test is vmCmpNumbers's.
     utfGetBuiltin(ctx, inst, a[4], 0, &S[0]);
     AOT_SET_INT(&kv, 0, GML_TYPE_INT16);
@@ -254,7 +250,7 @@ RValue UtFlames_wfallDraw(VMContext* ctx, uint32_t k, AotFn generated, const int
         *p2 = S[0];
     }
 
-    // 01DC-0200: x = xstart - v2 * 0.5 (Pop.v.v of a builtin on self: VMBuiltins_setVariable).
+    // 01DC-0200: the strip's x from its start and the view follow (Pop.v.v of a builtin on self: VMBuiltins_setVariable).
     utfGetBuiltin(ctx, inst, a[7], -1, &S[0]);
     vmWeakCopyInto(&S[1], p2);
     AOT_SET_REAL(&kv, (GMLReal) aotBitsDouble(0x3FE0000000000000ULL), GML_TYPE_DOUBLE);

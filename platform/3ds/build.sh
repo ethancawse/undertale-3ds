@@ -46,8 +46,13 @@
 #                              separate build directory, never a release)
 #                              [bfprobe] (main-thread waits in a sweep, [bfprobe] log lines; ctr_benchmark.c's end;
 #                              separate build directory, never a release)
+#                              [asgprobe] (UNDERTALE test only: ARM11 counters and per-frame drawSprite ticks, source/ctr_asgprobe.c;
+#                              asgframes.txt / asgtime.txt / asgdump.txt in the game folder; separate build directory, never a release)
 #                              [frametrace] (every frame of a bench window: phases, pacer, GPU waits, SD calls, decodes,
 #                              tile loads, written to frametrace.txt after the window; source/z_frametrace.c;
+#                              separate build directory, never a release)
+#                              [flowdiag] (UNDERTALE: every draw-time tile load and floor guard decision with free
+#                              linear and heap memory and plan membership; source/z_flowdiag.c; flowstream round 3;
 #                              separate build directory, never a release)
 #                              [exittrail] (the exit's steps after the last log line, each in labboot.txt with its thread;
 #                              source/z_exittrail.c; o2DS kernel panic diagnosis, separate build directory, never a release)
@@ -184,6 +189,8 @@ spikerec=OFF
 freewins=OFF
 bfprobe=OFF
 frametrace=OFF
+asgprobe=OFF
+flowdiag=OFF
 exittrail=OFF
 writerfront=ON
 repack_test= # test builds: a folder of <data.win folder>/ repack files for the RomFS (ctr_repack.inc)
@@ -258,6 +265,8 @@ for arg in "$@"; do
         freewins) freewins=ON ;;
         bfprobe) bfprobe=ON ;;
         frametrace) frametrace=ON ;;
+        asgprobe) asgprobe=ON ;;
+        flowdiag) flowdiag=ON ;;
         exittrail) exittrail=ON ;;
         nowriterfront) writerfront=OFF ;;
         writerfront-fallback) writerfront=FALLBACK ;;
@@ -507,11 +516,17 @@ fi
 if [ "$bfprobe" = ON ]; then
     build="$build-bfprobe"
 fi
+if [ "$asgprobe" = ON ]; then
+    build="$build-asgprobe"
+fi
 if [ "$frametrace" = ON ]; then
     build="$build-frametrace"
 fi
 if [ "$exittrail" = ON ]; then
     build="$build-exittrail"
+fi
+if [ "$flowdiag" = ON ]; then
+    build="$build-flowdiag"
 fi
 case "$writerfront" in
     OFF) build="$build-nowriterfront" ;;
@@ -930,7 +945,7 @@ cmake -S "$here" -B "$build" -G "Unix Makefiles" \
     -DCTRPORT_ROOMPLAN_FILE="$roomplan_file" -DCTRPORT_SFXPLAN_FILE="$sfxplan_file" -DCTRPORT_PHASEPLAN_FILE="$phaseplan_file" -DCTRPORT_ROOMPLAN_DIR="$roomplan_dir" -DCTRPORT_ROOMPLAN_RECORDER="$roomplan_rec" \
     -DCTRPORT_PHASE_LAYOUT="$phase_layout" \
     -DCTRPORT_SPIKEREC="$spikerec" -DCTRPORT_FREEWINS="$freewins" \
-    -DCTRPORT_BENCHFIX_PROBE="$bfprobe" -DCTRPORT_FRAMETRACE="$frametrace" \
+    -DCTRPORT_BENCHFIX_PROBE="$bfprobe" -DCTRPORT_FRAMETRACE="$frametrace" -DCTRPORT_ASG_PROBE="$asgprobe" -DCTRPORT_FLOWSTREAM_DIAG="$flowdiag" \
     -DCTRPORT_EXITTRAIL="$exittrail" -DCTRPORT_WRITERFRONT_MODE="$writerfront" \
     "${input_cmake[@]}" \
     -DCTRPORT_TYPED_CENSUS="$typed_census" -DCTRPORT_TYPED_FRAMELOG="$typed_framelog" \

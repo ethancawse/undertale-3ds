@@ -1,7 +1,7 @@
 // UNDERTALE's late copies of generated functions (utflowey; gmlaot.py's LATE_COPIES).
 //
 // A few small code entries run on hundreds of instances every frame in the heaviest bullet patterns (Photoshop
-// Flowey's spinning eyes: some 250 at once). Each writes builtins on self (image_angle += 10; image_xscale = size),
+// Flowey's spinning eyes: some 250 at once). Each writes builtins on self (its angle and scale),
 // and a builtin write in generated code goes the slow way, as the interpreter's Pop.v.v does: a site function that
 // reads the instruction, the variable's definition, then VMBuiltins_setVariable's checks and switch. gmlaot.py gives
 // such an entry, picked by its bytecode's digest, a second copy of its generated function (aotl_<k>, in aot_late.c,

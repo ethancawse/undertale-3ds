@@ -158,6 +158,17 @@ static UTSTALL_BSS struct {
     uint32_t evictedBytes;        // what made room for the set
 } us;
 
+#ifdef CTRPORT_TARGET_O3DS
+// flowstream (z_flowstream.c, the plan tiles it follows; Old models): the scene this room visit loaded, while it is the
+// current room's (the test item 5's play-time code uses: us.cache is cleared once the room load ends, the scene stays
+// until the next room's prefetch). In flowstream's late section: nothing of this file's own code or data moves.
+const uint8_t* CtrUtstall_activeScene(const CtrTextureCache* cache);
+__attribute__((noinline, section(".text.flowstream_late"))) const uint8_t* CtrUtstall_activeScene(const CtrTextureCache* cache) {
+    (void) cache;
+    return 0 <= us.room && us.runner != nullptr && us.runner->currentRoomIndex == us.room ? us.scene : nullptr;
+}
+#endif
+
 static const char usLog[] UTSTALL_CONST =
     "Room load (utstall): %s group %ld: %u battle tiles for the record; later tiles %u marked, %u loaded, %u left to their first draw; %.0f ms, %.0f ms past the base budget\n";
 
@@ -862,7 +873,7 @@ static UTFLPIN_TEXT void utflAgeRestore(void) {
     utflAge.ready = true;
 }
 
-void __real_RoomLoad_collect(CtrTextureCache* cache, bool drop); void utflPkCollect(CtrTextureCache* cache, bool drop);
+void __real_RoomLoad_collect(CtrTextureCache* cache, bool drop); void utflPkCollect(CtrTextureCache* cache, bool drop); void CtrFlowstream_collect(CtrTextureCache* cache, bool drop);
 void __wrap_RoomLoad_collect(CtrTextureCache* cache, bool drop);
 UTFLPIN_TEXT void __wrap_RoomLoad_collect(CtrTextureCache* cache, bool drop) {
     utflPkCollect(cache, drop);
@@ -965,7 +976,11 @@ static const char utflPkBudgetLog[] UTFLPK_CONST =
     "Textures: packed budget %u KB (heap %u KB less the game's measured need, %u KB; was %u KB)\n";
 #endif
 UTFLPK_TEXT void utflPkCollect(CtrTextureCache* cache, bool drop) {
+#ifdef CTRPORT_TARGET_O3DS
+    CtrFlowstream_collect(cache, drop); // flowstream (Old models): RoomLoad_collect, then its refills
+#else
     __real_RoomLoad_collect(cache, drop);
+#endif
 #ifdef CTRPORT_TARGET_O3DS
     if (cache == nullptr || cache->pageCount > UTFLPK_PAGES) return;
     if (utflPk.pages != cache->pages || utflPk.pageCount != cache->pageCount) {

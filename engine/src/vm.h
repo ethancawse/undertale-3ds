@@ -521,9 +521,20 @@ static inline void VM_checkIfVariableShouldBeTracedAndLog(VMContext* ctx, const 
 // resolveVariableWrite (docs/3ds-hardware.md). The runner's event runs call VM_RUN_EVENT_IN_RUN.
 #if defined(ENABLE_WAD16)
 void VM_runEventBound(VMContext* ctx, VMEventRun* run, struct Instance* instance);
-#define VM_RUN_EVENT_IN_RUN VM_runEventBound
+#define VM_RUN_EVENT_IN_RUN VM_runEventGuarded // VM_runEventBound behind evguard's test (z_evguard.c, below)
 #else
 #define VM_RUN_EVENT_IN_RUN VM_runEvent
+#endif
+
+// evguard (asgore30, z_evguard.c, late text, UNDERTALE only): the runner's event runs begin with
+// VM_BEGIN_EVENT_RUN, which notes a code entry that starts with a test of a global jumping to its end when false,
+// and VM_RUN_EVENT_IN_RUN (above) skips the run's events while that test is false (they would do nothing).
+#if defined(ENABLE_WAD16)
+void VM_beginEventRunGuard(VMContext* ctx, VMEventRun* run, int32_t codeIndex, int32_t eventType, int32_t eventSubtype, int32_t ownerObjectIndex);
+void VM_runEventGuarded(VMContext* ctx, VMEventRun* run, struct Instance* instance);
+#define VM_BEGIN_EVENT_RUN VM_beginEventRunGuard
+#else
+#define VM_BEGIN_EVENT_RUN VM_beginEventRun
 #endif
 
 #endif /* _BS_VM_H_ */

@@ -72,6 +72,7 @@ WAD 16 (GameMaker 1.4: UNDERTALE) and WAD 17 (GameMaker 2.3+: DELTARUNE) bytecod
 the interpreter.
 """
 import glob
+import hashlib
 import os
 import re
 import struct
@@ -257,43 +258,26 @@ LATE_COPY_SETTERS = {"x": ("AOT_LATE_SET_FLOAT_DIRTY", "x"), "y": ("AOT_LATE_SET
                      "image_alpha": ("AOT_LATE_SET_FLOAT", "imageAlpha")}
 LATE_TEXTS = []    # the late copies' C text, for aot_late.c
 # WAD 16 (UNDERTALE) only (credfix): the text lookup script, by its bytecode's digest, gets a front (aotg_<k>, in aot_gettext.c,
-# which links after every other late input) that skips the per-letter loop when the text has no "\[": the loop (i from
-# 1 to string_length(text) - 3: string_copy(text, i, 2) == "\[" and string_char_at(text, i + 3) == "]" replace that
-# escape) changes nothing then, and only spends a string_length, a string_copy (an allocation) and a compare on each
-# letter. UNDERTALE asks for every line of text through it (33 a frame in the cast roll of the True Pacifist ending,
+# which links after every other late input) that skips the per-letter loop when the text has no "\[": the loop (which
+# looks for bracketed escapes letter by letter and replaces them) changes nothing then, and only spends a length, a
+# two-letter copy (an allocation) and a compare on each letter. UNDERTALE asks for every line of text through it (33 a frame in the cast roll of the True Pacifist ending,
 # about a third of that room's Draw on the Old 3DS). The front (GETTEXT_HELPER, a small late wrapper per entry with
 # the operands the bytecode names) works out what the code before the loop leaves in the text's local in the common
 # case, global.language not "ja" and the English map holding a string for the key, and returns it when it has no
 # escape; anything else runs aotf_<k> from its start, which the front has changed nothing for (it only reads, and calls
-# ds_map_find_value, which only reads). aotf_<k> stays linked and in place. Values: (the code before the loop, line for
-# line without its address comments, {name} standing for an operand the front is given; the loop's head label; its
-# exit label and returning tail, which return the text's local).
+# ds_map_find_value, which only reads). aotf_<k> stays linked and in place. Values hold no generated code, only
+# digests of the text the front was written for: ("sha256:<digest>/<n>" of the n lines of the code before the loop,
+# without their address comments and with each operand the front is given written as {name}; where those operands
+# are, as (line, which integer on the line, name); the loop's head label; its exit label; "sha256:<digest>/<n>" of
+# the n lines of the returning tail after the exit label, which return the text's local). gettext_copy rebuilds the
+# same text from the entry's generated code at build time, so the match stays exact.
 GETTEXT_FAST = {
     0xFF01FC2C54143E26: (
-        ["    AOT_ENTRY_CHECK();", "    AOT_PROLOGUE();", "    AOT_LOCALS(aotlv_{k}, aotls_{k}, &aotlc_{k}, 8);",
-         "    RValue *aotc_0 = nullptr, *aotc_1 = nullptr, *aotc_2 = nullptr, *aotc_3 = nullptr;",
-         "    AOT_PUSH_INT(0, -1, 15);", "    AOT_PUSH_INT(1, 0, 15);",
-         "    AOT_SITE_V(aotSitePushArray, 0x8, 8, 2, 1, &V[{arg}]);", "    AOT_STORE(&LV(0), 1, 5);",
-         "    AOT_WEAK_COPY(0, &LV(0));", "    AOT_PUSH_VAR(1, -5, {map}, AOT_SITE(aotSitePushGlb, 0x20, 8, 1, 2));",
-         "    AOT_CALL_BUILTIN(2, 0xD9020002u, 0x28, 1, {find});  /* ds_map_find_value */",
-         "    AOT_STORE(&LV(1), 1, 5);", "    AOT_WEAK_COPY(0, &LV(1));",
-         "    AOT_CALL_BUILTIN(1, 0xD9020001u, 0x40, 1, {undef});  /* is_undefined */", "    AOT_CONV(1, 5, 4);",
-         "    if (aotTruth(&S[0]) == false) goto L_0060;", "    AOT_PUSH_STRING(0, {missing});",
-         "    AOT_STORE(&LV(1), 1, 6);", "L_0060:", "    AOT_BLOCK(0, 0x60);",
-         "    AOT_PUSH_VAR(0, -5, {lang}, AOT_SITE(aotSitePushGlb, 0x60, 8, 0, 1));", "    AOT_PUSH_STRING(1, {ja});",
-         "    AOT_CMP_BRANCH(2, 0x15560300u, 3, false, L_00C4);", "    AOT_WEAK_COPY(0, &LV(0));",
-         "    AOT_PUSH_VAR(1, -5, {mapja}, AOT_SITE(aotSitePushGlb, 0x80, 8, 1, 2));",
-         "    AOT_CALL_BUILTIN(2, 0xD9020002u, 0x88, 1, {find});  /* ds_map_find_value */",
-         "    AOT_STORE(&LV(2), 1, 5);", "    AOT_WEAK_COPY(0, &LV(2));",
-         "    AOT_CALL_BUILTIN(1, 0xD9020001u, 0xA0, 1, {undef});  /* is_undefined */", "    AOT_CONV(1, 5, 4);",
-         "    AOT_NOT(1, 0x12040000u, 4);", "    if (aotTruth(&S[0]) == false) goto L_00C4;",
-         "    AOT_WEAK_COPY(0, &LV(2));", "    AOT_STORE(&LV(1), 1, 5);", "L_00C4:", "    AOT_BLOCK(0, 0xC4);",
-         "    AOT_PUSH_INT(0, 1, 15);", "    AOT_STORE(&LV(3), 1, 2);",
-         "    AOT_CFIND(aotc_0, -5, {c0}); AOT_CFIND(aotc_1, -5, {c1}); AOT_CFIND(aotc_2, -5, {c2}); "
-         "AOT_CFIND(aotc_3, -5, {c3});"],
-        "L_00D0:", "L_05E4:",
-        ["    AOT_BLOCK(0, 0x5E4);", "    /* 05E4 */", "    AOT_WEAK_COPY(0, &LV(1));",
-         "    /* 05EC */", "    AOT_RET(1);", "    AOT_EPILOGUE();", "}"]),
+        "sha256:6e07ee41dbd842dada91383153c5a37d096526cf970e90e6904dfa44c6e18aa9/39",
+        ((2, 0, "k"), (2, 1, "k"), (2, 2, "k"), (6, 5, "arg"), (9, 2, "map"), (10, 6, "find"), (13, 6, "undef"),
+         (16, 1, "missing"), (20, 2, "lang"), (21, 1, "ja"), (24, 2, "mapja"), (25, 6, "find"), (28, 6, "undef"),
+         (38, 2, "c0"), (38, 5, "c1"), (38, 8, "c2"), (38, 11, "c3")),
+        "L_00D0:", "L_05E4:", "sha256:5e16f8d0df25df2689f8c33cee3cf762dcae1e6f4aa10435069346406f16b1ad/7"),
 }
 GETTEXT_OPERANDS = ("arg", "map", "lang", "ja", "find")  # the front's operands, in its array's order
 GETTEXT_TEXTS = []  # the wrappers' C text, for aot_gettext.c
@@ -2002,32 +1986,58 @@ def late_copy(dw, k, func_text):
     return ["RValue aotf_%d(VMContext* ctx) AOT_FN_DECL;" % k, "RValue aotl_%d(VMContext* ctx);" % k] + lines, n
 
 
+GETTEXT_RUN = re.compile(r"-?\d+")
+
+
+def gettext_digest(lines):
+    """The "sha256:<digest>/<n>" of n lines of C text (GETTEXT_FAST)."""
+    return "sha256:%s/%d" % (hashlib.sha256("\n".join(lines).encode()).hexdigest(), len(lines))
+
+
+def gettext_lines(lines, where):
+    """The lines with each operand GETTEXT_FAST names, (line, which integer on the line, name), written as {name},
+    and the operands' values by name; None when a line has no such integer or a name has two values."""
+    want, values, out = {}, {}, []
+    for li, run, name in where:
+        want.setdefault(li, {})[run] = name
+    for li, line in enumerate(lines):
+        names, parts, pos = want.get(li, {}), [], 0
+        runs = list(GETTEXT_RUN.finditer(line))
+        if names and max(names) >= len(runs):
+            return None
+        for n, m in enumerate(runs):
+            if n in names:
+                parts += [line[pos:m.start()], "{%s}" % names[n]]
+                pos = m.end()
+                if values.setdefault(names[n], m.group()) != m.group():
+                    return None
+        out.append("".join(parts) + line[pos:])
+    return out, values
+
+
 def gettext_copy(k, func_text, digest):
     """aot_gettext.c's wrapper for aotf_<k> (GETTEXT_FAST): aotg_<k> calls the front (GETTEXT_HELPER) with the operands
     the generated code before the loop names, or None when that code, the loop's labels or the returning tail aren't
-    the text the front was written for, line for line."""
-    front, loop, done, tail = GETTEXT_FAST[digest]
+    the text the front was written for, line for line (by their digests)."""
+    front, where, loop, done, tail = GETTEXT_FAST[digest]
     lines = func_text.splitlines()
     head = "RValue aotf_%d(VMContext* ctx) {" % k
     if lines.count(head) != 1 or lines.count(loop) != 1 or lines.count(done) != 1:
         return None
     i = lines.index(done)
-    if lines[i + 1:i + 1 + len(tail)] != tail:
+    ntail = int(tail.rsplit("/", 1)[1])
+    if gettext_digest(lines[i + 1:i + 1 + ntail]) != tail:
         return None
     h, j = lines.index(head), lines.index(loop)
     got = [line for line in lines[h + 1:j] if not re.fullmatch(r"    /\* [0-9A-F]{4}( [0-9A-F]{4})* \*/", line)]
-    if len(got) != len(front):
+    if len(got) != int(front.rsplit("/", 1)[1]):
         return None
-    values = {"k": str(k)}
-    for want, line in zip(front, got):
-        parts = re.split(r"\{(\w+)\}", want)
-        pattern = "".join(re.escape(p) if n % 2 == 0 else r"(-?\d+)" for n, p in enumerate(parts))
-        m = re.fullmatch(pattern, line)
-        if m is None:
-            return None
-        for name, value in zip(parts[1::2], m.groups()):
-            if values.setdefault(name, value) != value:
-                return None
+    norm = gettext_lines(got, where)
+    if norm is None or gettext_digest(norm[0]) != front:
+        return None
+    values = norm[1]
+    if values.get("k", str(k)) != str(k):
+        return None
     operands = ", ".join(values[name] for name in GETTEXT_OPERANDS)
     return "\n".join(["RValue aotf_%d(VMContext* ctx) AOT_FN_DECL;" % k, "RValue aotg_%d(VMContext* ctx);" % k,
                       "static const int32_t aotga_%d[] = { %s };" % (k, operands),
@@ -2036,86 +2046,48 @@ def gettext_copy(k, func_text, digest):
 # WAD 16 (UNDERTALE) only (utflames): code entries that engine/src/z_utflames.c has a native body for. Each is
 # matched by its shape, every instruction word in order with what its operand names: a builtin variable or function
 # by its name (with '-' for '_'), any other variable by the order it first appears in (v0, v1, ...), and any other
-# operand by all its bytes. A match binds the entry to a small late wrapper (aotu_<k>) that calls the native body with
-# the entry's generated function (aotf_<k>, which the body runs instead whenever it can't) and the operands listed
-# after the shape: var:vN (that variable's ID), func:name (its function index), ref:ADDR (the operand word of the
-# instruction at ADDR) and i16:ADDR (that PushI's value). The bytecode must be exactly this, so the body can't drift
-# from what the game asks for, except that a token 840F**** is any PushI.i16 (the object a bullet tests, which the body
-# takes from its i16 operand, so other data with that object at another index still matches). Only self variables
-# with a non-negative ID are vN (a builtin by ID or instance type is named, and a negative ID refuses the entry).
-#
-# The fire bullets' shared tail: if (collision_rectangle(bbox_left, bbox_top, bbox_right, bbox_bottom, <object>, 0, 1))
-# event_user(0).
-UTF_RECT = ("840F0001 07520000 840F0000 07520000 840F**** 07520000 C005FFFF.A0.bbox-bottom C005FFFF.A0.bbox-right "
-            "C005FFFF.A0.bbox-top C005FFFF.A0.bbox-left D9020007.collision-rectangle 07450000 B8000006 840F0000 "
-            "07520000 D9020001.event-user 9E050000")
+# operand by all its bytes (utflames_shape). The table holds no shapes, only "sha256:<digest>/<n>": the SHA-256 of the
+# shape's text (its tokens joined by single spaces) and its instruction count n, so the match is exact and the game's
+# bytecode stays in the player's data.win. A match binds the entry to a small late wrapper (aotu_<k>) that calls the
+# native body with the entry's generated function (aotf_<k>, which the body runs instead whenever it can't) and the
+# operands listed after the key: var:vN (that variable's ID), func:name (its function index), ref:ADDR (the operand
+# word of the instruction at ADDR) and obj:ADDR (the value of the PushI.i16 at ADDR, the object a bullet tests). An
+# obj: instruction may push any object: its token is "840F****" in the digested text (UTF_ANY_I16), so other data with
+# that object at another index still matches. Only self variables with a non-negative ID are vN (a builtin by ID or
+# instance type is named, and a negative ID refuses the entry).
+UTF_ANY_I16 = "840F****"
 UTF_NATIVE = [
-    # Step of a fire bullet that moves on a sine wave (v0 += 1; x += sin(v0 / v1) * v2), is destroyed below the room
-    # and tests its own box against one object (event_user(0) on a hit). Operands: the variables' IDs (v0, v1, v2),
-    # collision_rectangle's function index and the object index it tests (the PushI at 0x90).
+    # Step of a fire bullet that sways sideways on a sine of its own phase counter (v0; period v1, size v2), is
+    # destroyed below the room and tests its own box against one object (user event 0 on a hit). Operands: the
+    # variables' IDs (v0, v1, v2), collision_rectangle's function index and the object it tests (the PushI at 0x90).
     # UtFlames_helixStep since round 17 (UtFlames_sineStep, round 16's, stays in place unused: late code doesn't move).
-    ("UtFlames_helixStep",
-     "C005FFFF.A0.v0 840F0001 0C520000 4555FFFF.A0.v0 C005FFFF.A0.x C005FFFF.A0.v0 C005FFFF.A0.v1 09550000 "
-     "D9020001.sin C005FFFF.A0.v2 08550000 0C550000 4555FFFF.A0.x C005FFFF.A0.y C305FFFF.A0.room-height 840F0064 "
-     "0C520000 15550600 B8000004 D9020000.instance-destroy 9E050000 840F0001 07520000 840F0000 07520000 840F**** "
-     "07520000 C005FFFF.A0.bbox-bottom C005FFFF.A0.bbox-right C005FFFF.A0.bbox-top C005FFFF.A0.bbox-left "
-     "D9020007.collision-rectangle 07450000 B8000006 840F0000 07520000 D9020001.event-user 9E050000",
-     ("var:v0", "var:v1", "var:v2", "func:collision-rectangle", "i16:0x90")),
-    # Step of a fire bullet that tests its own box (as above) and then slows down (speed -= v0). Operands:
-    # collision_rectangle's function index, the object index (0x10), speed's operand (0x70), v0's ID.
-    ("UtFlames_genericStep",
-     UTF_RECT + " C005FFFF.A0.speed C005FFFF.A0.v0 0D550000 4555FFFF.A0.speed",
-     ("func:collision-rectangle", "i16:0x10", "ref:0x70", "var:v0")),
-    # Step of a fire bullet circling a point: v0 -= v1; v2 += v3; destroyed when v0 <= 0.5; x = v4 + lengthdir_x(v0,
-    # v2); y = v5 + lengthdir_y(v0, v2); then the box test. Operands: v0..v5's IDs, collision_rectangle's function
-    # index, the object index (0xC8).
-    ("UtFlames_circleStep",
-     "C005FFFF.A0.v0 C005FFFF.A0.v1 0D550000 4555FFFF.A0.v0 C005FFFF.A0.v2 C005FFFF.A0.v3 0C550000 4555FFFF.A0.v2 "
-     "C005FFFF.A0.v0 C0000000.000000000000E03F 15500200 B8000004 D9020000.instance-destroy 9E050000 C005FFFF.A0.v4 "
-     "C005FFFF.A0.v2 C005FFFF.A0.v0 D9020002.lengthdir-x 0C550000 4555FFFF.A0.x C005FFFF.A0.v5 C005FFFF.A0.v2 "
-     "C005FFFF.A0.v0 D9020002.lengthdir-y 0C550000 4555FFFF.A0.y " + UTF_RECT,
-     ("var:v0", "var:v1", "var:v2", "var:v3", "var:v4", "var:v5", "func:collision-rectangle", "i16:0xC8")),
-    # Step of a fire bullet crossing the box: destroyed past global.v0[3] going down or above global.v0[2] less its
-    # sprite height going up, then the box test. Operands: collision_rectangle's function index, the object index
+    ("UtFlames_helixStep", "sha256:f16c0584362003bd675da6c271c54bc44848da8e36193446fbf94c2ef287f9fd/38",
+     ("var:v0", "var:v1", "var:v2", "func:collision-rectangle", "obj:0x90")),
+    # Step of a fire bullet that tests its own box (as above) and then slows down by a fixed step (v0). Operands:
+    # collision_rectangle's function index, the object (0x10), speed's operand (0x70), v0's ID.
+    ("UtFlames_genericStep", "sha256:25eebc9070014ddd0977caac43e6ab8f3901c2d9f4736ab70937ffe61bf7b5e0/21",
+     ("func:collision-rectangle", "obj:0x10", "ref:0x70", "var:v0")),
+    # Step of a fire bullet circling a point: its radius (v0) shrinks and its angle (v2) turns by fixed steps (v1, v3),
+    # it is destroyed once the radius is nearly gone, else it sits on that circle around (v4, v5); then the box test.
+    # Operands: v0..v5's IDs, collision_rectangle's function index, the object (0xC8).
+    ("UtFlames_circleStep", "sha256:9d7692992dafd3484c3a4d44ebd01e2746c18a91c1179887e495d0ca0c76e80b/43",
+     ("var:v0", "var:v1", "var:v2", "var:v3", "var:v4", "var:v5", "func:collision-rectangle", "obj:0xC8")),
+    # Step of a fire bullet crossing the box: destroyed past the box's bottom edge going down or above its top edge
+    # less its sprite height going up, then the box test. Operands: collision_rectangle's function index, the object
     # (0xAC), the operands of the array read (0x10), vspeed (0x20) and sprite_height (0x60).
-    ("UtFlames_sidedStep",
-     "C005FFFF.A0.y 840FFFFB 840F0003 C0050000.00.v0 15550600 B8000006 C005FFFF.A0.vspeed 840F0000 15520600 "
-     "B6000002 C00F0000 B8000004 D9020000.instance-destroy 9E050000 C005FFFF.A0.y 840FFFFB 840F0002 "
-     "C0050000.00.v0 C005FFFF.A0.sprite-height 0D550000 15550100 B8000006 C005FFFF.A0.vspeed 840F0000 15520100 "
-     "B6000002 C00F0000 B8000004 D9020000.instance-destroy 9E050000 " + UTF_RECT,
-     ("func:collision-rectangle", "i16:0xAC", "ref:0x10", "ref:0x20", "ref:0x60")),
-    # Step of an ember floating behind the fight: v1 eases towards v0 by 0.03 (outside +-0.1), the scales follow
-    # it, image_alpha fades by 0.01 (destroyed below 0.01), v2 += 1, x += sin(v2 / v3) * v4, y += cos(v2 / v3) * v5.
-    # Operands: v0..v5's IDs.
-    ("UtFlames_emberStep",
-     "C005FFFF.A0.v0 C005FFFF.A0.v1 C0000000.9A9999999999B93F 0C500000 15550600 B8000009 C005FFFF.A0.v1 "
-     "C0000000.B81E85EB51B89E3F 0C500000 4555FFFF.A0.v1 C005FFFF.A0.v0 C005FFFF.A0.v1 C0000000.9A9999999999B93F "
-     "0D500000 15550100 B8000009 C005FFFF.A0.v1 C0000000.B81E85EB51B89E3F 0D500000 4555FFFF.A0.v1 C005FFFF.A0.v1 "
-     "4555FFFF.A0.image-xscale C005FFFF.A0.v1 4555FFFF.A0.image-yscale C005FFFF.A0.image-alpha "
-     "C0000000.7B14AE47E17A843F 0D500000 4555FFFF.A0.image-alpha C005FFFF.A0.image-alpha C0000000.7B14AE47E17A843F "
-     "15500100 B8000004 D9020000.instance-destroy 9E050000 C005FFFF.A0.v2 840F0001 0C520000 4555FFFF.A0.v2 "
-     "C005FFFF.A0.x C005FFFF.A0.v2 C005FFFF.A0.v3 09550000 D9020001.sin C005FFFF.A0.v4 08550000 0C550000 "
-     "4555FFFF.A0.x C005FFFF.A0.y C005FFFF.A0.v2 C005FFFF.A0.v3 09550000 D9020001.cos C005FFFF.A0.v5 08550000 "
-     "0C550000 4555FFFF.A0.y",
+    ("UtFlames_sidedStep", "sha256:cd1cef3acc94ec6c3279f808d35d6f63f02f73f13d4c4c91a64cd2b581fe2a24/47",
+     ("func:collision-rectangle", "obj:0xAC", "ref:0x10", "ref:0x20", "ref:0x60")),
+    # Step of an ember floating behind the fight: its scale (v1) eases toward a target (v0) in small fixed steps, it
+    # fades a little every frame (destroyed when nearly transparent) and drifts on a sine and cosine of its phase
+    # (v2..v5). Operands: v0..v5's IDs.
+    ("UtFlames_emberStep", "sha256:931160b7ae71ae8b20d49231a7def5b3bdfdce00278a9d73f6330ac66aece352/56",
      ("var:v0", "var:v1", "var:v2", "var:v3", "var:v4", "var:v5")),
-    # Draw of a falling-water foreground strip (Waterfall): v0 += 3; 20 rows of draw_sprite_ext(sprite_index, 0, x,
-    # -210 + y + v1 * 30 + v0, 2, 2, 0, c_white, 0.2); v0 wraps past 180; v2 follows the view (view_xview[0] clamped to
-    # <the room's width> - view_wview[0]); x = xstart - v2 * 0.5. Operands: v0..v2's IDs, draw_sprite_ext's function index and
-    # the operands of view_xview (0x11C), the room's width (0x140), view_wview (0x150), xstart (0x1DC) and x (0x200). Its
-    # wrapper goes in a section of its own (the fourth item), after the others' late code.
-    ("UtFlames_wfallDraw",
-     "C005FFFF.A0.v0 840F0003 0C520000 4555FFFF.A0.v0 840F0000 4525FFFF.A0.v1 C005FFFF.A0.v1 840F0014 15520100 "
-     "B800002A C0000000.9A9999999999C93F 07500000 C0020000.FFFFFF00 07520000 840F0000 07520000 840F0002 07520000 "
-     "840F0002 07520000 840FFF2E C005FFFF.A0.y 0C250000 C005FFFF.A0.v1 840F001E 08520000 0C550000 C005FFFF.A0.v0 "
-     "0C550000 C005FFFF.A0.x 840F0000 07520000 C005FFFF.A0.sprite-index D9020009.draw-sprite-ext 9E050000 "
-     "C005FFFF.A0.v1 840F0001 0C520000 4555FFFF.A0.v1 B67FFFD3 C005FFFF.A0.v0 840F00B4 15520600 B8000007 "
-     "C005FFFF.A0.v0 840F00B4 0D520000 4555FFFF.A0.v0 840F0000 4525FFFF.A0.v2 840FFFFF 840F0000 "
-     "C0050000.00.view-xview 840F0000 15520600 B800000E 840FFFFF 840F0000 C0050000.00.view-xview "
-     "C305FFFF.A0.room-width 840FFFFF 840F0000 C0050000.00.view-wview 0D550000 15550100 B6000002 C00F0000 B8000007 "
-     "840FFFFF 840F0000 C0050000.00.view-xview 4555FFFF.A0.v2 840FFFFF 840F0000 C0050000.00.view-xview "
-     "C305FFFF.A0.room-width 840FFFFF 840F0000 C0050000.00.view-wview 0D550000 15550500 B800000A "
-     "C305FFFF.A0.room-width 840FFFFF 840F0000 C0050000.00.view-wview 0D550000 4555FFFF.A0.v2 C005FFFF.A0.xstart "
-     "C005FFFF.A0.v2 C0000000.000000000000E03F 08500000 0D550000 4555FFFF.A0.x",
+    # Draw of a falling-water foreground strip (Waterfall): a column of faint, doubled-size copies of its sprite that
+    # scrolls down and wraps, while the strip follows the view at half its speed for parallax. Operands: v0..v2's IDs,
+    # draw_sprite_ext's function index and the operands of view_xview (0x11C), the room's width (0x140), view_wview
+    # (0x150), xstart (0x1DC) and x (0x200). Its wrapper goes in a section of its own (the fourth item), after the
+    # others' late code.
+    ("UtFlames_wfallDraw", "sha256:2b11dafe10739d06b196e883cff6c4c4e8ff131c75de5bf23241ba8732e3e958/94",
      ("var:v0", "var:v1", "var:v2", "func:draw-sprite-ext", "ref:0x11C", "ref:0x140", "ref:0x150", "ref:0x1DC",
       "ref:0x200"),
      ".text.late.utflames.wfall"),
@@ -2133,9 +2105,18 @@ UTF_NATIVE = [
       "var:v11", "var:v12", "var:v13", "var:v14", "func:draw-sprite-part-ext", "func:string-char-at",
       "func:draw-set-color", "func:ord", "func:instance-create", "func:event-user", "func:instance-destroy",
       "obj:0x3E4", "str:0x128", "str:0x140", "str:0x158", "str:0x4AC", "wild:0x2DC"), "ops"),
-    # The dust pixel's Create: action_set_gravity(90, random(0.5) + 0.2); action_set_hspeed(random(4) - 2).
+    # The dust pixel's Create: a random fall strength (gravity pointing down) and a random sideways speed.
     ("Utkill_pixelCreate", "fnv:BBDC10A71459CDED",
      ("func:random", "func:action-set-gravity", "func:action-set-hspeed", "i16:0x28", "i16:0x3C", "i16:0x4C"), "ops"),
+    # draw_self_border_true (engine/src/z_asgborder.c), the clipped draw of Asgore's sided fire (143 instructions):
+    # "fnv:" as above, the operands in a[] (no "ops"): the eleven variables' IDs in first-use order (v7 is the global box edges),
+    # round's and draw_sprite_part's function indices, the border objects (0x58, 0xD4: Push.v of their x, whose
+    # instance type is the object) and the operands of those two x reads, sprite_width (0x18) and sprite_height (0x28).
+    # Its wrapper goes in the body's section (the fourth item), last in the late text.
+    ("UtFlames_borderDraw", "fnv:DFDD618D3681C423",
+     ("var:v0", "var:v1", "var:v2", "var:v3", "var:v4", "var:v5", "var:v6", "var:v7", "var:v8", "var:v9", "var:v10",
+      "func:round", "func:draw-sprite-part", "i16:0x58", "i16:0xD4", "ref:0x58", "ref:0xD4", "ref:0x18", "ref:0x28"),
+     ".text.asgborder_late"),
 ]
 
 
@@ -2203,15 +2184,24 @@ def utflames_shape(dw, blob, entry):
     return (" ".join(tokens) if shape_ok else None), var_order, funcs, by_addr, full, fvar_order
 
 
-def utflames_same(shape, want):
-    """Whether an entry's shape is a UTF_NATIVE shape (840F**** in it is any PushI.i16)."""
+def utflames_same(shape, by_addr, want, operands):
+    """Whether an entry's shape matches a UTF_NATIVE key "sha256:<digest>/<n>": n instructions, and the digest of its
+    text with each obj: instruction's token, which must be a PushI.i16, written as UTF_ANY_I16."""
     if shape is None:
         return False
-    if "*" not in want:
-        return shape == want
-    got, wanted = shape.split(" "), want.split(" ")
-    return len(got) == len(wanted) and all(
-        g == w or (w == "840F****" and len(g) == 8 and g.startswith("840F")) for g, w in zip(got, wanted))
+    digest, n = want[len("sha256:"):].split("/")
+    tokens = shape.split(" ")
+    if len(tokens) != int(n):
+        return False
+    index = {a: i for i, a in enumerate(by_addr)}   # one token per instruction, in address order
+    for op in operands:
+        kind, what = op.split(":", 1)
+        if kind == "obj":
+            i = index.get(int(what, 16))
+            if i is None or len(tokens[i]) != 8 or not tokens[i].startswith("840F"):
+                return False
+            tokens[i] = UTF_ANY_I16
+    return hashlib.sha256(" ".join(tokens).encode()).hexdigest() == digest
 
 
 def utflames_native(dw, blob, entry, k):
@@ -2227,11 +2217,11 @@ def utflames_native(dw, blob, entry, k):
             wild = set(int(op.split(":", 1)[1], 16) for op in operands if op.split(":", 1)[0] in ("obj", "wild"))
             if any(a not in by_addr or by_addr[a].op != OP_PUSHI or by_addr[a].t1 != T_INT16 for a in wild):
                 continue
-            text = " ".join("840F****" if a in wild else t for a, t in full)
+            text = " ".join(UTF_ANY_I16 if a in wild else t for a, t in full)
             if int(want[4:], 16) != fnv1a64(text.encode()):
                 continue
             order = fvar_order
-        elif not utflames_same(shape, want):
+        elif not utflames_same(shape, by_addr, want, operands):
             continue
         else:
             order = var_order

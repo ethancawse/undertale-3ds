@@ -10,6 +10,28 @@
 #include "ctr_open_files.h"
 #include "ctr_watchdog.h"
 #include "gettime.h"
+#if defined(CTRPORT_FLOWSTREAM_READ)
+// UNDERTALE Old (z_flowstream.c): a floor refill's read of one evicted tile is admitted with the promotion reserve and
+// allocated with relief off. Three calls change target only: heapFree's mallinfo, perform's header parse and malloc.
+struct mallinfo CtrFlowstream_readMallinfo(void);
+bool CtrFlowstream_readHeader(const uint8_t* data, size_t size, const CtrPackKey* key, uint32_t blobOffset, uint32_t blobSize,
+                              CtrPackView* out);
+// The file's one malloc keeps GCC's builtin malloc semantics (so perform compiles as before) and links to the hook.
+extern __typeof(malloc) malloc __asm__("CtrFlowstream_readMalloc");
+// fs5 rev 2: the page file the game thread's wait takes for a read it performs meanwhile (performNextOnGameFile, and
+// performNext in the original) is nullptr for the refill read, before any open or read: perform then reads nothing.
+// The reader thread's opens (readerFile) pass straight through. Call targets change only.
+extern __typeof(CtrPack_openFile) CtrPack_openFile __asm__("CtrFlowstream_openFile");
+FILE* CtrTextures_readerGameFile(uint32_t pageId) __asm__("CtrFlowstream_gameFile");
+#define CTR_READ_MALLINFO CtrFlowstream_readMallinfo
+#define CTR_READ_HEADER CtrFlowstream_readHeader
+#define CTR_READ_MALLOC malloc
+#else
+#define CTR_READ_MALLINFO mallinfo
+#define CTR_READ_HEADER CtrPack_parseHeader
+#define CTR_READ_MALLOC malloc
+#endif
+#line 13
 
 #define READER_STACK_SIZE (32 * 1024)
 #define DECODER_STACK_SIZE (16 * 1024)
@@ -135,7 +157,7 @@ static uint8_t* takeWrite(CtrTileReader* reader, char* path, size_t* size) {
 }
 
 static uint32_t heapFree(void) {
-    struct mallinfo mi = mallinfo();
+    struct mallinfo mi = CTR_READ_MALLINFO();
     return __ctru_heap_size > (u32) mi.uordblks ? __ctru_heap_size - (u32) mi.uordblks : 0;
 }
 
@@ -163,7 +185,7 @@ static void perform(CtrTileReader* reader, CtrTileRead* read, FILE* f) {
         uint8_t head[CTR_PACK_HEADER_MAX];
         size_t headSize = (size_t) size < sizeof(head) ? (size_t) size : sizeof(head);
         read->headerOk = fread(head, 1, headSize, f) == headSize &&
-                         CtrPack_parseHeader(head, headSize, &reader->key, read->blobOffset, read->blobSize, &read->view) &&
+                         CTR_READ_HEADER(head, headSize, &reader->key, read->blobOffset, read->blobSize, &read->view) &&
                          read->view.totalSize == (uint32_t) size;
     }
     if (!read->headerOk) return;
@@ -191,7 +213,7 @@ static void perform(CtrTileReader* reader, CtrTileRead* read, FILE* f) {
         }
         if (0 <= first) total += read->view.tileOffset[last] + read->view.tileSize[last] - read->view.tileOffset[first];
     }
-    if (total == 0 || total + READER_HEAP_RESERVE > heapFree() || (read->data = malloc(total)) == nullptr) return;
+    if (total == 0 || total + READER_HEAP_RESERVE > heapFree() || (read->data = CTR_READ_MALLOC(total)) == nullptr) return;
     uint32_t at = 0;
     for (int32_t ty = 0; layout->tilesY > ty; ty++) {
         int32_t first = -1;
@@ -634,39 +656,3 @@ UTSTALL8_TEXT double __wrap_CtrTileReader_wait(CtrTileReader* reader, CtrTileRea
     }
     return (double) (nowNanos() - start) / 1e6;
 }
-
-#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
-// utold c112dtm (ctr_textures.c's end; UNDERTALE on Old 3DS): save hands the texture cache's rooms.dtm to this reader
-// (CtrTileReader_writeFile) while the game thread runs above the reader thread, so on its core the reader cannot take
-// it first; the game thread takes it back, with its path and size, under the reader's lock, and writes it itself.
-// The boost keeps the reader from preempting the game thread, not off the SD card: while the game thread waits in
-// the file system the reader may run, and its queued reads interleave with the write. All of it is behind the room's
-// load. If the reader did take the file first (only a New 3DS's second core can let it), it writes it as before.
-#include "log.h"
-#include "ctr_textures.h"
-void CtrTileReader_writeNow(CtrTileReader* reader, void (*save)(CtrTextureCache*), CtrTextureCache* cache);
-static const char writeNowLog[] __attribute__((section(".rodata.utolddtm_late"))) = "rooms.dtm: %u ms\n";
-
-__attribute__((noinline, section(".text.utolddtm_late"))) void CtrTileReader_writeNow(CtrTileReader* reader, void (*save)(CtrTextureCache*), CtrTextureCache* cache) {
-    uint32_t start = (uint32_t) osGetTime();
-    s32 priority;
-    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
-    // The reader thread runs one above the game thread, on its core (CtrTileReader_start): two above, the game thread
-    // keeps the file from it and is never preempted by it; the reader runs only while the game thread waits on the SD.
-    svcSetThreadPriority(CUR_THREAD_HANDLE, priority - 2);
-    save(cache);
-    char path[sizeof(reader->writePath)];
-    LightLock_Lock(&reader->lock);
-    uint8_t* data = reader->writeData;
-    reader->writeData = nullptr;
-    size_t size = reader->writeSize;
-    memcpy(path, reader->writePath, sizeof(path));
-    LightLock_Unlock(&reader->lock);
-    if (data != nullptr) {
-        writeWhole(path, data, size);
-        free(data);
-        logInfo(writeNowLog, (unsigned) ((uint32_t) osGetTime() - start));
-    }
-    svcSetThreadPriority(CUR_THREAD_HANDLE, priority);
-}
-#endif

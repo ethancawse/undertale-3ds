@@ -145,6 +145,17 @@ class Transaction:
                         old_marker = name[:-len('data.win')] + 'cache/' + marker
                         if old_marker not in names and self.target(self.root, old_marker).exists():
                             removals.add(old_marker)
+        marker = install_record.relative_path(self.product)
+        if marker in names:
+            current = install_record.read(self.new, self.product)
+            if current is None:
+                raise ValueError('Invalid installer inventory path')
+            # Build the final inventory before publication, while both the old
+            # card set and the complete staged set are available. Do not copy
+            # retained model binaries or sound packs into the transaction.
+            install_record.write(self.new, self.product, [entry['path'] for entry in current['files']],
+                cancelled, previous=install_record.read(self.root, self.product),
+                present=lambda name: self.target(self.root, name).is_file(), removed=removals)
         entries = []
         for name in names | removals:
             final, staged = self.target(self.root, name), self.target(self.new, name)

@@ -6,7 +6,7 @@ You build it from your own copy of UNDERTALE.
 
 ## Status
 
-UNDERTALE 1.0 beta: not out yet, and no download yet. The newest build is being measured on every console now, and I'll play the hardest scenes on it myself. The beta goes out once I can't notice lag in them, after a final check.
+UNDERTALE 1.0 beta: coming in early November. The newest build is being measured on every console now, and I'll play the hardest scenes on it myself. The beta goes out once I can't notice lag in them, after a final check.
 
 DELTARUNE: in progress. It comes after UNDERTALE.
 
@@ -38,29 +38,34 @@ Older models: 54 of 69 measured scenes pass on a 3DS (45 of 71 on 28 October). L
 - One Snowdin scene that dropped no frames but still needs its slowest frame measured
 - A final check of every scene
 
-Asriel, Mad Dummy and Lemon Bread were measured before the sound fix below.
+Asriel, Mad Dummy and Lemon Bread were measured before the 29 October sound fix, and Asgore before the changes below.
 
 We also measured every room of a full playthrough on the older models, on an earlier build: 589 of 595 rooms pass on a 3DS.
 
-## What changed since the last update (29 October, morning)
+## What changed since the last update (29 October, evening)
 
-- On the Old 3DS and Old 3DS XL, Asriel's fight, Mad Dummy and Lemon Bread run smoothly again after the sound-pack fix. The compressed sound-effect pack from the last update had made them stutter: after each small piece of sound was decoded, the game waited on a busy system service before the piece could play. It now uses a quicker direct call.
-- Older models: Omega Flowey's finale starts about 60 sounds in a single frame, and most of them were cut off again in that same frame. That took more than half of the frame's time. Now only the sounds that are still playing at the end of the frame get started.
-- Fixed a rare crash after the True Pacifist ending credits (seen on a 2DS).
-- Mac: the builder is now a single app with Python included, so there is nothing else to install.
+- Older models: fixed a crash that could happen when sounds stopped, for example at a room change. A sound channel's buffers were cleared before the channel was reset, and the system's sound thread could read them in between.
+- Older models: fixed a rare crash after quitting the game. When the loader gives the game no way back, the game now keeps its memory at exit instead of freeing it while its own threads may still be running.
+- Older models: Asgore's fight is smoother. Engine fixes cut the late frames in our console test runs of the fight from 13 to 5, then from 7 to 3. It isn't at a locked 30 yet.
+- Older models: the item names in Asriel's DREAM menu no longer stutter.
+- Older models: 4 KB more room for engine code, which these fixes use.
+- Also new: the Genocide ending's window shake now shows as picture motion; with the game on the bottom screen, frames are timed to that screen; the FPS counter counts the frames actually shown; and no boot log appears when the other screen is turned off.
 
 ## Setbacks
 
-- The sound-effect pack in the last update made several scenes on the older models worse before this fix. The emulator we test on answers that system service instantly, so the problem only showed up on real consoles.
+- An experiment to speed up Asgore's fight made Omega Flowey's fight slower, so it was taken back out.
 - The beta is still not out. The hardest scenes on the older models, above all the ending credits, still drop frames.
 
 ## Known issues
 
-- On the 3DS, 3DS XL and 2DS, some heavy scenes can slow down, including Omega Flowey's finale, the ending credits and some room changes.
-- On older models, closing the Rosalina menu can rarely freeze the console. Save before using it.
-- On older models, some scenes can stutter for a moment when a sound starts.
-- Some large, thin artwork can lose fine lines with Smart smoothing, including Mettaton NEO, Asriel's wings and Asgore's cape.
-- During the Genocide ending, the picture stays still where the PC game's window shakes.
+- On older models, some heavy battles and the ending credits can slow down.
+- On older models, some sounds can start late or briefly interrupt play; songs in Mettaton's opera can start about a fifth of a second late.
+- On older models, opening the Rosalina menu while the game runs can freeze the console. Save before using it.
+- Smart smoothing can lose fine lines in some large artwork, such as Mettaton NEO, Asriel's wings and Asgore's cape.
+- Opening Options lets the music fade out instead of stopping at once, and a sound that was playing can be cut off or play twice afterwards.
+- A few stray red pixels can appear around the last Froggit in the ending credits. We're looking into it.
+- Rarely, an older model can crash when you press HOME, and a 2DS can freeze or crash around Asriel's fight or the ending credits. We're looking into it. Save first.
+- If music and sounds go silent after you've started the game several times, restart the console.
 
 ## Supported consoles
 

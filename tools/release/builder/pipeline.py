@@ -26,6 +26,14 @@ import home_art
 import sfx_encoder
 from processes import hidden_options
 
+CIA_NOT_MADE = "The .cia was not made.\nUntick .cia on Options or set up the .cia tools."
+
+
+def available_outputs(artifacts):
+    """Instructions describe the formats actually delivered, excluding optional data packs."""
+    return [kind for kind in ('3dsx', 'cia') if any(a.kind == kind for a in artifacts)]
+
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))     # repo root (or the export's root)
 # What build.sh and CMake read, relative to the source root.
@@ -162,7 +170,7 @@ def source_wanted(relative, game=None):
         # of sprite name hashes (build.sh halfart, products.HALFART).
         # flowervramg_palette_retry.py: vine_old_parent.py imports it, and CMake makes ctr_renderer.c depend on it.
         if parts[2:] in (["vine_extract.py"], ["vine_old_observer_compile.py"], ["vine_old_parent.py"],
-                         ["flowervramg_palette_retry.py"]):
+                         ["flowervramg_palette_retry.py"], ["utwindow_compile.py"]):
             return True
         return game != "deltarune" and parts[2:] in (["halfart_pack.py"], ["halfart", "undertale.txt"])
     if parts[:3] == ["tools", "deps", "openh264"]:
@@ -218,6 +226,12 @@ def source_wanted(relative, game=None):
         # freebies' dialogue writer front (CMake compiles it for UNDERTALE Old only; Policy E).
         if parts[2:] == ["source", "z_writerfront.c"]:
             return game != "deltarune"
+        # asrfight's SAVE Asriel trail front (CMake compiles it for UNDERTALE Old writerfront builds only; Policy E).
+        if parts[2:] == ["source", "z_trailfront.c"]:
+            return game != "deltarune"
+        # asrfight's item-name fronts (CMake compiles it for UNDERTALE Old writerfront builds only; Policy E).
+        if parts[2:] == ["source", "z_itemfront.c"]:
+            return game != "deltarune"
         # credfix's exit trail (build.sh exittrail): an o2DS panic diagnosis build, never a release.
         if parts == ["platform", "3ds", "source", "z_exittrail.c"]:
             return False
@@ -245,12 +259,29 @@ def source_directories(game):
     return tuple(path for path in SOURCE_DIRS if path not in omitted)
 
 
-def mirror_source(src_root, dest_root, game=None):
+def mirror_source(src_root, dest_root, game=None, *, source_digest=None):
     """Mirror by contents, never archive timestamps. Changed inputs invalidate generated build state;
     an unchanged kit (including a second model) keeps its objects. Returns (copied, removed)."""
     copied = removed = 0
     os.makedirs(dest_root, exist_ok=True)
     invalidated = False
+    # Build.prepare supplies the digest only after validating the complete kit.
+    # HOME art is regenerated after every mirror, overwriting these five inputs
+    # and adding its report. Those changes alone are not a kit update.
+    identity = dict(schema=1, game=game, source_sha256=source_digest)
+    stamp = os.path.join(dest_root, '.builder-source.json')
+    unchanged = False
+    if source_digest is not None:
+        try:
+            with open(stamp, encoding='utf-8') as stream:
+                unchanged = json.loads(stream.read(4096)) == identity
+        except (OSError, ValueError, TypeError, RecursionError):
+            pass
+    generated = {'platform/3ds/assets/banner.wav', 'platform/3ds/assets/home-art.json'}
+    generated.update('platform/3ds/assets/%s-%s-%s.png' % (kind, game, target)
+                     for kind in ('banner', 'icon') for target in ('n3ds', 'o3ds'))
+    if game not in ('undertale', 'deltarune'):
+        generated.clear()
 
     def invalidate():
         nonlocal invalidated
@@ -259,6 +290,16 @@ def mirror_source(src_root, dest_root, game=None):
             if os.path.lexists(build):
                 shutil.rmtree(build)
             invalidated = True
+
+    def changed_input(path):
+        relative = os.path.relpath(path, dest_root).replace('\\', '/')
+        if not (unchanged and relative in generated):
+            invalidate()
+
+    # A changed kit (even with identical archive timestamps) or missing/corrupt
+    # stamp always starts clean, before the first source mutation.
+    if source_digest is not None and not unchanged:
+        invalidate()
 
     def copy_changed(s, d):
         nonlocal copied
@@ -269,7 +310,7 @@ def mirror_source(src_root, dest_root, game=None):
             pass
         # Clear before the first mutation: interruption must not leave a mirrored new source
         # beside old objects. copy2 preserves tar's epoch timestamp, which cannot trigger make.
-        invalidate()
+        changed_input(d)
         os.makedirs(os.path.dirname(d), exist_ok=True)
         shutil.copy2(s, d)
         copied += 1
@@ -295,7 +336,7 @@ def mirror_source(src_root, dest_root, game=None):
                 for n in filenames:
                     r = os.path.normpath(os.path.join(rd, n))
                     if os.path.normcase(r) not in want and _wanted(n):
-                        invalidate()
+                        changed_input(os.path.join(dst, r))
                         os.remove(os.path.join(dst, r))
                         removed += 1
     for rel in SOURCE_FILES:
@@ -305,6 +346,14 @@ def mirror_source(src_root, dest_root, game=None):
         if os.path.isfile(s):
             d = os.path.join(dest_root, rel)
             copy_changed(s, d)
+    if source_digest is not None:
+        # Commit the identity only after every copy/removal succeeds.
+        with open(stamp + '.part', 'w', encoding='utf-8', newline='\n') as stream:
+            json.dump(identity, stream, sort_keys=True)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(stamp + '.part', stamp)
     return copied, removed
 
 
@@ -431,7 +480,10 @@ class Progress:
             self.aot_start = t
         elif "code for" in s and "is up to date" in s and s.startswith("AOT:"):
             self.aot_up_to_date = True
-        elif "WITHOUT AOT" in s or (s.startswith("AOT:") and "failed" in s.lower()):
+        elif "WITHOUT AOT" in s or (s.startswith("AOT:") and "failed" in s.lower()
+                                    and not s[4:].lstrip().startswith("skip ")):
+            # gmlaot's per-function "AOT:   skip <name>: ... failed before generation" leaves that one function to
+            # the interpreter (DELTARUNE chapter 5 has two); the build still has AOT.
             self.no_aot = True
         elif s.startswith("-- Configuring done"):
             if self.aot_start is not None and self.aot_seconds is None:
@@ -450,7 +502,7 @@ class Progress:
                 self.stage = max(self.stage, 2)
                 if self.compile_start is None:
                     self.compile_start = t
-                self.percent = int(m.group(1))
+                self.percent = max(self.percent, min(100, int(m.group(1))))
                 if self.percent >= 100:
                     self.stage = 3
             elif "Building CIA" in s or s.startswith("built "):
@@ -676,6 +728,7 @@ class Build:
         self.sfx_builder = sfx_builder
         self.store = store
         self.parts = parts
+        self.notices = []
         self.progress = Progress(product, target, clock)
         self.proc = None
         self.cancelled = False
@@ -708,7 +761,8 @@ class Build:
             raise BuildFailed("%s has %d MB free; %d MB needed.\n"
                               "Free up disk space and try again." % (
                                   self.work, free // (1 << 20), need // (1 << 20)))
-        copied, removed = mirror_source(self.source_root, os.path.join(self.work, "src"), self.product.key)
+        copied, removed = mirror_source(self.source_root, os.path.join(self.work, "src"), self.product.key,
+                                        source_digest=self.release_source['source_sha256'])
         write_python_shims(os.path.join(self.work, "bin"), toolchain.python_exe())
         # The builder's own .cia tools live here (on PATH for the build); devkitPro's tools/bin is CMake's HINTS.
         os.makedirs(os.path.join(self.work, "tools", "bin"), exist_ok=True)
@@ -733,7 +787,8 @@ class Build:
         env["CTRPORT_CCACHE_DIR"] = os.path.join(self.work, "ccache")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["CTRPORT_PYTHON"] = toolchain.python_exe()
-        env['CTRPORT_RELEASE_SOURCE_URL'] = self.release_source['source_url']
+        env = products.release_contract.build_environment(
+            self.product.key, self.release_source['public_commit'], env)
         compiler = toolchain.compiler_details(self.tc)
         tested = products.release_contract.read(self.source_root)['tested_compiler']
         compiler['tested'] = tested
@@ -826,7 +881,7 @@ class Build:
                 arts.append(pack)
         record = {"game": self.product.key, "target": self.target, "version": version, "build_id": bid,
                   "chapters": getattr(self, 'chapter_record', None),
-                  "home_menu_art": art,
+                  "home_menu_art": art, "notices": list(self.notices),
                   "toolchain_packages": dict(self.tc.package_versions),
                   "compiler": compiler, "release_source": self.release_source,
                   "halfart": products.halfart(self.product.key, self.target),
@@ -852,12 +907,19 @@ class Build:
         out_dir = os.path.join(self.work, "out", self.target)
         os.makedirs(out_dir, exist_ok=True)
         arts = []
-        for kind in self.outputs:
+        outputs = self.outputs
+        if 'cia' in outputs and not self.tc.can_cia:
+            # build.sh always makes a 3dsx. Never collect a stale CIA from an earlier run.
+            outputs = ('3dsx',)
+            self.notices = [CIA_NOT_MADE]
+            with open(self.log_path, 'a', encoding='utf-8', newline='\n') as log:
+                log.write(CIA_NOT_MADE + '\n')
+            self.on_line(CIA_NOT_MADE)
+        for kind in outputs:
             p = os.path.join(bdir, stem + "." + kind)
             if not os.path.isfile(p) or os.path.getsize(p) == 0:
                 if kind == "cia":
-                    raise BuildFailed("The .cia was not made.\n"
-                                      "Untick .cia on Options or set up the .cia tools.", self.log_path)
+                    raise BuildFailed(CIA_NOT_MADE, self.log_path)
                 raise BuildFailed("Missing output %s.\n" % os.path.basename(p) + FAILED, self.log_path)
             dst = os.path.join(out_dir, os.path.basename(p))
             shutil.copy2(p, dst)

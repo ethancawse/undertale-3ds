@@ -229,6 +229,8 @@ def cli(o, out=print):
                 out("Log: %s" % e.log_path)
             return 1
         arts += a
+        for notice in rec.get('notices', []):
+            out(notice)
         out("Built %s in %.1f s (%d compiler warnings)." % (t, rec["seconds"], rec["compiler_warnings"]))
         for x in a:
             out("  %s  %d bytes  sha256 %s" % (x.path, x.size, x.sha256))
@@ -282,7 +284,7 @@ def cli(o, out=print):
             return 1
         out("Saved %d files (%.1f MB) to %s." % (saved.files, saved.bytes / 1e6, saved.folder or saved.root))
         out(saved.textures.message)
-    out(deliver.instructions(product, targets, outputs, o["sd"], save_result=saves_res,
+    out(deliver.instructions(product, targets, pipeline.available_outputs(arts), o["sd"], save_result=saves_res,
                              delivery="wifi" if o.get('ftp') else "sd" if o["sd"] else "files"))
     return 0
 

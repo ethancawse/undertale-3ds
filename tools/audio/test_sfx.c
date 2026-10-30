@@ -60,12 +60,18 @@ static void* linearAlloc(uint32_t bytes) {
     ringAllocations++;
     return malloc(bytes);
 }
+// e848ef9da: release UTA_FAULT_ALLOC delegates to linearAlloc. Keep the
+// fixture's denyRingAllocation control on that path.
+#define UTA_FAULT_ALLOC(kind, bytes) linearAlloc(bytes)
 static void linearFree(void* p) { ringFrees++; free(p); }
 static void LightLock_Lock(LightLock* p) { (void)p; }
 static void LightLock_Unlock(LightLock* p) { (void)p; }
 static uint64_t svcGetSystemTick(void) { return ++tick; }
 static int svcGetProcessorID(void) { processorCalls++; return processor; }
 static void DSP_FlushDataCache(const void* p, uint32_t n) { (void)p; (void)n; }
+// 2daeffa4a moved the platform cache flush behind adFlush. Cache maintenance
+// is a platform service in this simulated DSP; PCM/lease/stop bodies stay exact.
+static void adFlush(const void* p, uint32_t n) { DSP_FlushDataCache(p, n); }
 static unsigned utaUnstarted, utaTails, utaPieces;
 static void utaClearPhys(int p, UtaChan* c) { (void)p; c->state = UTA_IDLE; }
 static int16_t queued[UTA_TAIL_MAX * 2];

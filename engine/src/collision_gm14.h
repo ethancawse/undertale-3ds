@@ -68,10 +68,15 @@ static inline __attribute__((always_inline)) bool Colflip14_maskBit(const uint8_
     return (mask[(uint32_t) r * rowBytes + (uint32_t) (c >> 3)] & (1 << (7 - (c & 7)))) != 0;
 }
 
-// The rotation in float32: the angle converted to radians in double and rounded to float, its cosine and sine rounded
-// to float (collision.h's Colflip_floatTrig, without its cache).
+// GMS 1.4: float32 angle and pi, promoted for the multiply/divide, radians rounded to float32, then float32 trig.
+// Keep the division under fast math, as in colline_gm14.h (colexact, UT-104).
 static inline __attribute__((always_inline)) void Colflip14_floatTrig(GMLReal angle, float* csf, float* snf) {
+#if defined(ENABLE_WAD16)
+    float radf = (float) Colflip14_div((double) (float) angle * (double) 3.14159274101257324f, 180.0);
+#else
     float radf = (float) ((double) angle * M_PI / 180.0);
+#endif
+#line 75
     *csf = (float) cos((double) radf);
     *snf = (float) sin((double) radf);
 }

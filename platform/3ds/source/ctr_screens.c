@@ -98,7 +98,7 @@ enum { LINE_OTHER = 1, LINE_GAME };
 
 // One of this file's settings: game_screen 0-1 (LINE_GAME), or other_screen 0-2 (LINE_OTHER; bottom_mode's numbers,
 // 0, the retired magnifier, is Off). 0 if line isn't one of them; *known is false if the value is out of range.
-LATE static int screensLine(CtrDisplaySettings* settings, const char* line, uint8_t* game, bool* known) {
+LATE CTR_COLD_OS static int screensLine(CtrDisplaySettings* settings, const char* line, uint8_t* game, bool* known) {
     char key[64];
     int value;
     if (sscanf(line, keyFormat, key, &value) != 2) return 0;
@@ -116,7 +116,7 @@ LATE static int screensLine(CtrDisplaySettings* settings, const char* line, uint
 }
 
 // A bottom_mode line, read again so that the later of it and other_screen wins, as on screens 9a02e086.
-LATE static void screensBottomLine(CtrDisplaySettings* settings, const char* line) {
+LATE CTR_COLD_OS static void screensBottomLine(CtrDisplaySettings* settings, const char* line) {
     char key[64];
     int value;
     if (sscanf(line, keyFormat, key, &value) != 2 || strcmp(key, bottomKey) != 0) return;
@@ -125,7 +125,7 @@ LATE static void screensBottomLine(CtrDisplaySettings* settings, const char* lin
 
 // CtrDisplay_load, then the game screen (top unless the file says), the other_screen name (the later of it and
 // bottom_mode wins), and the magnifier as Off.
-LATE static void screensLoad(CtrDisplaySettings* settings, const char* path, CtrDisplayCaps caps, uint8_t* game) {
+LATE CTR_COLD_OS static void screensLoad(CtrDisplaySettings* settings, const char* path, CtrDisplayCaps caps, uint8_t* game) {
     void benchfidLoad(CtrDisplaySettings*, const char*, CtrDisplayCaps); benchfidLoad(settings, path, caps);
     *game = 0;
     FILE* f = fopen(path, readMode);
@@ -220,7 +220,7 @@ LATE const char* __wrap_CtrDisplay_bottomModeName(CtrBottomMode mode) {
 // Whether the two screens share one backlight (the original 2DS: switching the bottom one off darkens both,
 // docs/3ds-hardware.md): CFGU's model is a 2DS (caps.wide false), or GetModelNintendo2DS says 0, or can't be asked.
 // Unknown counts as shared, which keeps the backlight lit and blanks the screen instead (o2black a2c8d0d0).
-LATE bool CtrScreens_backlightShared(CtrDisplayCaps caps) {
+LATE CTR_COLD_OS bool CtrScreens_backlightShared(CtrDisplayCaps caps) {
     if (!caps.wide) return true;
     u8 not2ds = 0;
     bool known = false;
@@ -405,7 +405,7 @@ LATE static const char* itemValue(const CtrMenu* menu, MenuItem item) {
     return helpNone;
 }
 
-LATE static void screensDraw(const CtrMenu* menu) {
+LATE CTR_COLD_OS static void screensDraw(const CtrMenu* menu) {
     CtrLog_beginConsole();
     consoleSelect(menu->console);
     puts(ctrReleaseOptions); // the release's name, as relprep's menu heading (ctr_release_branding.c)
@@ -472,7 +472,7 @@ LATE void __wrap_CtrMenu_open(CtrMenu* menu, PrintConsole* console, const CtrDis
 
 // The real CtrMenu_update's Controls page, with main's cursor value for the Controls row while it runs (its options
 // page drawing indexes main's tables by the cursor); this menu's options page is drawn again when it comes back.
-LATE static CtrMenuAction mainControls(CtrMenu* menu, u32 down) {
+LATE CTR_COLD_OS static CtrMenuAction mainControls(CtrMenu* menu, u32 down) {
     int32_t cursor = menu->cursor;
     menu->cursor = MAIN_ITEM_CONTROLS;
     CtrMenuAction action = __real_CtrMenu_update(menu, down);
@@ -482,7 +482,7 @@ LATE static CtrMenuAction mainControls(CtrMenu* menu, u32 down) {
 }
 
 // Steps the selected setting forwards (dir 1) or backwards (dir -1).
-LATE static bool changeItem(CtrMenu* menu, int32_t dir) {
+LATE CTR_COLD_OS static bool changeItem(CtrMenu* menu, int32_t dir) {
     CtrDisplaySettings* s = &menu->settings;
     MenuItem item = (MenuItem) menu->cursor;
     if (item == ITEM_GAME_SCREEN) {
@@ -532,7 +532,7 @@ LATE static bool changeItem(CtrMenu* menu, int32_t dir) {
     return false;
 }
 
-LATE CtrMenuAction __wrap_CtrMenu_update(CtrMenu* menu, u32 down) {
+LATE CTR_COLD_OS CtrMenuAction __wrap_CtrMenu_update(CtrMenu* menu, u32 down) {
     if (!menu->open) return MENU_ACTION_NONE;
     // The legal viewer has the page (relprep: SELECT there goes back to this page, not to the game).
     if (CtrLegal_update(menu, down)) {

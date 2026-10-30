@@ -380,17 +380,14 @@ def sha256_file(path, block=1 << 20):
     return h.hexdigest()
 
 
-_DIGESTS: dict = {}
-
-
 def data_digest(path):
-    """sha256_file, remembered per (path, size, mtime) for this process, so later steps (the builder's
-    data-version.txt, builder/texcache.py) reuse the digest the version check computed."""
-    st = os.stat(path)
-    key = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
-    if key not in _DIGESTS:
-        _DIGESTS[key] = sha256_file(path)
-    return _DIGESTS[key]
+    """Read current bytes on every verification or receipt request.
+
+    Size, timestamps and file identity cannot prove unchanged contents on every
+    supported filesystem. Rehash rather than reuse an earlier acceptance when
+    an in-place edit or replacement preserves those attributes.
+    """
+    return sha256_file(path)
 
 
 def layout_for(game: Game, folder: str):
@@ -617,6 +614,13 @@ def _verify_folder(game, folder, store, rec, records, gog_records, lists, platfo
     res = Result(NOT_FOUND, game.key, folder)
     layout = layout_for(game, folder) if os.path.isdir(folder) else None
     if layout is None:
+        if any(os.path.isfile(os.path.join(folder, *relative))
+               for relative in (('game.unx',), ('assets', 'game.unx'))):
+            res.status = MISSING_FILES
+            res.message = ("%s's native Linux files are not supported. Use its Windows version from Steam or GOG. "
+                           "For Steam, choose Proton in Properties > Compatibility, let the download finish, "
+                           "then select the game folder again." % game.title)
+            return res
         bundles = [lay.resources[0] for lay in game.layouts if lay.resources]
         res.status = MISSING_FILES
         res.message = ("%s has no data.win%s, so it is not a %s game folder. Pick the folder that holds %s's data.win%s, "

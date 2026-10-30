@@ -65,10 +65,10 @@ PAD_START, PAD_END = 52, 56
 # docs/release/builder-status.md, "Texture preparation on the PC".
 # Rebuild and re-pin whenever any file in `texprep --sources` changes (a release step, builder-status.md).
 PINNED = {
-    # MSYS2 UCRT64 gcc 16.1.0, static, UTF-8 paths (2026-10-27).
-    # texprep-src-1:0250c5ae0f1337f8a2fe80a5f44def20d484537fcb3356cacaf41f0d2d944a10
+    # MSYS2 UCRT64 gcc 16.1.0, static, UTF-8 paths; exact stage73 sources (2026-10-29).
+    # texprep-src-1:f3ff19fc6d4e060aaaf300ad5c4023ab003a3ad294be191ae45e612669bd44c9
     ("win32", "x86_64"): ("texprep-windows-x64.exe", 354294,
-                          "d4dbe6ec7ba7f9a7d69506f479d305000eda4e48f59c1f3517a574e9cb9100d0"),
+                          "5302dc7e1c842e5ac5ef01f7fa2a005518db4dfd8a1dd668821fe588f62ebe9f"),
     # Linux builds locally with the system compiler. The former static glibc 2.39 binary is
     # retired: it lacked a corresponding-source/relink kit and did not fit older Debian hosts.
     # macOS (arm64 and x86_64): texprep-macos-universal, built on an M1 Mac (steps in builder-status.md).
@@ -727,7 +727,7 @@ class VersionPlan:
 def _digest(path):
     try:
         import verify_game
-        return verify_game.data_digest(path)    # the digest the version check computed, when it ran
+        return verify_game.data_digest(path)    # fresh bytes, including after an earlier version check
     except ImportError:
         return sha256_file(path)
 

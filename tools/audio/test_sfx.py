@@ -38,10 +38,9 @@ class SfxTests(unittest.TestCase):
         adapter = adapter.replace('#include "ctr_adpcm_sfx_pieces.inc"',
             (ROOT / 'platform/3ds/source/ctr_adpcm_sfx_pieces.inc').read_text())
         types_start = audio.index('typedef struct {\n    const uint8_t* data;', audio.index('#define UTA_RING'))
-        # Stop at the type/declaration boundary. Music's pinned declarations
-        # now live behind a conditional include; copying that opening #ifdef
-        # into the SFX fixture would leave an unterminated conditional.
-        types_end = audio.index('\n#ifdef CTRPORT_ADPCM_MUSIC\n#include "ctr_adpcm_uta_state.inc"', types_start)
+        # 7519a7395 also enabled the pinned state include for SFXPACK. Extract
+        # through the final type, independent of the following feature guard.
+        types_end = audio.index('} UtaSeamSound;', types_start) + len('} UtaSeamSound;')
         types = audio[types_start:types_end]
         types += adapter[adapter.index('typedef struct AdSfxMeta'):
                          adapter.index('typedef struct {\n    int state;')]

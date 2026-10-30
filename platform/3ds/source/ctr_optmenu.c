@@ -46,6 +46,7 @@
 
 #include "common.h"
 #include "ctr_wrap_chain.h"
+#include "ctr_fpsbox.h"
 #line 22
 #include "ctr_display.h"
 #include "audio_system.h"
@@ -845,7 +846,7 @@ OPT_STATIC void optFlush(CtrMenu* menu) {
     CtrLog_endConsole();
     opt.dirty = false;
 }
-
+static void fpsboxMenuFlush(CtrMenu* menu);
 // ===[ The menu ]===
 
 // The menu's sounds: the game's own cursor sound (argui's sndMove) for the open and each move, its choice sound
@@ -882,7 +883,7 @@ OPT_CODE void __wrap_CtrArgui_menuOpen(CtrMenu* menu, PrintConsole* console, con
     memset(opt.cur, 0, sizeof(opt.cur));
     opt.dirty = true;
     optLive();
-    optFlush(menu);
+    fpsboxMenuFlush(menu);
     if (opt.placed && opt.scr == GFX_BOTTOM && settings->bottomMode != BOTTOM_MODE_CONSOLE && R_SUCCEEDED(gspLcdInit())) {
         GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
         gspLcdExit();
@@ -898,7 +899,7 @@ OPT_CODE void __wrap_CtrArgui_menuOpen(CtrMenu* menu, PrintConsole* console, con
     memset(opt.cur, 0, sizeof(opt.cur));
     opt.dirty = true;
     optLive();
-    optFlush(menu);
+    fpsboxMenuFlush(menu);
     optSound(false);
 #ifdef CTRPORT_PLAYER_SHOTS
     opt.sinceOpen = 0;
@@ -1097,7 +1098,7 @@ OPT_CODE CtrMenuAction __wrap_CtrArgui_menuUpdate(CtrMenu* menu, u32 down) {
     CtrMenuAction action = down != 0 ? optKeys(menu, down) : MENU_ACTION_NONE;
     if (down == 0 && CtrLegal_shown()) CtrLegalui_update(menu, 0); // held keys and the credits' roll
     optLive(); // a move (Game screen) happens at this frame's yield; the next call places the menu again
-    optFlush(menu);
+    fpsboxMenuFlush(menu);
     return action;
 }
 
@@ -1337,4 +1338,22 @@ OPT_STATIC bool optPressParse(const char* line) {
 void CtrOptmenu_text(uint16_t* fb, int32_t x, int32_t y, const char* s, uint32_t col);
 OPT_CODE void CtrOptmenu_text(uint16_t* fb, int32_t x, int32_t y, const char* s, uint32_t col) {
     optText(fb, x, y, s, col);
+}
+
+// All added menu work is at the tail; optFlush keeps its original body/slot.
+__attribute__((noinline, noipa, optimize("Os"), section(".text.fpsbox_late")))
+static void fpsboxMenuFlush(CtrMenu* menu) {
+    optFlush(menu);
+    if (menu->open && opt.placed)
+        CtrFpsbox_restoreMenu(opt.shownBase, opt.spareBase, opt.scr == GFX_TOP);
+}
+
+// Keep the flush addition outside ctr_argui.c: a same-TU callee makes GCC
+// postpone the original wrapper past CtrArgui_keepLit, swapping their slots.
+void __real_CtrScreens_flushConsoles(void);
+void fpsboxFlushConsoles(void);
+__attribute__((noinline, noipa, optimize("Os"), section(".text.fpsbox_late")))
+void fpsboxFlushConsoles(void) {
+    __real_CtrScreens_flushConsoles();
+    if (gFpsScreen != 0) CtrFpsbox_update(g.fpsBuf);
 }

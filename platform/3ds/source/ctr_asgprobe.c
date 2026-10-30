@@ -1,8 +1,8 @@
 // asgprobe (build argument asgprobe, default off, test only, utasgore): hardware attribution of the step and draw
 // time of busy frames (UNDERTALE's Asgore flame helix) with the ARM11 performance counters, read through Luma3DS's
 // svcControlPerformanceCounter (SVC 0x3E; the stub is icsim's). Nothing in the normal text changes: the link sends
-// main.c's Runner_step and Runner_drawViews calls to the wrappers here (late text), and the renderer's drawSprite entry
-// is wrapped by putting a copy of the vtable in front at the first draw.
+// main.c's Runner_step and Runner_drawViews calls to the wrappers here (late text), and the drawSprite entry of the
+// renderer's own vtable (the bottom of every table chain) is wrapped at the first draw.
 //
 // Each frame counts one of six event pairs (frame number mod 6) on PMN0/PMN1, plus the cycle counter, around the step
 // and around Runner_drawViews. Every other round of six frames also reads the counters around every 4th drawSprite
@@ -23,6 +23,9 @@
 #include <string.h>
 
 #define APL __attribute__((noinline, noclone, section(".text.late.utasgore.probe")))
+#ifdef AP_LEAN
+#pragma GCC diagnostic ignored "-Wunused-function"  // the lean build drops the sequence dump and [asgtime]
+#endif
 #define APB __attribute__((section(".bss.late.utasgore.probe")))
 
 __asm__(".pushsection .text.late.utasgore.probe,\"ax\",%progbits\n"
@@ -79,7 +82,7 @@ static uint32_t apSprites APB, apCalls APB, apFrames APB;
 static uint32_t apStepCycles APB, apStep0 APB, apStep1 APB;
 static uint32_t apInN APB, apInCycles APB, apIn0 APB, apIn1 APB;
 static ApSum apSums[AP_BUCKETS][AP_SETS][2] APB;
-static RendererVtable apVtable APB;
+extern const void* const Pixgrid_refs[2];
 static ApDrawSprite apDrawSprite APB;
 static Renderer* apRenderer APB;
 static Runner* apRunner APB;
@@ -145,7 +148,7 @@ extern uint64_t utaTicks[6];
 extern uint32_t utaWhy[48];
 extern uint8_t utaOff;
 
-// Frame log (<game dir>/asgframes.txt): every frame, one "[asgframe]" line with its runner frame, sprite calls, step
+// Frame log (on unless <game dir>/asgnoframes.txt): every frame, one "[asgframe]" line with its runner frame, sprite calls, step
 // and draw ticks, the ticks inside drawSprite, the uta counters' and plan refusals' changes over the frame, and the
 // four items that took the most drawSprite ticks (item:ticks/calls). Every drawSprite call is timed.
 static int8_t apFrameLog APB;  // 0 not looked, 1 on, -1 off
@@ -154,6 +157,60 @@ static uint16_t apFCalls[AT_ITEMS] APB;
 static uint16_t apFTouched[AT_ITEMS] APB;
 static uint32_t apFTouchedN APB, apFSprTicks APB;
 static uint32_t apFUta[8] APB, apFWhy[48] APB;
+// (asgore30) drawSpritePart and drawRectangle calls of the frame, timed like drawSprite's (the renderer's own table's
+// entries): count, ticks, the last part item and the part texels drawn.
+typedef void (*ApDrawPart)(Renderer*, int32_t, float, float, float, float, float, float, float, float, float, float, float, uint32_t, float);
+typedef void (*ApDrawRect)(Renderer*, float, float, float, float, uint32_t, float, bool);
+static ApDrawPart apDrawPart APB;
+static ApDrawRect apDrawRect APB;
+static uint32_t apPartN APB, apPartT APB, apRectN APB, apRectT APB, apPartItem APB, apPartPix APB;
+// (asgore30) Draw-sequence dump (<game dir>/asgseq.txt): frames 370, 560, 698 and 699 record every drawSprite, part
+// and rectangle call (kind, item, object, the renderer's draw calls and vertices after it, the open batch's texture),
+// written to <game dir>/asgseq.log after the frame.
+uint32_t CtrRenderer_probeCalls(Renderer* renderer, uint32_t* vertices, const void** tex);
+extern uint32_t asbProbe[4];   // z_asgborder.c (asgore30's native draw_self_border_true)
+typedef struct {
+    char kind;
+    int16_t item, object;
+    uint16_t calls, vertices;
+    uint32_t tex, ticks;
+} ApSeq;
+enum { AP_SEQ = 1536 };
+static int8_t apSeqOn APB;  // 0 not looked, 1 on, -1 off
+static uint8_t apSeqFrame APB;
+static uint32_t apSeqN APB;
+static ApSeq apSeqs[AP_SEQ] APB;
+static APL void apSeqAdd(Renderer* renderer, char kind, int32_t item, uint32_t ticks) {
+    if (!apSeqFrame || apSeqN >= AP_SEQ) return;
+    ApSeq* q = &apSeqs[apSeqN++];
+    const VMContext* ctx = apRunner != nullptr ? apRunner->vmContext : nullptr;
+    const Instance* inst = ctx != nullptr ? ctx->currentInstance : nullptr;
+    uint32_t v = 0;
+    const void* tex = nullptr;
+    q->calls = (uint16_t) CtrRenderer_probeCalls(renderer, &v, &tex);
+    q->vertices = (uint16_t) v;
+    q->tex = (uint32_t) (uintptr_t) tex;
+    q->kind = kind;
+    q->item = (int16_t) item;
+    q->object = inst != nullptr ? (int16_t) inst->objectIndex : -1;
+    q->ticks = ticks;
+}
+static APL void apSeqWrite(int frame) {
+    FILE* f = fopen(CTRPORT_GAME_DIR "/asgseq.log", "a");
+    if (f == nullptr) return;
+    for (uint32_t i = 0; apSeqN > i; i++) {
+        const ApSeq* q = &apSeqs[i];
+        fprintf(f, "%d %lu %c %d %d %u %u %08lX %lu\n", frame, (unsigned long) i, q->kind, q->item, q->object, (unsigned) q->calls,
+                (unsigned) q->vertices, (unsigned long) q->tex, (unsigned long) q->ticks);
+    }
+    fclose(f);
+    apSeqN = 0;
+}
+#ifdef AP_LEAN
+// (asgore30) The lean probe (the step-phase build): no draw-sequence dump or [asgtime] log, to fit the late reserve.
+#define apSeqAdd(renderer, kind, item, ticks) ((void) 0)
+#define apSeqWrite(frame) ((void) 0)
+#endif
 static APL void apFrameLine(Runner* runner, uint32_t drawTicks) {
     char why[200], top[160];
     int w = 0, m = 0;
@@ -176,10 +233,13 @@ static APL void apFrameLine(Runner* runner, uint32_t drawTicks) {
         m += snprintf(top + m, sizeof(top) - (size_t) m, "%d:%lu/%u,", best, (unsigned long) bt, (unsigned) apFCalls[best]);
         apFTicks[best] = 0;
     }
-    logInfo("[asgframe] f=%d spr=%lu step=%lu draw=%lu sprt=%lu uta=%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu why=%s top=%s\n", runner->frameCount,
-            (unsigned long) apSprites, (unsigned long) apTimeStepNow, (unsigned long) drawTicks, (unsigned long) apFSprTicks,
+    logInfo("[asgframe] f=%d spr=%lu step=%lu draw=%lu sprt=%lu uta=%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu why=%s top=%s part=%lu/%lu/%lu/%lu rect=%lu/%lu asb=%lu/%lu/%lu/%lu\n",
+            runner->frameCount, (unsigned long) apSprites, (unsigned long) apTimeStepNow, (unsigned long) drawTicks, (unsigned long) apFSprTicks,
             (unsigned long) ud[0], (unsigned long) ud[1], (unsigned long) ud[2], (unsigned long) ud[3], (unsigned long) ud[4],
-            (unsigned long) ud[5], (unsigned long) ud[6], (unsigned long) ud[7], why, top);
+            (unsigned long) ud[5], (unsigned long) ud[6], (unsigned long) ud[7], why, top, (unsigned long) apPartN, (unsigned long) apPartT,
+            (unsigned long) apPartItem, (unsigned long) apPartPix, (unsigned long) apRectN, (unsigned long) apRectT,
+            (unsigned long) asbProbe[0], (unsigned long) asbProbe[1], (unsigned long) asbProbe[2], (unsigned long) asbProbe[3]);
+    apPartN = apPartT = apRectN = apRectT = apPartPix = 0;
     for (uint32_t j = 0; apFTouchedN > j; j++) apFTicks[apFTouched[j]] = 0, apFCalls[apFTouched[j]] = 0;
     apFTouchedN = 0;
     apFSprTicks = 0;
@@ -191,6 +251,8 @@ static APL void apTimeLog(void) {
     logInfo("[asgtime] shadow %lu %lu %lu %lu\n", (unsigned long) utaShadowCount[0], (unsigned long) utaShadowCount[1],
             (unsigned long) utaShadowCount[2], (unsigned long) utaShadowCount[3]);
     logInfo("[asgtime] parts %llu %llu %llu %llu %llu\n", utaTicks[1], utaTicks[2], utaTicks[3], utaTicks[4], utaTicks[5]);
+    logInfo("[asgtime] asb native=%lu pre=%lu slot=%lu border=%lu\n", (unsigned long) asbProbe[0], (unsigned long) asbProbe[1],
+            (unsigned long) asbProbe[2], (unsigned long) asbProbe[3]);
     char why[300];
     int w = 0;
     why[0] = 0;
@@ -213,6 +275,9 @@ static APL void apTimeLog(void) {
                 (unsigned long) apTimeTicks[best][1], (unsigned long) apTimeCalls[best][1]);
     }
 }
+#ifdef AP_LEAN
+#define apTimeLog() ((void) 0)
+#endif
 
 static APL void apSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale,
                          float yscale, float angleDeg, uint32_t color, float alpha) {
@@ -235,6 +300,7 @@ static APL void apSprite(Renderer* renderer, int32_t tpagIndex, float x, float y
         apFTicks[item] += dt;
         if (apFCalls[item] != 0xFFFF) apFCalls[item]++;
         apFSprTicks += dt;
+        apSeqAdd(renderer, 'S', tpagIndex, dt);
         if (apTimeBusy) {
             int out = x < -16.0f || x > 656.0f || y < -16.0f || y > 496.0f;
             apTimeTicks[item][out] += dt;
@@ -266,6 +332,27 @@ static APL void apSprite(Renderer* renderer, int32_t tpagIndex, float x, float y
     apDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
 }
 
+static APL void apPart(Renderer* renderer, int32_t tpagIndex, float srcOffX, float srcOffY, float srcW, float srcH, float x, float y,
+                       float xscale, float yscale, float angleDeg, float pivotX, float pivotY, uint32_t color, float alpha) {
+    uint64_t t0 = svcGetSystemTick();
+    apDrawPart(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x, y, xscale, yscale, angleDeg, pivotX, pivotY, color, alpha);
+    uint32_t dt = (uint32_t) (svcGetSystemTick() - t0);
+    apPartT += dt;
+    apSeqAdd(renderer, 'P', tpagIndex, dt);
+    apPartN++;
+    apPartItem = (uint32_t) tpagIndex;
+    if (srcW > 0.0f && srcH > 0.0f) apPartPix += (uint32_t) (srcW * srcH);
+}
+
+static APL void apRect(Renderer* renderer, float x1, float y1, float x2, float y2, uint32_t color, float alpha, bool outline) {
+    uint64_t t0 = svcGetSystemTick();
+    apDrawRect(renderer, x1, y1, x2, y2, color, alpha, outline);
+    uint32_t dt = (uint32_t) (svcGetSystemTick() - t0);
+    apRectT += dt;
+    apSeqAdd(renderer, 'R', -1, dt);
+    apRectN++;
+}
+
 static APL void apLog(void) {
     for (int b = 0; AP_BUCKETS > b; b++) {
         for (int s = 0; AP_SETS > s; s++) {
@@ -281,6 +368,132 @@ static APL void apLog(void) {
     }
 }
 
+// (asgore30, step lever) The step split up: runner.c's phase marks (RUNNER_PHASE, through runner.h's
+// RUNNER_PHASE_PROBE) and its event runs (VM_beginEventRun to VM_endEventRun, linker-wrapped), each charged the
+// frame's counter pair since the last mark. A run's time (the dispatch loop's per-instance checks and every event of
+// the run) goes to its code's class, not to the phase; VM_runEventBound calls count the run's events. Summed per
+// sprite bucket and counter set like the step above, logged every 300 frames as "[asgphase]" lines. Without counters
+// (Azahar) the cycles are system ticks.
+enum { PH_N = 14, CL_N = 4 };
+static const char* apPhName[PH_N] APB;  // phase names by first sight; 0 is the step before the first mark
+static uint32_t apPhNow[PH_N][3] APB, apClNow[CL_N][3] APB, apClEv[CL_N] APB, apClRun[CL_N] APB;
+static uint8_t apPh APB, apCl APB, apInStep APB, apRunDepth APB;
+static ApSnap apMark APB;
+static uint32_t apPhSum[AP_BUCKETS][AP_SETS][PH_N][3] APB, apClSum[AP_BUCKETS][AP_SETS][CL_N][5] APB;  // may wrap: read deltas
+static uint32_t apPhFrames[AP_BUCKETS][AP_SETS] APB;
+// The classes, by the FNV-1a hash of their code entry's name (the kit names no game code): the helix bullet's Step, the
+// ember's Step and the bullet parent's End Step; any other code is the last class.
+static const uint32_t apClHash[CL_N - 1] __attribute__((section(".rodata.late.utasgore.probe"))) = {
+    0x9369E845u, 0x0E782A8Au, 0x51DDBF66u};
+static APL uint32_t apFnv(const char* s) {
+    uint32_t h = 0x811C9DC5u;
+    while (*s != 0) h = (h ^ (uint8_t) *s++) * 0x01000193u;
+    return h;
+}
+
+static APL void apPhRead(ApSnap* s) {
+    if (apState > 0) {
+        apRead(s);
+    } else {
+        s->cycles = (uint32_t) svcGetSystemTick();
+        s->e0 = s->e1 = 0;
+    }
+}
+
+static APL void apCharge(uint32_t* to) {
+    ApSnap s;
+    apPhRead(&s);
+    to[0] += s.cycles - apMark.cycles;
+    to[1] += s.e0 - apMark.e0;
+    to[2] += s.e1 - apMark.e1;
+    apMark = s;
+}
+
+void Asgprobe_phase(const char* name) APL;
+void Asgprobe_phase(const char* name) {
+    if (!apInStep) return;
+    int i = 1;
+    while (PH_N - 1 > i && apPhName[i] != nullptr && apPhName[i] != name) i++;
+    if (apPhName[i] == nullptr) apPhName[i] = name;
+    apCharge(apPhNow[apPh]);
+    apPh = (uint8_t) i;
+}
+
+void __real_VM_beginEventRun(VMContext* ctx, VMEventRun* run, int32_t codeIndex, int32_t eventType, int32_t eventSubtype, int32_t ownerObjectIndex);
+void __real_VM_endEventRun(VMContext* ctx, VMEventRun* run);
+void __real_VM_runEventBound(VMContext* ctx, VMEventRun* run, Instance* instance);
+void __wrap_VM_beginEventRun(VMContext* ctx, VMEventRun* run, int32_t codeIndex, int32_t eventType, int32_t eventSubtype, int32_t ownerObjectIndex) APL;
+void __wrap_VM_endEventRun(VMContext* ctx, VMEventRun* run) APL;
+void __wrap_VM_runEventBound(VMContext* ctx, VMEventRun* run, Instance* instance) APL;
+void __wrap_VM_beginEventRun(VMContext* ctx, VMEventRun* run, int32_t codeIndex, int32_t eventType, int32_t eventSubtype, int32_t ownerObjectIndex) {
+    if (apInStep && apRunDepth++ == 0) {
+        apCharge(apPhNow[apPh]);
+        const char* name = ctx->dataWin->code.entries[codeIndex].name;
+        const uint32_t h = name != nullptr ? apFnv(name) : 0;
+        int c = 0;
+        while (CL_N - 1 > c && (name == nullptr || h != apClHash[c])) c++;
+        apCl = (uint8_t) c;
+        apClRun[c]++;
+    }
+    __real_VM_beginEventRun(ctx, run, codeIndex, eventType, eventSubtype, ownerObjectIndex);
+}
+void __wrap_VM_endEventRun(VMContext* ctx, VMEventRun* run) {
+    __real_VM_endEventRun(ctx, run);
+    if (apInStep && apRunDepth != 0 && --apRunDepth == 0) {
+        apCharge(apClNow[apCl]);
+        apCl = CL_N;
+    }
+}
+void __wrap_VM_runEventBound(VMContext* ctx, VMEventRun* run, Instance* instance) {
+    if (CL_N > apCl) apClEv[apCl]++;
+    __real_VM_runEventBound(ctx, run, instance);
+}
+
+// The frame's phase and run counters into its bucket's sums (from the draw wrapper, which knows the bucket).
+static APL void apPhAdd(int bucket) {
+    apPhFrames[bucket][apSet]++;
+    for (int i = 0; PH_N > i; i++) {
+        for (int j = 0; 3 > j; j++) apPhSum[bucket][apSet][i][j] += apPhNow[i][j];
+    }
+    for (int c = 0; CL_N > c; c++) {
+        for (int j = 0; 3 > j; j++) apClSum[bucket][apSet][c][j] += apClNow[c][j];
+        apClSum[bucket][apSet][c][3] += apClEv[c];
+        apClSum[bucket][apSet][c][4] += apClRun[c];
+    }
+    memset(apPhNow, 0, sizeof(apPhNow));
+    memset(apClNow, 0, sizeof(apClNow));
+    memset(apClEv, 0, sizeof(apClEv));
+    memset(apClRun, 0, sizeof(apClRun));
+}
+
+static APL void apPhLog(void) {
+    char line[900];
+    int w = 0;
+    for (int i = 1; PH_N > i && apPhName[i] != nullptr; i++) {
+        w += snprintf(line + w, sizeof(line) - (size_t) w, " %d=%s", i, apPhName[i]);
+        if (w >= (int) sizeof(line) - 64) break;
+    }
+    logInfo("[asgphase] names%s\n", line);
+    for (int b = 0; AP_BUCKETS > b; b++) {
+        for (int s = 0; AP_SETS > s; s++) {
+            if (apPhFrames[b][s] == 0) continue;
+            w = 0;
+            for (int i = 0; PH_N > i; i++) {
+                const uint32_t* v = apPhSum[b][s][i];
+                if (v[0] == 0) continue;
+                w += snprintf(line + w, sizeof(line) - (size_t) w, " p%d=%lu/%lu/%lu", i, (unsigned long) v[0], (unsigned long) v[1], (unsigned long) v[2]);
+                if (w >= (int) sizeof(line) - 64) break;
+            }
+            for (int c = 0; CL_N > c && (int) sizeof(line) - 96 > w; c++) {
+                const uint32_t* v = apClSum[b][s][c];
+                w += snprintf(line + w, sizeof(line) - (size_t) w, " c%d=%lu/%lu/%lu/%lu/%lu", c, (unsigned long) v[0], (unsigned long) v[1],
+                              (unsigned long) v[2], (unsigned long) v[3], (unsigned long) v[4]);
+            }
+            logInfo("[asgphase] f=%lu b=%d s=%d n=%lu%s\n", (unsigned long) apFrames, b, s, (unsigned long) apPhFrames[b][s], line);
+        }
+    }
+}
+
 void __wrap_Runner_step(Runner* runner) {
     if (apState == 0) apStart();
     apSet = (uint8_t) (apFrames % AP_SETS);
@@ -289,7 +502,14 @@ void __wrap_Runner_step(Runner* runner) {
     ApSnap a, b;
     uint64_t stepT0 = svcGetSystemTick();
     apRead(&a);
+    apPhRead(&apMark);
+    apPh = 0;
+    apCl = CL_N;
+    apRunDepth = 0;
+    apInStep = 1;
     AP_STEP(runner);
+    apCharge(apPhNow[apPh]);
+    apInStep = 0;
     apTimeStepNow = (uint32_t) (svcGetSystemTick() - stepT0);
     apRead(&b);
     apStepCycles = b.cycles - a.cycles;
@@ -300,13 +520,26 @@ void __wrap_Runner_step(Runner* runner) {
 void __wrap_Runner_drawViews(Runner* runner, int32_t gameW, int32_t gameH, bool debugShowCollisionMasks) {
     Renderer* renderer = runner->renderer;
     apRunner = runner;
-    if (renderer != nullptr && (renderer != apRenderer || renderer->vtable != &apVtable)) {
-        // Whatever table is in front now is the one wrapped.
-        apVtable = *renderer->vtable;
-        apDrawSprite = apVtable.drawSprite;
-        apVtable.drawSprite = apSprite;
-        renderer->vtable = &apVtable;
+    // (asgore30) The renderer's own table, at the bottom of every chain, is the one wrapped: smalltext's outer table
+    // (installed at room changes in front of whatever table is there, and whose drawSprite forwards to the table it
+    // copied) and a copy in front of it made each a wrapper of the other, which looped (stDrawSprite -> apSprite ->
+    // stDrawSprite). Pixgrid_refs[0] is ctr_renderer.c's own vtable; a later write to its drawSprite is wrapped again.
+    RendererVtable* own = (RendererVtable*) Pixgrid_refs[0];
+    if (renderer != nullptr && own != nullptr && own->drawSprite != apSprite) {
+        apDrawSprite = own->drawSprite;
+        own->drawSprite = apSprite;
         apRenderer = renderer;
+    }
+    // The front table's own entries for these (the outer tables hold copies of the renderer's, and forward neither):
+    // patched in place; a table later copied from it keeps the patch, and a new one is patched again.
+    RendererVtable* front = renderer != nullptr ? (RendererVtable*) renderer->vtable : nullptr;
+    if (front != nullptr && front->drawSpritePart != apPart) {
+        apDrawPart = front->drawSpritePart;
+        front->drawSpritePart = apPart;
+    }
+    if (front != nullptr && front->drawRectangle != apRect) {
+        apDrawRect = front->drawRectangle;
+        front->drawRectangle = apRect;
     }
     if (apDump == 0) {
         FILE* f = fopen(CTRPORT_GAME_DIR "/asgdump.txt", "r");
@@ -315,8 +548,11 @@ void __wrap_Runner_drawViews(Runner* runner, int32_t gameW, int32_t gameH, bool 
         f = fopen(CTRPORT_GAME_DIR "/asgtime.txt", "r");
         apTime = f != nullptr ? 1 : -1;
         if (f != nullptr) fclose(f);
-        f = fopen(CTRPORT_GAME_DIR "/asgframes.txt", "r");
-        apFrameLog = f != nullptr ? 1 : -1;
+        f = fopen(CTRPORT_GAME_DIR "/asgnoframes.txt", "r");
+        apFrameLog = f != nullptr ? -1 : 1;  // (asgore30) on unless asgnoframes.txt: hardware rows can't place flag files
+        if (f != nullptr) fclose(f);
+        f = fopen(CTRPORT_GAME_DIR "/asgseq.txt", "r");
+        apSeqOn = f != nullptr ? 1 : -1;
         if (f != nullptr) fclose(f);
         f = fopen(CTRPORT_GAME_DIR "/utaoff.txt", "r");
         utaOff = f != nullptr ? 1 : 0;
@@ -333,8 +569,15 @@ void __wrap_Runner_drawViews(Runner* runner, int32_t gameW, int32_t gameH, bool 
     ApSnap a, b;
     uint64_t drawT0 = svcGetSystemTick();
     apRead(&a);
+    int seqFrame = runner->frameCount;
+    apSeqFrame = (uint8_t) (apSeqOn > 0 && (seqFrame == 370 || seqFrame == 560 || seqFrame == 698 || seqFrame == 699));
+    apSeqN = 0;
     __real_Runner_drawViews(runner, gameW, gameH, debugShowCollisionMasks);
     apRead(&b);
+    if (apSeqFrame) {
+        apSeqFrame = 0;
+        apSeqWrite(seqFrame);
+    }
     if (apFrameLog > 0) apFrameLine(runner, (uint32_t) (svcGetSystemTick() - drawT0));
     if (apTimeBusy) {
         apTimeDraw += svcGetSystemTick() - drawT0;
@@ -360,8 +603,10 @@ void __wrap_Runner_drawViews(Runner* runner, int32_t gameW, int32_t gameH, bool 
     s->inCycles += apInCycles;
     s->in0 += apIn0;
     s->in1 += apIn1;
+    apPhAdd(bucket);
     if (++apFrames % 300 == 0) {
         apLog();
+        apPhLog();
         if (apTime > 0) apTimeLog();
     }
 }

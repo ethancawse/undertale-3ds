@@ -26,6 +26,12 @@ typedef struct {
     bool valid;
 } InstanceBBox;
 
+#if defined(ENABLE_WAD16)
+__attribute__((pure)) InstanceBBox Colexact_unrotatedBBox(Sprite* spr, Instance* inst);
+InstanceBBox Colexact_sharedBBox(Runner* runner, Instance* inst);
+#endif
+#line 28
+
 // Returns the collision sprite for an instance (mask sprite if set, else display sprite)
 static inline Sprite* Collision_getSprite(DataWin* dataWin, Instance* inst) {
     int32_t sprIdx = (inst->maskIndex >= 0) ? inst->maskIndex : inst->spriteIndex;
@@ -80,6 +86,10 @@ __attribute__((const)) GMLReal Collision_bboxRound(GMLReal v);
 #define COLLISION_BBOX_STORAGE static inline
 #endif
 
+#if defined(ENABLE_WAD16) && defined(__3DS__) && !defined(USE_FLOAT_REALS) && defined(CTRPORT_BBOX_ROUND)
+#include "colexact_bbox.h"
+#endif
+#line 83
 // Computes the axis-aligned bounding box for an instance using its collision sprite
 COLLISION_BBOX_STORAGE InstanceBBox Collision_computeBBox(Runner* runner, Instance* inst) {
     InstanceBBox ret;
@@ -88,6 +98,17 @@ COLLISION_BBOX_STORAGE InstanceBBox Collision_computeBBox(Runner* runner, Instan
         ZERO_STRUCT(ret);
         return ret;
     }
+
+#if defined(ENABLE_WAD16)
+    if (runner->collisionCompatibilityMode && runner->dataWin->gen8.wadVersion <= 16 && (float) inst->imageAngle == 0.0f) {
+#if defined(__3DS__) && !defined(USE_FLOAT_REALS) && defined(CTRPORT_BBOX_ROUND)
+        return Colexact_inlineBBox(spr, inst);
+#else
+        return Colexact_unrotatedBBox(spr, inst);
+#endif
+    }
+#endif
+#line 91
 
     GMLReal marginL = (spr->bboxMode == 1) ? 0.0 : (GMLReal) spr->marginLeft;
     GMLReal marginR = (spr->bboxMode == 1) ? (GMLReal) spr->width : (GMLReal) (spr->marginRight + 1);

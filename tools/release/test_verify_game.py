@@ -78,6 +78,77 @@ def dr_files(parts=None, override=None):
     return out
 
 
+class NativeLinuxTests(unittest.TestCase):
+    MESSAGE = ("{game}'s native Linux files are not supported. Use its Windows version from Steam or GOG. "
+               "For Steam, choose Proton in Properties > Compatibility, let the download finish, "
+               "then select the game folder again.")
+
+    def verify(self, folder, **kwargs):
+        return vg.verify('undertale', game_dir=str(folder), steam_roots=[], gog_dirs=[],
+                         allow_list=ALLOW, macos_allow_list=MAC_ALLOW, **kwargs)
+
+    def test_native_layouts_refused_with_exact_approved_next_step_on_all_hosts(self):
+        for relative in ('game.unx', 'assets/game.unx'):
+            for platform in ('linux', 'win32', 'darwin'):
+                with self.subTest(relative=relative, platform=platform), tempfile.TemporaryDirectory() as tmp:
+                    # Even whitelisted Windows bytes under a native name never qualify.
+                    write(os.path.join(tmp, relative), UT)
+                    with mock.patch.object(vg, 'check_versions', side_effect=AssertionError('no supported layout')):
+                        result = self.verify(tmp, platform=platform)
+                    self.assertEqual(result.status, vg.MISSING_FILES)
+                    self.assertEqual(result.message, self.MESSAGE.format(game='UNDERTALE'))
+                    self.assertEqual(result.accepted_parts, [])
+                    self.assertIsNone(result.layout)
+
+    def test_steam_auto_discovery_also_reports_the_native_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Tree(tmp)
+            tree.install('391540', 'Undertale', {'assets/game.unx': UT})
+            result = vg.verify('undertale', steam_roots=[tree.root], gog_dirs=[],
+                               allow_list=ALLOW, platform='linux')
+            self.assertEqual(result.status, vg.MISSING_FILES)
+            self.assertEqual(result.message, self.MESSAGE.format(game='UNDERTALE'))
+
+    def test_generic_missing_data_message_still_handles_empty_folders_and_directories(self):
+        for native_directory in (False, True):
+            with self.subTest(native_directory=native_directory), tempfile.TemporaryDirectory() as tmp:
+                if native_directory:
+                    os.mkdir(os.path.join(tmp, 'game.unx'))
+                result = self.verify(tmp, platform='linux')
+                self.assertEqual(result.status, vg.MISSING_FILES)
+                self.assertIn('has no data.win', result.message)
+                self.assertNotIn('Proton', result.message)
+
+    def test_supported_windows_layout_keeps_hash_and_account_checks(self):
+        for owner, data, expected in [(OWNER, UT, vg.OK), (OTHER, UT, vg.ACCOUNT),
+                                      (OWNER, bytes(len(UT)), vg.UNKNOWN_VERSION)]:
+            with self.subTest(owner=owner, expected=expected), tempfile.TemporaryDirectory() as tmp:
+                tree = Tree(tmp)
+                folder = tree.install('391540', 'Undertale', {'data.win': data,
+                    'game.unx': UT, 'assets/game.unx': UT}, owner=owner)
+                result = vg.verify('undertale', game_dir=folder, steam_roots=[tree.root],
+                                   gog_dirs=[], allow_list=ALLOW, platform='linux')
+                self.assertEqual((result.status, result.layout), (expected, 'windows'))
+                self.assertNotIn('Proton', result.message)
+                if expected != vg.OK:
+                    self.assertEqual(result.accepted_parts, [])
+
+    def test_supported_mac_layout_and_unrecorded_windows_copy_keep_their_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Tree(tmp)
+            folder = tree.install('391540', 'Undertale', {BUNDLE + 'game.ios': MAC, 'game.unx': UT})
+            result = vg.verify('undertale', game_dir=folder, steam_roots=[tree.root], gog_dirs=[],
+                               allow_list=ALLOW, macos_allow_list=MAC_ALLOW, platform='darwin')
+            self.assertEqual((result.status, result.layout), (vg.OK, 'macos'))
+            # Presence of native data cannot admit an unrecorded Windows copy.
+            copy = Path(tmp) / 'unrecorded'
+            write(str(copy / 'data.win'), UT)
+            write(str(copy / 'game.unx'), UT)
+            result = self.verify(copy, platform='linux')
+            self.assertEqual((result.status, result.layout), (vg.NO_RECORD, 'windows'))
+            self.assertEqual(result.accepted_parts, [])
+
+
 class VdfTests(unittest.TestCase):
     def test_nested_escapes_comments(self):
         d = vg.parse_vdf('// c\n"a"\n{\n "b" "x\\"y\\\\z" // tail\n "C" { "d" "1" }\n bare val\n}\n')
@@ -89,6 +160,55 @@ class VdfTests(unittest.TestCase):
         for bad in ('"a" {', '"a" "b" }', '"a"', '"a" "unterminated'):
             with self.assertRaises(ValueError):
                 vg.parse_vdf(bad)
+
+
+class DigestTests(unittest.TestCase):
+    def test_same_size_in_place_rewrite_with_restored_mtime_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "data.win"
+            path.write_bytes(UT)
+            stamp = path.stat()
+            self.assertEqual(vg.check_versions(vg.GAMES["undertale"], tmp, ALLOW)["root"][0], "ok")
+            path.write_bytes(UT[:-1] + bytes([UT[-1] ^ 1]))
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            self.assertEqual(path.stat().st_size, stamp.st_size)
+            self.assertEqual(path.stat().st_mtime_ns, stamp.st_mtime_ns)
+            self.assertEqual(path.stat().st_ino, stamp.st_ino)
+            self.assertEqual(vg.check_versions(vg.GAMES["undertale"], tmp, ALLOW)["root"][0], "unknown")
+
+    def test_same_size_replacement_with_restored_mtime_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "data.win"
+            path.write_bytes(UT)
+            stamp = path.stat()
+            self.assertEqual(vg.data_digest(path), hashlib.sha256(UT).hexdigest())
+            replacement = Path(tmp) / "replacement"
+            altered = UT[:-1] + bytes([UT[-1] ^ 1])
+            replacement.write_bytes(altered)
+            os.utime(replacement, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            os.replace(replacement, path)
+            self.assertEqual(path.stat().st_size, stamp.st_size)
+            self.assertEqual(path.stat().st_mtime_ns, stamp.st_mtime_ns)
+            self.assertEqual(vg.data_digest(path), hashlib.sha256(altered).hexdigest())
+
+    def test_same_metadata_never_substitutes_for_reading_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "data.win"
+            path.write_bytes(UT)
+            real = vg.sha256_file
+            with mock.patch.object(vg, "sha256_file", wraps=real) as read:
+                self.assertEqual(vg.data_digest(path), vg.data_digest(path))
+            self.assertEqual(read.call_count, 2)
+
+    def test_failed_recheck_does_not_reuse_previously_accepted_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "data.win"
+            path.write_bytes(UT)
+            self.assertEqual(vg.check_versions(vg.GAMES["undertale"], tmp, ALLOW)["root"][0], "ok")
+            with mock.patch.object(vg, "sha256_file", side_effect=PermissionError("fixture denied")):
+                state, error = vg.check_versions(vg.GAMES["undertale"], tmp, ALLOW)["root"]
+            self.assertEqual(state, "unreadable")
+            self.assertIn("fixture denied", error)
 
 
 class SteamTests(unittest.TestCase):

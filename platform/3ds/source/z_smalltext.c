@@ -835,17 +835,21 @@ static ST_LATE bool stAtlas(StFont* f) {
     uint32_t tw = 8, th = 8;
     while ((int32_t) tw < w) tw <<= 1;
     while ((int32_t) th < h) th <<= 1;
-    if (tw > 1024u || th > 1024u || !C3D_TexInit(&f->tex, (u16) tw, (u16) th, GPU_RGBA8)) {
+#ifdef ST_DR_UNIT
+    const bool every = false;
+    const GPU_TEXCOLOR fmt = GPU_RGBA8;
+#else
+    const bool every = f == &stCard.font; // the card's atlas writes its pixels without ink too (opaque black)
+    // flowend r18: a text font's texels are only ink and nothing, so one byte each (LA4 0xFF samples as RGBA8 white,
+    // 0 as transparent black, the RGBA8 atlas's two values); the card's opaque black keeps RGBA8.
+    const GPU_TEXCOLOR fmt = every ? GPU_RGBA8 : GPU_LA4;
+#endif
+    if (tw > 1024u || th > 1024u || !C3D_TexInit(&f->tex, (u16) tw, (u16) th, fmt)) {
         logInfo(stLogAtlasFail, f->name, (int) w, (int) h);
         return false;
     }
     memset(f->tex.data, 0, f->tex.size);
     uint32_t* texels = (uint32_t*) f->tex.data;
-#ifdef ST_DR_UNIT
-    const bool every = false;
-#else
-    const bool every = f == &stCard.font; // the card's atlas writes its pixels without ink too (opaque black)
-#endif
     for (uint32_t e = 0; f->count > e; e++) {
         const uint8_t* g = stEntry(f, e);
         uint32_t cx = (e % ST_ATLAS_COLS) * (uint32_t) pitchX, cy = (e / ST_ATLAS_COLS) * (uint32_t) pitchY;
@@ -861,7 +865,14 @@ static ST_LATE bool stAtlas(StFont* f) {
                     uint32_t bit = (uint32_t) __builtin_ctz(todo);
                     uint32_t tx = cx + x0 + bit, ty = cy + y, mx = tx & 7u, my = ty & 7u;
                     uint32_t morton = (mx & 1u) | ((my & 1u) << 1) | ((mx & 2u) << 1) | ((my & 2u) << 2) | ((mx & 4u) << 2) | ((my & 4u) << 3);
-                    texels[(ty >> 3) * (tw / 8u) * 64u + (tx >> 3) * 64u + morton] = (mask >> bit & 1u) != 0u ? 0xFFFFFFFFu : 0x000000FFu; // opaque black: A is the low byte
+                    uint32_t at = (ty >> 3) * (tw / 8u) * 64u + (tx >> 3) * 64u + morton;
+#ifndef ST_DR_UNIT
+                    if (!every) {
+                        ((uint8_t*) texels)[at] = 0xFFu; // LA4 ink: L 15, A 15
+                        continue;
+                    }
+#endif
+                    texels[at] = (mask >> bit & 1u) != 0u ? 0xFFFFFFFFu : 0x000000FFu; // opaque black: A is the low byte
                 }
             }
         }
@@ -1225,9 +1236,17 @@ ST_LATE void __wrap_CtrRenderer_loadFontVerdicts(Renderer* renderer) {
         if (st.krTpag != 0) st.outer.drawSprite = stDrawSprite;
     }
     if (st.soulSlots != 0 || stCard.tpag[0] != 0) st.outer.drawSprite = stDrawSprite;
+    // flowend r18 (ut_flact, 10-29): every font whose key is on gets its atlas here, in the room change that installs
+    // the table (a hidden load), not at its first Crisp draw in play, where making it took fnt_main's ACT-press Draw to
+    // 20-25 ms on the Old 3DS and showed the next frame for 3 vblanks. The same texels; a font whose key the menu turns
+    // on later is still made at its first draw.
+    for (uint32_t i = 0; st.fontCount > i; i++) {
+        if ((st.keys >> st.fonts[i].key & 1u) != 0) (void) stAtlas(&st.fonts[i]);
+    }
 #endif
     renderer->vtable = &st.outer;
 }
+#line 1184
 #ifndef ST_DR_UNIT
 // ===[ soulshake: the Crisp soul's place tolerates the view offset's float error ]===
 // The soul and the cards add the view offset (stSurfaceOx/Oy), a float from the projection: Photoshop Flowey's intro

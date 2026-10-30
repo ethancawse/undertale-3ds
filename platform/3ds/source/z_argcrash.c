@@ -66,6 +66,7 @@ const char* __real_CtrHbldr_setNext(const char* path, const char* const* args, i
 void __real_CtrLab_exiting(int seconds);
 void __real_CtrLab_poll(void);
 void __real_CtrLog_emergency(const char* text, int waitMs);
+void __real_CtrLog_setConsoleEnabled(bool enabled);
 void __real_LightEvent_Init(LightEvent* event, ResetType reset_type);
 void __real_LightEvent_Signal(LightEvent* event);
 void __real_platformLog(const logType type, const char* format, va_list va);
@@ -529,7 +530,10 @@ ARGCRASH_FUNC static u32 checkCrashTxtSize(void) {
 
 ARGCRASH_LATE static void argcrashPaintScreens(ArgcrashKind kind, bool exiting) {
     if (!argcrashGfxReady) return;
-    CtrLog_setConsoleEnabled(false);
+    // The real setter (only the flag): the boot log's wrap would point the consoles back and free their own buffer
+    // (main.c CtrBootlog_reveal), a heap call that a main thread stuck in the allocator would block (c26rev r22).
+    // The painter needs neither; the buffer is kept until the exit.
+    __real_CtrLog_setConsoleEnabled(false);
     const devoptab_t* current = devoptab_list[STD_OUT];
     if (current != nullptr && current != &argcrashNullOut) {
         argcrashNullOut = *current;

@@ -10,6 +10,7 @@ tools/release/builder/bin/; without one they are skipped.
 import hashlib
 import io
 import os
+from pathlib import Path
 import shutil
 import struct
 import subprocess
@@ -607,7 +608,7 @@ class DataVersion(unittest.TestCase):
                 self.assertEqual(texcache.parse_data_version(got)[1:], (len(dw), 0, hashlib.sha256(dw).hexdigest(),
                                                                        path))
 
-    def test_reuses_the_version_checks_digest(self):
+    def test_receipt_rechecks_current_bytes_instead_of_reusing_verification(self):
         import verify_game
         with tempfile.TemporaryDirectory() as tmp:
             fx = Fixture(tmp)
@@ -617,9 +618,26 @@ class DataVersion(unittest.TestCase):
                 verify_game.data_digest(os.path.join(fx.game, "data.win"))
                 self.deliver(fx)
                 self.deliver(fx)
-            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(calls), 3)
             write(os.path.join(fx.game, "data.win"), fx.dw + b"x")          # a changed file is hashed again
             self.assertEqual(self.deliver(fx).written, 1)
+
+    def test_receipt_detects_same_size_rewrite_with_restored_mtime(self):
+        import verify_game
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(tmp)
+            path = Path(fx.game) / "data.win"
+            stamp = path.stat()
+            verify_game.data_digest(path)
+            self.deliver(fx)
+            changed = fx.dw[:-1] + bytes([fx.dw[-1] ^ 1])
+            path.write_bytes(changed)
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            self.assertEqual(path.stat().st_size, stamp.st_size)
+            self.assertEqual(path.stat().st_mtime_ns, stamp.st_mtime_ns)
+            self.assertEqual(self.deliver(fx).written, 1)
+            got = texcache.parse_data_version(read(self.card_file(fx)))
+            self.assertEqual(got[3], hashlib.sha256(changed).hexdigest())
 
     def test_copy_with_textures_writes_it_after_the_textures(self):
         with tempfile.TemporaryDirectory() as tmp:

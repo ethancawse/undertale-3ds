@@ -14,11 +14,7 @@
 #include "common.h"
 #include "ctr_display.h"
 #include "ctr_fps_clock.h"
-#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
-#define ARGUI_ROOM_PREFETCH CtrTextures_dtmPrefetch // utold c112dtm: the room load, then rooms.dtm
-#else
-#define ARGUI_ROOM_PREFETCH CtrRoomload_prefetchRoom
-#endif
+#include "ctr_fpsbox.h"
 #line 16
 #ifndef CTR_SCREENS_SETTINGS_ONLY
 #include "audio_system.h"
@@ -172,7 +168,7 @@ static const char* const arguiAssetNames[5] ARGUI_RO = {
 };
 static const uint8_t arguiMorton[8] ARGUI_RO = { 0, 1, 4, 5, 16, 17, 20, 21 };
 
-void CtrRoomload_prefetchRoom(CtrTextureCache* cache, Runner* runner); void CtrTextures_dtmPrefetch(CtrTextureCache* cache, Runner* runner); // z_roomload.c; it calls __real_ (2nd: ctr_textures.c, utold c112dtm)
+void CtrRoomload_prefetchRoom(CtrTextureCache* cache, Runner* runner); // z_roomload.c; it calls __real_
 void CtrOptmenu_prepareGlyphs(void);
 void __wrap_CtrTextures_prefetchRoom(CtrTextureCache* cache, Runner* runner);
 
@@ -183,7 +179,7 @@ ARGUI_CODE void __wrap_CtrTextures_prefetchRoom(CtrTextureCache* cache, Runner* 
         g.assetIds[i] = (int16_t) shget(runner->assetsByName, arguiAssetNames[i]);
     }
     CtrOptmenu_prepareGlyphs(); // ctr_optmenu.c: the menu's glyphs, from the tiles resident now
-    ARGUI_ROOM_PREFETCH(cache, runner); // UNDERTALE Old: then rooms.dtm if a record changed (utold c112dtm)
+    CtrRoomload_prefetchRoom(cache, runner);
 }
 
 ARGUI_STATIC bool arguiSampleGlyph(uint8_t ch, int32_t gx, int32_t gy) {
@@ -231,7 +227,7 @@ WAD17_ONLY(ARGUI_NOINLINE) WAD17_NONE(ARGUI_CODE) void arguiDrawText(int32_t x, 
         for (int32_t gy = 0; 12 > gy; gy++) {
             for (int32_t gx = 0; (g.menuIsOpen ? 9 : 6) > gx; gx++) {
                 bool on = arguiSampleGlyph((uint8_t) *s, gx, gy);
-                if (!on && g.menuIsOpen) continue;
+                if (!on) continue;
                 uint16_t c565 = (uint16_t) (on ? col : 0u);
                 for (int32_t dx = 0; g.sx > dx; dx++) {
                     size_t idx = (size_t) (x + gx * g.sx + dx) * 240u + (size_t) (239 - y - gy * g.sy);
@@ -514,13 +510,13 @@ ARGUI_CODE CtrMenuAction CtrArgui_menuUpdate(CtrMenu* menu, u32 down) {
 
 ARGUI_STR(strHint, "SELECT: Options"); void CtrHint_draw(int32_t x, int32_t y, const char* s, uint32_t col); // hintpos: ctr_hintpos.c
 
-// While the options menu is open the counter keeps its last value: on the game's screen, and on the menu's when that
-// is the top screen (the menu fills its middle 320 columns; the counter, 35 columns at the largest size, stays in the
-// left border). On the bottom screen the menu covers it at every size. Its next reading counts from the close.
+// Both screens keep the live counter while Options is open. The menu restores its own pixels under the digits
+// before this transparent paint; the game screen gets a fresh transfer as usual. Measurement is sampled once per
+// main-thread iteration by the consoles' flush wrapper below, including paused iterations.
 ARGUI_NOINLINE void arguiPaintScreen(void* fb, bool rgb565) {
     bool open = g.menuIsOpen;
-    if (gFpsScreen < gHintSeen || g.texCache == nullptr || CtrBench_running() || (open & rgb565 & !CtrScreens_onBottom)) return;
-    if (!rgb565 && fb == nullptr && !open) g.fpsFrames++;
+    if (gFpsScreen < gHintSeen || g.texCache == nullptr || CtrBench_running()) return;
+    // Retired fpsFrames/fpsVb fields retain their layout; the pacer supplies the reading.
     uint32_t game = CtrScreens_game;
     gfxScreen_t screen = (gfxScreen_t) (game ^ rgb565);
     bool other565 = gfxGetScreenFormat((gfxScreen_t) (game ^ 1u)) == GSP_RGB565_OES;
@@ -534,20 +530,8 @@ ARGUI_NOINLINE void arguiPaintScreen(void* fb, bool rgb565) {
     uint32_t xMul = (!rgb565 && gfxIsWide()) ? 2u : 1u;
     g.rgb565 = rgb565;
     g.adv = 5;
-    uint32_t vb = C3D_FrameCounter(0) - g.fpsVb;
-    if (open) {
-        g.fpsVb += vb;
-        g.fpsFrames = 0;
-    } else if (vb >= 60u) {
-        uint32_t v = g.fpsFrames < 30u ? g.fpsFrames : 30u;
-        uint32_t d = '0';
-        for (; v >= 10u; v -= 10u) d++;
-        g.fpsBuf[0] = (char) d;
-        g.fpsBuf[1] = (char) ('0' + v);
-        g.fpsVb += vb;
-        g.fpsFrames = 0;
-    }
-
+    // The main-thread flush below samples the pacer, including paused frames.
+#line 539
     if (!rgb565) GSPGPU_InvalidateDataCache(fb, 320u * 240u * 2u);
     else if (otherFree && !open) memset(fb, 0, 320u * 240u * 2u);
     g.fb = fb;
@@ -585,7 +569,7 @@ ARGUI_CODE void __wrap_C3D_SyncDisplayTransfer(u32* inadr, u32 indim, u32* outad
 }
 
 void __real_CtrScreens_flushConsoles(void);
-void __wrap_CtrScreens_flushConsoles(void);
+void __wrap_CtrScreens_flushConsoles(void); void fpsboxFlushConsoles(void);
 
 #ifdef CTRPORT_PLAYER_SHOTS
 extern bool CtrBootlog_fpsLegacy; // main.c's tail: fps_overlap_legacy = 1, the counter as before (the proof's before)
@@ -596,7 +580,7 @@ extern bool CtrBootlog_fpsLegacy; // main.c's tail: fps_overlap_legacy = 1, the 
 // first line every frame, and the stats print that line again once a second. The stats' fourth line has the frame
 // rate. With Other screen Off (or the original 2DS's Blank) the counter shows there as before.
 ARGUI_CODE void __wrap_CtrScreens_flushConsoles(void) {
-    __real_CtrScreens_flushConsoles();
+    fpsboxFlushConsoles();
     uint8_t fps = gFpsScreen;
 #ifdef CTRPORT_PLAYER_SHOTS
     if (!CtrBootlog_fpsLegacy && CtrLog_consoleEnabled()) gFpsScreen = 0;

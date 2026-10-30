@@ -59,6 +59,9 @@ def retain_oomport_slots(assembly):
 
 
 def main():
+    if '-DENABLE_WAD16' in sys.argv:
+        import utwindow_compile
+        return utwindow_compile.main(sys.argv[1:])
     internal = INTERNAL_NEW if '-DCTRPORT_TARGET_N3DS' in sys.argv else INTERNAL
     if internal is INTERNAL_NEW and vram_probe_on():
         internal = INTERNAL_NEW + ('surfaceTexture',)

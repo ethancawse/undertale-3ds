@@ -43,12 +43,10 @@ void UtKill_registerAll(VMContext* ctx) { UtFlames_registerAll(ctx); }
 // Each Draw, either of those objects (both have the same code) copies a box of the screen into a sprite and
 // draws it back one pixel row at a time, each row moved sideways by a sine: some 50 instructions of the interpreter
 // and two builtins a row, ~190-320 rows a frame in Undyne's battle. The script (UT 1.08, 416 bytes):
-//     b = argument0; c = argument1; a += 1; i = sprite_height;
-//     while (i > 0) { a += 1; if (c > 0) c -= 0.1; if (c < 0) c -= 0.1;
-//         draw_sprite_part_ext(sprite_index, image_index, 0, i, sprite_width, 1, x + sin(a / b) * c, y + i, 1, 1,
-//                              16777215, image_alpha);
-//         i -= 1; }
-// (both tests subtract: as written.) utkWaver is a builtin of the script's name, registered before VM_create builds
+//     it takes its period and size from the arguments, advances its own phase counter, and then from the sprite's
+//     bottom row up to its top draws each one-pixel row shifted sideways by a sine of the phase (the phase goes up
+//     by one a row, and the size shrinks a little a row whatever its sign: as written), in white at the instance's
+//     alpha. utkWaver is a builtin of the script's name, registered before VM_create builds
 // the function cache, so every call of the script (interpreted or generated, from either object) comes here. The
 // script is found by its bytecode (UTK_WAVER_LENGTH bytes whose digest over the loaded and patched bytes is
 // UTK_WAVER_DIGEST), so no game name is written here; a, b, c and i come from its operands. Each value is worked out
@@ -199,19 +197,19 @@ static RValue utkWaver(VMContext* ctx, RValue* args, int32_t argCount) {
     AOT_SET_INT(&zero, 0, GML_TYPE_INT16);
     AOT_SET_REAL(&tenth, 0.1, GML_TYPE_DOUBLE);
 
-    // 0000-0018: b = argument0; c = argument1 (Push.v of the argument, Pop.v.v), in that order (an insert of each).
+    // 0000-0018: the period and the size from the two arguments (Push.v of the argument, Pop.v.v), in that order (an insert of each).
     vmWeakCopyInto(&t, &args[0]);
     *utkInsert(inst, w->varB) = t;
     vmWeakCopyInto(&t, &args[1]);
     *utkInsert(inst, w->varC) = t;
 
-    // 0020-0030: a += 1 (Add.i.v). From here a holds a's value as its slot would after each store.
+    // 0020-0030: the phase steps by one (Add.i.v). From here a holds a's value as its slot would after each store.
     RValue a;
     vmWeakCopyInto(&a, utkFind(inst, w->varA));
     vmArithNumbers(&a, &one, VM_ARITH_ADD, GML_TYPE_VARIABLE);
     *utkFind(inst, w->varA) = a;
 
-    // 0038-0040: i = sprite_height (Push.v of the builtin, Pop.v.v: the real as it is). Then the loop's operands: no
+    // 0038-0040: the row counter starts at the sprite's height (Push.v of the builtin, Pop.v.v: the real as it is). Then the loop's operands: no
     // step of it can change b, the instance or its sprite (draw_sprite_part_ext only draws).
     RValue i;
     AOT_SET_REAL(&i, utkSpriteSize(runner, inst, 1), GML_TYPE_VARIABLE);
@@ -285,21 +283,21 @@ static RValue utkWaver(VMContext* ctx, RValue* args, int32_t argCount) {
 #endif
     // 0048-019C: the rows, while i > 0 (Cmp.i.v Gt: the interpreter's compare, with its epsilon).
     while (vmCmpNumbers(&i, &zero, CMP_GT) != 0) {
-        vmArithNumbers(&a, &one, VM_ARITH_ADD, GML_TYPE_VARIABLE);   // a += 1
+        vmArithNumbers(&a, &one, VM_ARITH_ADD, GML_TYPE_VARIABLE);   // the phase step
         __asm__("" : "+m"(a));
-        if (vmCmpNumbers(&c, &zero, CMP_GT) != 0) {                  // if (c > 0) c -= 0.1 (Sub.d.v)
+        if (vmCmpNumbers(&c, &zero, CMP_GT) != 0) {                  // a positive size shrinks (Sub.d.v)
             vmArithNumbers(&c, &tenth, VM_ARITH_SUB, GML_TYPE_VARIABLE);
             __asm__("" : "+m"(c));
         }
-        if (vmCmpNumbers(&c, &zero, CMP_LT) != 0) {                  // if (c < 0) c -= 0.1
+        if (vmCmpNumbers(&c, &zero, CMP_LT) != 0) {                  // a negative size shrinks the same way
             vmArithNumbers(&c, &tenth, VM_ARITH_SUB, GML_TYPE_VARIABLE);
             __asm__("" : "+m"(c));
         }
-        RValue yi;   // y + i (Add.v.v)
+        RValue yi;   // the row's y (Add.v.v)
         AOT_SET_REAL(&yi, y, GML_TYPE_VARIABLE);
         vmArithNumbers(&yi, &i, VM_ARITH_ADD, GML_TYPE_VARIABLE);
         __asm__("" : "+m"(yi));
-        RValue q = a;   // x + sin(a / b) * c (Div.v.v, sin, Mul.v.v, Add.v.v)
+        RValue q = a;   // the row's x, shifted by the sine (Div.v.v, sin, Mul.v.v, Add.v.v)
         vmDivNumbers(&q, &b, false, GML_TYPE_VARIABLE, ctx->currentCodeName);
         __asm__("" : "+m"(q));
         AOT_SET_REAL(&q, aotMathSin(q.real), GML_TYPE_VARIABLE);
@@ -327,7 +325,7 @@ static RValue utkWaver(VMContext* ctx, RValue* args, int32_t argCount) {
                                        (float) xs.real, (float) yi.real, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, colour, alpha);
         }
 #endif
-        vmArithNumbers(&i, &one, VM_ARITH_SUB, GML_TYPE_VARIABLE);   // i -= 1 (Sub.i.v)
+        vmArithNumbers(&i, &one, VM_ARITH_SUB, GML_TYPE_VARIABLE);   // the next row up (Sub.i.v)
         __asm__("" : "+m"(i));
     }
 #if defined(UTKW_BATCH)

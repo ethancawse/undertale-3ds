@@ -81,7 +81,20 @@ static inline struct Instance* ReachGate_instanceById(struct Runner* runner, int
 
 #else
 
+#if defined(PLATFORM_3DS) && defined(__GNUC__) && !defined(__cplusplus)
+// creddodge lever 2: hmget's expansion with stb_ds.c's cdHmgetKey (a cached entry index) for stbds_hmget_key.
+#include <stddef.h>
+extern void* cdHmgetKey(void* a, size_t elemsize, void* key, size_t keysize, int mode);
+#define CD_HMGET_BY_ID(t, k)                                                                                             \
+    (((void) ((t) = cdHmgetKey((t), sizeof *(t), (void*) STBDS_ADDRESSOF((t)->key, (k)), sizeof(t)->key,               \
+                               STBDS_HM_BINARY),                                                                       \
+              stbds_temp((t) - 1)),                                                                                    \
+      &(t)[stbds_temp((t) - 1)])                                                                                       \
+         ->value)
+#define RUNNER_INSTANCE_BY_ID(runner, id) CD_HMGET_BY_ID((runner)->instancesById, (id))
+#else
 #define RUNNER_INSTANCE_BY_ID(runner, id) hmget((runner)->instancesById, (id))
+#endif
 #define REACH_CALLV_FIND(ctx, target, receiver) VM_findInstanceByTarget((ctx), (target))
 #define REACH_GATE_HOOK(call) ((void) 0)
 // No replaced region exists in a Release build yet. When typed3 emits one, Release gets Runner_reserveStruct as

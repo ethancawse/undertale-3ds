@@ -1199,4 +1199,13 @@ bool Utdust_insideRoom(Runner* runner, Instance* inst, int32_t roomWidth, int32_
 #define UTSW_IS_SPAN(d) false
 #endif
 
+// runner.c's step phases (RUNNER_PHASE outside profiler builds): nothing, but in the asgprobe test build (asgore30),
+// where each mark goes to the probe's per-phase counters (platform/3ds/source/ctr_asgprobe.c).
+#if defined(CTRPORT_ASG_PROBE)
+void Asgprobe_phase(const char* name);
+#define RUNNER_PHASE_PROBE(name) Asgprobe_phase(name)
+#else
+#define RUNNER_PHASE_PROBE(name) ((void) 0)
+#endif
+
 #endif /* _BS_RUNNER_H_ */

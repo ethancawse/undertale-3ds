@@ -770,9 +770,34 @@ __attribute__((noinline, section(".text.late.utkill"))) bool StateHash_hashing(v
     return g_originalVtable != nullptr;
 }
 
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+// freebytes round 4 (UNDERTALE Old only, where late code is scarce): the same record, the same mix64 calls in the
+// same order (the tag, then each argument, a float's bits as hashFloat takes them), one copy in a loop instead of
+// eleven inlined copies (2,548 B at -O2). Only a hashed run gets here: every caller checks StateHash_hashing first. No
+// helper function: one would change the order GCC gives the file's statics (main .bss).
+static inline uint32_t shRunBits(float f) {
+    uint32_t bits;
+    if (f != f) bits = 0x7FC00000u; else memcpy(&bits, &f, 4);
+    return bits;
+}
+#endif
+
 __attribute__((noinline, section(".text.late.utkill"))) void StateHash_runDraw(int32_t tpag, float x, float y, float ox, float oy, float xs,
                                                                              float ys, float a, uint32_t c, float al) {
     if (g_originalVtable == nullptr) return;
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+    if (OFFDRAW_SKIP_DRAW(tpag, x, y, xs, ys) || g_dhDepth != 0) return;
+    const float f[8] = {x, y, ox, oy, xs, ys, a, al};
+    uint32_t v[11] = {1, (uint32_t) tpag};
+    for (int i = 0; 7 > i; i++) v[2 + i] = shRunBits(f[i]);
+    v[9] = c;
+    v[10] = shRunBits(f[7]);
+    uint64_t h = g_drawHash;
+    for (int i = 0; 11 > i; i++) h = mix64(h, v[i]);
+    g_drawCalls++;
+    g_drawHash = h;
+#else
     if (!OFFDRAW_SKIP_DRAW(tpag, x, y, xs, ys)) { DH_BEGIN(1); DH_I(tpag); DH_F(x); DH_F(y); DH_F(ox); DH_F(oy); DH_F(xs); DH_F(ys); DH_F(a); DH_I(c); DH_F(al); DH_END(); }
+#endif
 }
 #endif

@@ -25285,6 +25285,47 @@ FreewinsKeptMap freewinsKeptMaps[2] __attribute__((section(".bss.freewins_r5_lat
 // (nm -S). It keeps its slot, so that nothing after it moves: the padding is subsection 1 of its own section, after its
 // code and literal pool, outside its symbol size (as Runner_destroyInstance's in runner.c; proven by
 // tools/analysis/check_simplefix_layout.py).
+// colexact: section-relative .org retains that 1,588 B extent as the corrected body changes size.
 #if defined(CTRPORT_LAYERFIX_RELEASE_LAYOUT) && defined(CTRPORT_BBOX_ROUND) && defined(__3DS__) && defined(__GNUC__)
-__asm__(".pushsection .text.Collision_computeBBox,\"ax\",%progbits\n.subsection 1\n.space 592\n.popsection\n");
+__asm__(".pushsection .text.Collision_computeBBox,\"ax\",%progbits\n.subsection 1\n.org 1588, 0\n.popsection\n");
+#endif
+
+#if defined(PLATFORM_3DS) && defined(__GNUC__) && defined(ENABLE_WAD16)
+// creddodge lever 3 (UNDERTALE only): colline_gm14.h's Colline14_box (collision_line, collision_circle and the
+// distances) reads bbox_left, bbox_top, bbox_right and bbox_bottom of one instance in that order, nothing between the
+// reads, and VMBuiltins_getVariable computed the whole box for each (Collision_computeBBox, four edge roundings).
+// Here bbox_left computes it once, answers as getVariable's case does and keeps the other three answers (right and
+// bottom less one in compatibility mode); bbox_top, bbox_right and bbox_bottom of that instance, in that order, take
+// them. Any other read, order or instance, a struct, or a box-less instance (getVariable's x and y answers) is
+// getVariable itself.
+static struct {
+    Instance* inst;
+    uint32_t step; // 1, 2, 3: bbox_top, bbox_right, bbox_bottom come next
+    GMLReal side[3];
+} cdBoxMemo __attribute__((section(".bss.cdbox_late")));
+__attribute__((noinline, section(".text.late.cdbox"))) RValue cdBoxSide(VMContext* ctx, Instance* inst, int16_t builtinVarId,
+                                                                        const char* name, int32_t arrayIndex) {
+    uint32_t step = cdBoxMemo.step;
+    cdBoxMemo.step = 0;
+    if (inst != nullptr && inst->objectIndex != STRUCT_OBJECT_INDEX) {
+        if (builtinVarId == BUILTIN_VAR_BBOX_LEFT) {
+            Runner* runner = ctx->runner;
+            InstanceBBox bbox = Collision_computeBBox(runner, inst);
+            if (bbox.valid) {
+                bool compat = runner->collisionCompatibilityMode;
+                cdBoxMemo.inst = inst;
+                cdBoxMemo.side[0] = bbox.top;
+                cdBoxMemo.side[1] = compat ? bbox.right - 1 : bbox.right;
+                cdBoxMemo.side[2] = compat ? bbox.bottom - 1 : bbox.bottom;
+                cdBoxMemo.step = 1;
+                return RValue_makeReal(bbox.left);
+            }
+        } else if (step != 0 && cdBoxMemo.inst == inst &&
+                   builtinVarId == (step == 1 ? BUILTIN_VAR_BBOX_TOP : step == 2 ? BUILTIN_VAR_BBOX_RIGHT : BUILTIN_VAR_BBOX_BOTTOM)) {
+            cdBoxMemo.step = step == 3 ? 0 : step + 1;
+            return RValue_makeReal(cdBoxMemo.side[step - 1]);
+        }
+    }
+    return VMBuiltins_getVariable(ctx, inst, builtinVarId, name, arrayIndex);
+}
 #endif

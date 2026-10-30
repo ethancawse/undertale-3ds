@@ -33,6 +33,10 @@ engine/src/cli/state_hash_reach.inc
 engine/src/colline_gm14.c
 engine/src/colline_gm14.h
 engine/src/collision.h
+engine/src/colexact_bbox.h
+engine/src/z_colexact.c
+tools/buildcache/colexact_compile.py
+tools/buildcache/test_colexact_compile.py
 engine/src/collision_compat.c
 engine/src/collision_gm14.c
 engine/src/collision_gm14.h
@@ -184,6 +188,8 @@ platform/3ds/bench_placeholder.S.in
 platform/3ds/bench_placeholder.h.in
 platform/3ds/build.sh
 platform/3ds/build_id.cmake
+platform/3ds/smdh.cmake
+platform/3ds/check_cdreach_thunk.cmake
 platform/3ds/check_layerfix_inputs.cmake
 platform/3ds/check_memory_split.cmake
 platform/3ds/cia/n3ds.rsf
@@ -305,6 +311,8 @@ platform/3ds/source/ctr_inputlate_keys.h
 platform/3ds/source/z_dodgefront.c
 platform/3ds/source/z_textfront.c
 platform/3ds/source/z_writerfront.c
+platform/3ds/source/z_trailfront.c
+platform/3ds/source/z_itemfront.c
 platform/3ds/source/z_inputlate.c
 platform/3ds/source/ctr_lab.c
 platform/3ds/source/ctr_lab.h
@@ -821,6 +829,8 @@ platform/3ds/source/ctr_pacer_policy.h
 # utsfx: the sound plan runtime
 platform/3ds/source/z_utsfx.c
 engine/src/z_utflames_wfall.c
+engine/src/z_asgborder.c
+engine/src/z_evguard.c
 # Ordered tile source plans (public engine code and builder, no generated assets)
 engine/src/runner_tile_plan.inc
 engine/src/utold_tile_assets.h
@@ -867,6 +877,9 @@ platform/3ds/source/z_frametrace.c
 platform/3ds/source/ctr_hintpos.c
 # drresid: its builder (build.sh names it, and runs it for DELTARUNE New only), and its source (compiled empty here)
 platform/3ds/source/z_drresid.c
+# flowstream: plan tiles evicted in play come back in the background (UNDERTALE Old; compiled empty elsewhere)
+platform/3ds/source/z_flowstream.c
+platform/3ds/source/z_flowdiag.c
 # utold partial sprites: draw_sprite_part's partial-tile path (both games)
 platform/3ds/source/ctr_renderer_parts.inc
 
@@ -908,3 +921,15 @@ tools/release/builder/sfx_encoder.py
 tools/buildcache/romfs.py
 tools/buildcache/test_romfs.py
 engine/src/z_utexact_alarm.h
+
+# utbugs4 virtual window position (empty implementation in DELTARUNE)
+platform/3ds/source/ctr_utwindow.h
+platform/3ds/source/z_utwindow.c
+tools/analysis/utwindow_compile.py
+tools/release/test_smdh_metadata.py
+
+# fpsbox: displayed-frame sampler and transparent menu underlay (both games).
+platform/3ds/source/ctr_fpsbox.c
+platform/3ds/source/ctr_fpsbox.h
+tools/buildcache/fpsbox_compile.py
+tools/buildcache/test_fpsbox_compile.py

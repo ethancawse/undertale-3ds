@@ -1783,7 +1783,7 @@ void CtrScreens_flushConsoles(void);
 // (the renderer's move): 50 columns on the top screen, 40 on the bottom. The menu's console stays on the bottom
 // screen. While the game is there, what it prints (the menu, a test's screens, as they open) goes to the top
 // screen's other buffer, unseen, and shows once the game has moved up for it.
-SCREENS_LATE void CtrScreens_moveConsoles(bool top) {
+SCREENS_LATE CTR_COLD_OS void CtrScreens_moveConsoles(bool top) {
     extern PrintConsole screensStats __asm__("statsConsole");
     extern PrintConsole screensLog __asm__("logConsole");
     extern PrintConsole screensMenu __asm__("menuConsole");
@@ -1843,7 +1843,7 @@ SCREENS_LATE bool CtrScreens_benchLaunched(void) {
 // bottom screen's while waiting for each frame (ctr_renderer.c's waitWithScreenshotNotice, which leaves an RGB8
 // screen alone), the same row and letters, across the 400 columns. The first paint keeps what it covers, and
 // !paint puts that back (the row is the stats' second line, which doesn't change).
-SCREENS_LATE void CtrScreens_screenshotNotice(bool paint) {
+SCREENS_LATE CTR_COLD_OS void CtrScreens_screenshotNotice(bool paint) {
     extern PrintConsole screensStats __asm__("statsConsole");
     static u16 saved[400 * 8] SCREENS_BSS;
     static const char message[20] SCREENS_RO = "Screenshot saved";
@@ -1941,11 +1941,21 @@ CtrLaunchArgs* CtrBenchIo_launch(void) { return &launch; }
 // no shipped file sets it; tests set bottom_mode = 2 in their files or with --ini, and keep the log.
 //
 // Here, late code only (platform/3ds/late_reserve.ld, "bootlog"; main's code and constants stay where they were):
-// - CtrLab_booted, which main calls once the consoles are set up and just before the boot header (argcrash's own
-//   guard may call it earlier, before the consoles: then nothing happens), reads Other screen as main's settings will
-//   (other_screen, or bottom_mode, the later line winning), from settings.ini and then the --ini lines. Unless it is Stats and log, the stats and log consoles print into
-//   the bottom screen's other buffer, never shown (the screen is single buffered for the consoles, so that buffer is
-//   free until the game takes the screen). The menu's console stays on the shown buffer: notices print there.
+// - CtrSdMigrate_run (z_sdmigrate.c, a stub since 2026-10-27), which main calls once the consoles are set up and
+//   before the log's first line, points the stats and log consoles at the bottom screen's other buffer, never shown
+//   (the screen is single buffered for the consoles, so that buffer is free until the game takes the screen). The
+//   menu's console stays on the shown buffer: notices print there. (Until 10-29 this waited for CtrLab_booted, after
+//   the log file opened: the game folder's two lines, which the log's opening prints again (z_gamedir.c), stayed on
+//   the bottom screen through the whole load with the log Off. Play-test 10-29: "even with logs off, i still
+//   saw boot logs for a few seconds while the game was starting".)
+// - CtrLab_booted, which main calls just before the boot header (argcrash's own guard may call it earlier, before the
+//   consoles: then nothing happens), reads Other screen as main's settings will (other_screen, or bottom_mode, the
+//   later line winning), from settings.ini and then the --ini lines. Stats and log points the consoles back at the
+//   shown buffer with what they printed so far, the same picture as printing there from the start.
+// - With the game on the bottom screen, the renderer moves the consoles to the top screen while it starts, before the
+//   first frame (ctr_renderer.c's screensMoveGame, CtrScreens_moveConsoles above). Still unseen, they then print into
+//   a buffer of their own (the top screen's other buffer is the menu console's there), freed at the first frame.
+//   (Also seen in the 10-29 Azahar proof: the log on the top screen from the renderer's start to the first frame.)
 // - The first CtrLog_setConsoleEnabled (the main loop's first frame, or a notice or out-of-memory screen before it)
 //   points them back at the shown buffer, without the boot's text unless it enables them (it doesn't with Off).
 // - A fatal error (CtrLog_emergencyKeepLink, from the error screens, before they print) points them back with the
@@ -1962,18 +1972,24 @@ CtrLaunchArgs* CtrBenchIo_launch(void) { return &launch; }
 #define BOOTLOG_LATE __attribute__((noinline, section(".text.late.bootlog")))
 #define BOOTLOG_RO __attribute__((aligned(4), section(".rodata.bootlog_in_text")))
 #define BOOTLOG_BSS __attribute__((section(".bss.late.bootlog")))
+// Once a run each, compiled for size on every target (on UNDERTALE Old, CTR_COLD_OS's flag; freebytes 10-29).
+#define BOOTLOG_OS __attribute__((optimize("Os")))
 
 void __real_CtrLab_booted(void);
 void __wrap_CtrLab_booted(void);
 void __real_CtrLog_setConsoleEnabled(bool enabled);
 void __wrap_CtrLog_setConsoleEnabled(bool enabled);
 void CtrBootlog_reveal(bool keepText);
+int CtrBootlog_hide(int status);
+void __real_CtrScreens_moveConsoles(bool top);
+void __wrap_CtrScreens_moveConsoles(bool top);
 
 static struct {
-    u16* hidden; // the bottom screen's buffer not shown, while the stats and log consoles print there
+    u16* hidden; // the bottom screen's buffer not shown (or one of their own), while the stats and log consoles print there
     u16* shown;
     u32 bytes;
     bool looked;
+    bool owned; // hidden is their own (malloc), after a move of the consoles
 #ifdef CTRPORT_PLAYER_SHOTS
     u8 capture; // 1 the boot, 2 the bottom screen all run
     bool legacy;
@@ -2012,9 +2028,45 @@ BOOTLOG_LATE static int bootlogLine(const char* line, int mode) {
 static void bootcapStart(void);
 #endif
 
-BOOTLOG_LATE void __wrap_CtrLab_booted(void) {
+// main's CtrSdMigrate_run, before the log's first line (the loading screen's, before the consoles, does nothing). It
+// returns the stub's status as given.
+BOOTLOG_LATE BOOTLOG_OS int CtrBootlog_hide(int status) {
     extern PrintConsole bootStats __asm__("statsConsole");
     extern PrintConsole bootLog __asm__("logConsole");
+    if (bootlog.looked || bootStats.frameBuffer == nullptr || gfxGetScreenFormat(GFX_BOTTOM) != GSP_RGB565_OES) return status;
+    u16 w = 0, h = 0;
+    u16* shown = (u16*) CtrPacer_shownFramebuffer(GFX_BOTTOM, GFX_LEFT, &w, &h);
+    u16* hidden = (u16*) CtrPacer_backFramebuffer(GFX_BOTTOM, GFX_LEFT);
+    gfxSetDoubleBuffering(GFX_BOTTOM, false); // the consoles' single buffer, as consoleInit left it
+    if (shown != nullptr && hidden != nullptr && hidden != shown && bootStats.frameBuffer == shown && bootLog.frameBuffer == shown) {
+        bootlog.bytes = (u32) w * h * 2u;
+        memset(hidden, 0, bootlog.bytes); // as consoleInit cleared the shown one
+        bootlog.shown = shown;
+        bootlog.hidden = hidden;
+        bootStats.frameBuffer = bootLog.frameBuffer = hidden;
+    }
+    return status;
+}
+
+// The renderer's move of the consoles (to the top screen with the game on the bottom one) while they print unseen:
+// they go on unseen there, into their own buffer, as large as the top screen's (the larger). Without the memory they
+// print where the move put them, as before.
+BOOTLOG_LATE BOOTLOG_OS void __wrap_CtrScreens_moveConsoles(bool top) {
+    extern PrintConsole bootStats __asm__("statsConsole");
+    extern PrintConsole bootLog __asm__("logConsole");
+    __real_CtrScreens_moveConsoles(top);
+    if (bootlog.hidden == nullptr) return;
+    if (!bootlog.owned) bootlog.hidden = (u16*) malloc((size_t) GSP_SCREEN_WIDTH * GSP_SCREEN_HEIGHT_TOP * 2u);
+    bootlog.owned = bootlog.hidden != nullptr;
+    if (!bootlog.owned) return;
+    bootlog.bytes = (u32) GSP_SCREEN_WIDTH * (top ? GSP_SCREEN_HEIGHT_TOP : GSP_SCREEN_HEIGHT_BOTTOM) * 2u;
+    memset(bootlog.hidden, 0, bootlog.bytes);
+    bootlog.shown = (u16*) bootStats.frameBuffer;
+    bootStats.frameBuffer = bootLog.frameBuffer = bootlog.hidden;
+}
+
+BOOTLOG_LATE BOOTLOG_OS void __wrap_CtrLab_booted(void) {
+    extern PrintConsole bootStats __asm__("statsConsole");
     extern __typeof__(launch) bootLaunch __asm__("launch");
     __real_CtrLab_booted();
     if (bootlog.looked || bootStats.frameBuffer == nullptr) return;
@@ -2030,28 +2082,21 @@ BOOTLOG_LATE void __wrap_CtrLab_booted(void) {
     for (int i = 0; bootLaunch.iniCount > i; i++) mode = bootlogLine(bootLaunch.ini[i], mode);
 #ifdef CTRPORT_PLAYER_SHOTS
     if (bootlog.capture) bootcapStart();
-    if (bootlog.legacy) return;
+    if (bootlog.legacy) mode = BOTTOM_MODE_CONSOLE;
 #endif
-    if (mode == BOTTOM_MODE_CONSOLE || gfxGetScreenFormat(GFX_BOTTOM) != GSP_RGB565_OES) return;
-    CtrLog_beginConsole();
-    u16 w = 0, h = 0;
-    u16* shown = (u16*) CtrPacer_shownFramebuffer(GFX_BOTTOM, GFX_LEFT, &w, &h);
-    u16* hidden = (u16*) CtrPacer_backFramebuffer(GFX_BOTTOM, GFX_LEFT);
-    gfxSetDoubleBuffering(GFX_BOTTOM, false); // the consoles' single buffer, as consoleInit left it
-    if (shown != nullptr && hidden != nullptr && hidden != shown && bootStats.frameBuffer == shown && bootLog.frameBuffer == shown) {
-        bootlog.bytes = (u32) w * h * 2u;
-        memset(hidden, 0, bootlog.bytes); // as consoleInit cleared the shown one
-        bootlog.shown = shown;
-        bootlog.hidden = hidden;
-        bootStats.frameBuffer = bootLog.frameBuffer = hidden;
+    if (bootlog.hidden == nullptr) return;
+    if (mode != BOTTOM_MODE_CONSOLE) {
+        logInfo(bootlogHidden);
+        return;
     }
+    CtrLog_beginConsole(); // the log's writer prints them now
+    CtrBootlog_reveal(true);
     CtrLog_endConsole();
-    if (bootlog.hidden != nullptr) logInfo(bootlogHidden);
 }
 
 // The consoles back on the shown buffer, with what they printed meanwhile (keepText) or without it. Once. With the
 // text it is an error's path (argcrash's handler among them), where the console's lock may never come: no lock then.
-BOOTLOG_LATE void CtrBootlog_reveal(bool keepText) {
+BOOTLOG_LATE BOOTLOG_OS void CtrBootlog_reveal(bool keepText) {
     extern PrintConsole bootStats __asm__("statsConsole");
     extern PrintConsole bootLog __asm__("logConsole");
     if (bootlog.hidden == nullptr) return;
@@ -2064,7 +2109,9 @@ BOOTLOG_LATE void CtrBootlog_reveal(bool keepText) {
         bootStats.frameBuffer = bootlog.shown;
     }
     if (bootLog.frameBuffer == bootlog.hidden) bootLog.frameBuffer = bootlog.shown;
-    if (!keepText) { // the boot's text gone from the other buffer too, should the screen ever show it
+    if (bootlog.owned) { // their own buffer, not freed on an error's path
+        if (!keepText) free(bootlog.hidden);
+    } else { // the boot's text gone from the other buffer too, should the screen ever show it
         memset(bootlog.hidden, 0, bootlog.bytes);
         GSPGPU_FlushDataCache(bootlog.hidden, bootlog.bytes);
     }

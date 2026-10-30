@@ -187,11 +187,11 @@ def plan_sd_copy(sd_root, product: products.Product, artifacts, game_folder, par
             it.skip = st.st_size == ss.st_size and abs(st.st_mtime - ss.st_mtime) <= FAT_SLACK
         except OSError:
             it.skip = False
-    check_copy_space(sd_root, items, cache_sets)
+    check_copy_space(sd_root, items, cache_sets, product=product)
     return items
 
 
-def check_copy_space(sd_root, items, cache_sets=()):
+def check_copy_space(sd_root, items, cache_sets=(), product=None):
     """Budget the complete staged set, allocation slack, caches, receipts and durable update metadata."""
     import texcache
     sizes, paths = [it.size for it in items], [it.dst for it in items]
@@ -201,6 +201,10 @@ def check_copy_space(sd_root, items, cache_sets=()):
             paths.append(cs.sd_dir + '/' + name)
     # A version receipt per data.win plus the final install record; reserve metadata even if no texture tool works.
     record_size = 4096 + sum(256 + len(path.encode('utf-8')) for path in paths)
+    previous = install_record.read(sd_root, product) if product is not None else None
+    if previous:
+        import json
+        record_size += len(json.dumps(previous, indent=2).encode('utf-8'))
     sizes += [4096] * sum(it.dst.endswith('/data.win') for it in items) + [record_size]
     need = sd_transaction.space_required(sizes, paths)
     free = shutil.disk_usage(sd_root).free
@@ -330,7 +334,7 @@ def copy_with_textures(sd_root, items, product, folder, work, parts=None, progre
             final = install_record.target(sd_root, name)
             if name not in explicit and final.is_file() and texcache.checked_digest(final) == texcache._digest(src):
                 staged.append(CopyItem(str(final), name, final.stat().st_size))
-        check_copy_space(sd_root, staged, sets)
+        check_copy_space(sd_root, staged, sets, product=product)
         removals = [plan.cs.sd_dir + '/' + name for plan in texcache.plan(sd_root, sets)
                     for name in plan.remove if not name.endswith('.part')]
         transaction.begin()
@@ -398,7 +402,7 @@ def sd_preview(sd_root, product, artifacts, folder, work, parts=None):
         os.path.join(sd_root, *item.dst.split('/'))) else 'Add' for item in items}
     if tool.ok:
         sets, problems = texcache.prepare(tool, product, folder, work, parts, log=lambda text: None)
-        check_copy_space(sd_root, items, sets)
+        check_copy_space(sd_root, items, sets, product=product)
         for plan in texcache.plan(sd_root, sets):
             if plan.keep:
                 continue
@@ -471,7 +475,7 @@ def instructions(product: products.Product, targets, outputs, sd_root=None,
                  saves_result: SaveCopyResult | None = None, save_result: SaveCopyResult | None = None,
                  delivery=None):
     saves_result = saves_result or save_result
-    where = sd_root or "sd:"
+    where = (sd_root or "sd:").replace("\\", "/").rstrip("/")
     steps = []
     if sd_root:
         steps.append("Eject the SD card and put it in your 3DS.")

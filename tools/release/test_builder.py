@@ -486,6 +486,18 @@ class Clock:
 
 
 class ProgressTest(unittest.TestCase):
+    def test_parallel_compile_percent_never_moves_backwards(self):
+        p = pipeline.Progress(products.PRODUCTS['undertale'], 'o3ds', Clock())
+        percentages, displayed = [], []
+        for percent in (80, 79, 80, 98, 100, 40):
+            p.feed('[%3d%%] Building C object fixture.c.obj\n' % percent)
+            percentages.append(p.percent)
+            displayed.append(p.completion())
+        self.assertEqual(percentages, [80, 80, 80, 98, 100, 100])
+        self.assertEqual(displayed, sorted(displayed))
+        p.feed('[100%] Building CIA fixture.cia\n')
+        self.assertEqual(p.activity, 'Making .cia')
+
     def test_stages_and_estimate(self):
         clk = Clock()
         p = pipeline.Progress(products.PRODUCTS["undertale"], "n3ds", clk)
@@ -504,10 +516,15 @@ class ProgressTest(unittest.TestCase):
         p.feed("[100%] Linking C executable undertale-3ds.elf\n")
         p.feed("built /w/src/build/3ds-undertale-n3ds/undertale-3ds-n3ds.3dsx (with AOT from /w)\n")
         self.assertEqual((p.stage, p.warnings, len(p.outputs)), (3, 1, 1))
+        p.feed("AOT:   skip gml_Script_x: entry missing or instruction analysis failed "
+               "before generation\n")                   # one function left to the interpreter, the build keeps AOT
         self.assertFalse(p.no_aot)
         p.feed("WARNING: building WITHOUT AOT: no UNDERTALE game data found.\n")
         self.assertTrue(p.no_aot)
         self.assertIn("left", pipeline.format_eta((100, 400)))
+        q = pipeline.Progress(products.PRODUCTS["deltarune"], "n3ds", clk)
+        q.feed("AOT: tools/aot/prepare.py failed (exit 1); aot=off builds without AOT\n")
+        self.assertTrue(q.no_aot)
 
     def test_support_log_filter(self):
         home = os.path.expanduser("~")
@@ -559,6 +576,40 @@ class FakeProc:
 
 
 class BuildTest(unittest.TestCase):
+    def test_missing_optional_cia_tools_delivers_fresh_3dsx_on_each_host(self):
+        for platform in ('win32', 'linux', 'darwin'):
+            for requested in (('3dsx', 'cia'), ('cia',)):
+                with self.subTest(platform=platform, requested=requested):
+                    self.tc.platform = platform
+                    b, _ = self.make(['[100%] y\n'], kinds=('3dsx', 'cia'), outputs=requested)
+                    # A prior successful CIA still present must never be delivered.
+                    lines = []
+                    b.on_line = lines.append
+                    arts, record = b.run()
+                    self.assertEqual([a.kind for a in arts], ['3dsx'])
+                    self.assertEqual(record['notices'], [pipeline.CIA_NOT_MADE])
+                    self.assertIn(pipeline.CIA_NOT_MADE, lines)
+                    self.assertIn(pipeline.CIA_NOT_MADE, Path(b.log_path).read_text())
+                    self.assertEqual(Path(arts[0].path).read_bytes(), b'3DSX' * 100)
+
+    def test_missing_3dsx_still_fails_without_cia_tools(self):
+        b, _ = self.make(['[100%] y\n'], kinds=(), outputs=('3dsx', 'cia'))
+        with self.assertRaisesRegex(pipeline.BuildFailed, 'Missing output'):
+            b.run()
+
+    def test_no_cia_was_built_but_the_3dsx_is_still_usable(self):
+        b, _ = self.make(['[100%] y\n'], outputs=('3dsx', 'cia'))
+        arts, record = b.run()
+        self.assertEqual([a.kind for a in arts], ['3dsx'])
+        self.assertEqual(record['notices'], [pipeline.CIA_NOT_MADE])
+
+    def test_available_cia_tools_deliver_both_requested_formats(self):
+        self.tc.makerom, self.tc.bannertool = '/fixture/makerom', '/fixture/bannertool'
+        b, _ = self.make(['[100%] y\n'], kinds=('3dsx', 'cia'), outputs=('3dsx', 'cia'))
+        arts, record = b.run()
+        self.assertEqual([a.kind for a in arts], ['3dsx', 'cia'])
+        self.assertEqual(record['notices'], [])
+
     def setUp(self):
         compiler = mock.patch.object(toolchain, 'compiler_details', return_value={
             'path': '/fixture/gcc', 'version': '16.1.0', 'target': 'arm-none-eabi'})
@@ -668,6 +719,17 @@ class BuildTest(unittest.TestCase):
         self.assertIn("The game code could not be prepared.", str(e.exception))
         self.assertTrue(b.cancelled)
 
+    def test_aot_function_skip_is_not_refused(self):
+        # DELTARUNE chapter 5: gmlaot interprets two functions it cannot analyse; the build has AOT (integrate21 stage73).
+        skip = "AOT:   skip gml_Script_x: entry missing or instruction analysis failed before generation\n"
+        b, _ = self.make([skip, "[100%] y\n"])
+        try:
+            b.run()
+        except pipeline.BuildFailed as e:
+            self.assertNotIn("The game code could not be prepared.", str(e))
+        self.assertFalse(b.progress.no_aot)
+        self.assertFalse(b.cancelled)
+
     def test_finished_without_aot_config_is_refused(self):
         b, _ = self.make(["[100%] y\n"], aot=False)
         with self.assertRaises(pipeline.BuildFailed) as e:
@@ -683,6 +745,7 @@ class BuildTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(e.exception.log_path))
 
     def test_missing_cia(self):
+        self.tc.makerom, self.tc.bannertool = "/fixture/makerom", "/fixture/bannertool"
         b, _ = self.make(["[100%] y\n"], outputs=("3dsx", "cia"))
         with self.assertRaises(pipeline.BuildFailed) as e:
             b.run()
@@ -844,6 +907,14 @@ class Art:
 
 
 class DeliverTest(unittest.TestCase):
+    def test_cia_instruction_paths_use_one_separator_on_every_host(self):
+        for root, expected in [('E:\\', 'E:/cia'), ('E:\\cards\\SD', 'E:/cards/SD/cia'),
+                               ('/media/card/', '/media/card/cia'), (None, 'sd:/cia')]:
+            with self.subTest(root=root):
+                text = deliver.instructions(products.PRODUCTS['undertale'], ['n3ds'], ['3dsx', 'cia'], root)
+                self.assertIn('from ' + expected + ' with FBI', text)
+                self.assertNotIn('\\', text)
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.game = game_folder(os.path.join(self.tmp, "game"))
@@ -1333,6 +1404,35 @@ class SaveImportTest(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------------------------------
 
 class CliTest(MusicFixtures):
+    def test_cli_missing_cia_tools_delivers_3dsx_and_only_its_instructions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = SteamTree(tmp)
+            sd = os.path.join(tmp, 'sd')
+            os.makedirs(os.path.join(sd, '3ds'))
+            tc = toolchain.Toolchain('/fixture', '/fixture/bash', [], [], [], None, None, None)
+            artifact = os.path.join(tmp, 'undertale-3ds-n3ds.3dsx')
+            write(artifact, b'3dsx')
+            original_verify = discover.verify_copy
+            class FakeBuild:
+                def __init__(self, *args, **kwargs):
+                    self.log_path = os.path.join(tmp, 'build.log')
+                def run(self):
+                    return [Art(artifact, '3dsx')], dict(target='n3ds', seconds=1,
+                        compiler_warnings=0, notices=[pipeline.CIA_NOT_MADE])
+            out = []
+            with mock.patch.object(app, 'probes_for', return_value=tree.probes()), \
+                    mock.patch.object(app.discover, 'verify_copy', side_effect=lambda g, f, p:
+                                      original_verify(g, f, p, allow_list=ALLOW)), \
+                    mock.patch.object(app.toolchain, 'detect', return_value=tc), \
+                    mock.patch.object(app.pipeline, 'Build', FakeBuild):
+                rc = app.cli(app.parse(['--cli', '--target', 'n3ds', '--cia', '--no-texprep',
+                    '--work', os.path.join(tmp, 'work'), '--sd', sd]), out=out.append)
+            self.assertEqual(rc, 0)
+            self.assertTrue(Path(sd, '3ds/undertale-3ds/undertale-3ds-n3ds.3dsx').is_file())
+            self.assertIn(pipeline.CIA_NOT_MADE, out)
+            self.assertIn('Homebrew Launcher', '\n'.join(out))
+            self.assertNotIn('with FBI', '\n'.join(out))
+
     def test_build_initialization_failure_is_a_plain_cli_refusal(self):
         verified = mock.Mock(accepted=True, message='fixture verified', result=mock.Mock(store='gog'))
         tc = mock.Mock(can_build=True, checks=[])
@@ -1456,6 +1556,22 @@ class CliTest(MusicFixtures):
 
 
 class GuiTest(unittest.TestCase):
+    def test_successful_3dsx_fallback_shows_notice_without_expanding_log(self):
+        tree = SteamTree(self.tmp)
+        app = self.gui.App(self.root, self.gui.Options(game='undertale',
+            work=os.path.join(self.tmp, 'work'), probes=tree.probes(), boring=True))
+        artifact = os.path.join(self.tmp, 'fixture.3dsx')
+        write(artifact, b'3dsx')
+        app.state.artifacts = [Art(artifact, '3dsx')]
+        app.state.outputs = ['3dsx', 'cia']
+        app.state.records = [dict(target='n3ds', seconds=1, notices=[pipeline.CIA_NOT_MADE])]
+        page = app.pages[5]
+        page.finished(None)
+        self.assertTrue(app.state.build_ok)
+        self.assertEqual(app.state.outputs, ['3dsx'])
+        self.assertIn(pipeline.CIA_NOT_MADE, page.status.cget('text'))
+        self.assertFalse(page.details.open)
+
     def setUp(self):
         import gui
         self.gui = gui

@@ -1,15 +1,18 @@
 // What is left of the SD folder move, and DELTARUNE's chapter check line (hashfix, 2026-10-27).
 //
-// Builds before 2026-10-25 kept a game in one shared folder, sdmc:/3ds/<old name>/<game>. This file used to move that folder to
-// CTRPORT_GAME_DIR (sdmc:/3ds/<game>-3ds) at a player's first launch, and in lab mode it read the old folder in place
-// ("borrowing", through a swapped sdmc device table and a wrap of fsMakePath). Decided 2026-10-27: drop the
-// old paths for both games and use only the new ones. The old folder is no longer
+// Builds before 2026-10-25 kept each game in a subfolder of the pre-10-25 shared folder. This file used to move that
+// folder to CTRPORT_GAME_DIR (sdmc:/3ds/<game>-3ds) at a player's first launch, and in lab mode it read the old folder
+// in place ("borrowing", through a swapped sdmc device table and a wrap of fsMakePath). It was decided on 2026-10-27 that
+// both old game paths are dead and only the new ones are used. The old folder is no longer
 // read, moved or named: no build given outside the lab ever used it, and the lab consoles' cards were moved by
 // a script. Borrowing also hid every data.win receipt from the version check (libctru's
 // archive_getmtime builds its own path, past both rewrites), so every lab boot hashed every data.win
 // (docs/3ds-hardware.md, "Lab mode's old folder hid every data.win receipt").
 //
-// main() and the loading screen (z_loadscreen.c) still call CtrSdMigrate_run(ctrSdLegacyDir, 0777): it does nothing.
+// main() and the loading screen (z_loadscreen.c) still call CtrSdMigrate_run(ctrSdLegacyDir, 0777): it moves nothing.
+// main's call, right after the consoles are set up and before the log's first line, is where the boot's log starts
+// printing unseen unless Other screen is Stats and log (main.c's CtrBootlog_hide, freebytes 10-29); the loading
+// screen's, before the consoles, does nothing.
 // Its constants and buffers are gone; their late bss is kept as a placeholder (smSpare), so the late bss doesn't move.
 //
 // DELTARUNE only: the boot's check of the launcher and every chapter (BxN_init / BxO_init) and the check of a chapter
@@ -37,6 +40,7 @@
 #define SM_BSS_BYTES 0x110d
 
 int CtrSdMigrate_run(const char* legacyParent, int mode);
+int CtrBootlog_hide(int status);
 
 // Kept for main()'s and the loading screen's call; nothing reads it.
 const char ctrSdLegacyDir[] SM_CONST = "";
@@ -44,7 +48,7 @@ const char ctrSdLegacyDir[] SM_CONST = "";
 SM_LATE int CtrSdMigrate_run(const char* legacyParent, int mode) {
     (void) legacyParent;
     (void) mode;
-    return 0;
+    return CtrBootlog_hide(0); // 8 B as before (a move and the jump), so nothing after it moves
 }
 
 static struct {

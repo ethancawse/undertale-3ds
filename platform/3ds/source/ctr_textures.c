@@ -3419,39 +3419,48 @@ uint32_t CtrTextures_flowendLoads(void) {
 }
 
 #if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
-// ===[ utold c112dtm: rooms.dtm only at a room change or the reader's stop (UNDERTALE on Old 3DS) ]===
+// ===[ utold c112dtm rev 4: rooms.dtm only at the reader's stop (UNDERTALE on Old 3DS) ]===
 //
-// A changed record (finishRecording) is only marked here. Handed to the reader in play, its write (the cache folder,
-// the .tmp file, the write and the rename: 0.4-0.6 s on an Old 3DS's SD card) made the game thread's next SD read
-// wait behind it (c0r112's frame 60). The room change writes it instead, after the room's load and before its first
-// frame (one write per transition, whatever is pending), and so does the reader's stop (exit; DELTARUNE's chapter
-// change). The game thread writes it itself: it hands the record over above the reader's priority, takes it back and
-// writes it, so the room is ready only once the file is. One texture cache at a time: the mark is the live one's (it
-// is cleared before that cache's reader stops). Late code, named outside .text.late.*; one 4 B pointer.
+// A changed record (finishRecording) is only marked here and written once, when the reader stops (exit). The write
+// is the SD card's file-system metadata more than its data (the cache folder, the .tmp file, the close, the remove
+// and the rename): 64-219 ms on an Old 3DS for a file under 1 KB. On the reader in play it made the game thread's
+// next SD read wait (c0r112's frame 60); on the game thread at a room change (rev 3) it was the frame itself when the
+// room loaded in a few ms (207 ms entering Asriel's battle). The record only guides later runs' read-ahead: this run
+// keeps it in memory. A run that ends without a clean exit loses this run's new records; the next run plans those
+// rooms as before. One texture cache at a time: the mark is the live one's. Late code, named outside .text.late.*;
+// one 4 B pointer.
 #define UTOLD_DTM_TEXT __attribute__((noipa, section(".text.utolddtm_late")))
-// ctr_tile_reader.c's end.
-void CtrTileReader_writeNow(CtrTileReader* reader, void (*save)(CtrTextureCache*), CtrTextureCache* cache);
-void CtrRoomload_prefetchRoom(CtrTextureCache* cache, Runner* runner); // z_roomload.c (wrapped where it is)
-void CtrTextures_dtmPrefetch(CtrTextureCache* cache, Runner* runner); // ctr_argui.c's call
-
 static CtrTextureCache* utoldDtmDirty __attribute__((section(".bss.utolddtm_late")));
+static const char utoldDtmLog[] __attribute__((section(".rodata.utolddtm_late"))) = "rooms.dtm at the reader's stop: %u ms\n";
 
 UTOLD_DTM_TEXT static void utoldDtmMark(CtrTextureCache* cache) {
     if (cache->reader != nullptr) utoldDtmDirty = cache;
 }
 
-// The marked record, written now; then the reader stopping, if any (CtrTextures_stopWorker's call).
+// CtrTextures_stopWorker's call: the marked record handed to the stopping reader (CtrTileReader_writeFile), which
+// writes it before it is freed (its thread, or CtrTileReader_stop's own tail if the thread sees the stop first).
 UTOLD_DTM_TEXT static void utoldDtmWrite(CtrTileReader* stopping) {
     CtrTextureCache* cache = utoldDtmDirty;
-    if (cache != nullptr) {
-        utoldDtmDirty = nullptr;
-        CtrTileReader_writeNow(cache->reader, saveRoomMemory, cache);
-    }
+    utoldDtmDirty = nullptr;
+    if (cache != nullptr && cache->reader != stopping) cache = nullptr;
+    uint32_t start = (uint32_t) osGetTime();
+    // Called through an opaque pointer: saveRoomMemory keeps its own code where it is (one direct caller would be
+    // inlined here and leave its place in original text).
+    void (*save)(CtrTextureCache*) = saveRoomMemory;
+    __asm__("" : "+r"(save));
+    if (cache != nullptr) save(cache);
     CtrTileReader_stop(stopping);
+    if (cache != nullptr) logInfo(utoldDtmLog, (unsigned) ((uint32_t) osGetTime() - start));
 }
+#endif
 
-UTOLD_DTM_TEXT void CtrTextures_dtmPrefetch(CtrTextureCache* cache, Runner* runner) {
-    CtrRoomload_prefetchRoom(cache, runner);
-    utoldDtmWrite(nullptr);
+#if defined(CTRPORT_FLOWSTREAM_READ)
+// flowstream (z_flowstream.c; UNDERTALE Old): a plan tile evicted in play, installed from its page's finished refill
+// read, which holds it (the caller checks), and the read released. installTile and releaseRead only: no other tile
+// loads, and no fallback reads the SD card. False if it didn't install (no memory, damaged data): it loads when drawn.
+__attribute__((noinline, section(".text.flowstream_late"))) bool CtrTextures_flowstreamInstall(CtrTextureCache* cache, CtrPage* page, int32_t t) {
+    LoadResult result = installTile(cache, page, &page->tiles[t], CtrTileReader_tileData(page->read, t));
+    releaseRead(cache, page);
+    return result == LOAD_OK;
 }
 #endif

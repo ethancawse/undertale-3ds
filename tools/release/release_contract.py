@@ -177,3 +177,50 @@ def validate_source(descriptor, game, version, digest):
     if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit) or commit == '0' * 40:
         raise ValueError('This builder has no approved public source link yet. Use a published release builder.')
     return dict(descriptor, source_url=expected['repository'] + '/tree/' + commit)
+
+
+def build_environment(game, public_commit, env=None):
+    """Use the builder's Legal-page profile in candidate builds too.
+
+    The commit URL is validated by CMake; the displayed release tag and heading
+    then have identical bytes in both builds. This does not attest publication
+    or ownership: release-day approval still binds the public export and tag.
+    """
+    import os
+    if game not in ('undertale', 'deltarune'):
+        raise ValueError('Unknown release game')
+    if not isinstance(public_commit, str) or not re.fullmatch('[0-9a-f]{40}', public_commit) or public_commit == '0' * 40:
+        raise ValueError('Use the full corresponding-source commit')
+    result = dict(os.environ if env is None else env)
+    result['CTRPORT_RELEASE_SOURCE_URL'] = ('https://github.com/ethancawse/' + game + '-3ds/tree/' + public_commit)
+    return result
+
+
+def candidate_main(argv=None):
+    """Run the normal build command with the same Legal metadata as a release kit.
+
+    Example: python3 -I tools/release/release_contract.py --game undertale
+      --public-commit <40 hex> -- bash platform/3ds/build.sh undertale o3ds ...
+    Apply the same release export, game-derived assets, flags and compiler to
+    both arms. A development-profile binary is not a release identity baseline.
+    """
+    import argparse
+    p = argparse.ArgumentParser(description='Candidate build with the builder Legal-page profile')
+    p.add_argument('--game', choices=('undertale', 'deltarune'), required=True)
+    p.add_argument('--public-commit', required=True)
+    p.add_argument('--timeout', type=int, default=14400)
+    p.add_argument('command', nargs=argparse.REMAINDER)
+    o = p.parse_args(argv)
+    command = o.command[1:] if o.command[:1] == ['--'] else o.command
+    if not command or not 1 <= o.timeout <= 86400:
+        p.error('Supply a build command after -- and a timeout from 1 to 86400 seconds')
+    try:
+        env = build_environment(o.game, o.public_commit)
+    except ValueError as exc:
+        p.error(str(exc))
+    # Never inherit interactive input into a release build.
+    return subprocess.run(command, env=env, stdin=subprocess.DEVNULL, timeout=o.timeout).returncode
+
+
+if __name__ == '__main__':
+    raise SystemExit(candidate_main())

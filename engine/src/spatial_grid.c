@@ -1,6 +1,11 @@
 #include "spatial_grid.h"
 
 #include "collision.h"
+#if defined(__3DS__) && defined(ENABLE_WAD16) && !defined(USE_FLOAT_REALS)
+#define CTRPORT_COLEXACT_GRID_BBOX
+#define Collision_computeBBox Colexact_sharedBBox
+#endif
+#line 4
 #include "instance.h"
 #include "runner.h"
 #include "utils.h"
@@ -166,3 +171,15 @@ SpatialGridQuery SpatialGrid_prepareQuery(Runner* runner, GMLReal x1, GMLReal y1
     ret.queryId = queryId;
     return ret;
 }
+
+// colexact: the grid's bbox is now out of line in own late text. Keep the
+// original 2,384 B warm input slot, with a zero tail outside the function.
+#if defined(CTRPORT_COLEXACT_GRID_BBOX) && defined(CTRPORT_LAYERFIX_RELEASE_LAYOUT)
+// File asm is emitted first. Declare the preceding inputs in their original order
+// before entering the retained section, as runner_layerfix_layout.inc does.
+__asm__(".pushsection .text.requireMessageFormatted.constprop.0,\"ax\",%progbits\n.balign 4\n.popsection\n"
+        ".pushsection .text.SpatialGrid_create,\"ax\",%progbits\n.balign 4\n.popsection\n"
+        ".pushsection .text.SpatialGrid_free,\"ax\",%progbits\n.balign 4\n.popsection\n"
+        ".pushsection .text.SpatialGrid_removeInstance,\"ax\",%progbits\n.balign 4\n.popsection\n");
+__asm__(".pushsection .text.SpatialGrid_syncGrid,\"ax\",%progbits\n.subsection 1\n.org 2384, 0\n.popsection\n");
+#endif

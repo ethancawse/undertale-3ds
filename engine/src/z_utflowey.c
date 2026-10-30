@@ -67,13 +67,12 @@ enum {
 };
 
 // The three pipes (UTW_VARIANT 0, 1 and 2, by digest in gmlaot.py). Per row r (0 the first loop, 1 the second):
-//     offx = x +- sin((i - xa) / 3) * xm [pipe 0: -+ i * 2] [row 1: + op]
-//     offy = y + cos((i - ya) / yd) * ym + cos((i + siner) / 6) * 8
-//     offs = sin((siner + i * 4) / 6) * 2; offs = offs > 1 ? (offs - 1) / 3 : 0
-//     [pipe 2: offv = the rotation, from i and (row 1) the magic factors]
-//     if (global.soul_rescue < soul[r]) draw_sprite_ext(sprite_index, image_index, offx, offy, xs, ys, rot,
-//         <image_blend or blend2>, 1)
-//     else <grey: the same with 8421504, other scales, and for pipe 0 offy's wave * 4 and offs = 0>
+//     each segment's place is the pipe's anchor plus a sine wave across and a cosine wave down (the second wave
+//     driven by the pipe's running phase), offset per pipe and row; a small pulse from another sine sets the
+//     segment's extra scale; pipe 2 also turns each segment by an angle from its index (and, on row 1, the magic
+//     factors). The segment is drawn with draw_sprite_ext in the pipe's colour while the rescued soul count is
+//     below the row's, and otherwise in grey with other scales (pipe 0's grey row also with a bigger wave and
+//     no pulse).
 typedef struct {
     uint8_t n, xa, xm, ya, ym;
     uint8_t soul[2];
@@ -208,10 +207,10 @@ RValue UtFlowey_pipeDraw(VMContext* ctx, uint32_t k, AotFn generated, const int3
     const UtwPipe* pipe = &utwPipes[variant];
     RValue* S = &ctx->stack.slots[B];
 
-    // 0000-0024: if (frozen == 0) siner += 1.
+    // 0000-0024: the running phase steps by one unless the pipe is frozen.
     if (utwCmp(utwNum(p[UTW_FROZEN]), (GMLReal) 0, CMP_EQ)) utwStore(p[UTW_SINER], p[UTW_SINER]->real + (GMLReal) 1, GML_TYPE_VARIABLE);
 
-    // 0040-0058, when flash == 0: image_blend = 16777215 (the generated code's site); blend2 = 16777215 (Pop.v.i: a
+    // 0040-0058, when not flashing: both colours set to white (image_blend through the generated code's site; the other by Pop.v.i: a
     // real, gml 0).
     if (flash0) {
         utwInt(&S[0], 16777215, GML_TYPE_INT32);
@@ -230,23 +229,23 @@ RValue UtFlowey_pipeDraw(VMContext* ctx, uint32_t k, AotFn generated, const int3
         RValue* pOffy = p[row == 0 ? UTW_OFFY : UTW_OFFY2];
         RValue* pOffs = p[row == 0 ? UTW_OFFS : UTW_OFFS2];
         RValue* pOffv = p[row == 0 ? UTW_OFFV : UTW_OFFV2];
-        // i = 0 (Pop.v.i: a real, gml 0); while (i < n).
+        // The segment counter from 0 (Pop.v.i: a real, gml 0) up to the pipe's length.
         GMLReal i = 0;
         utwStore(p[UTW_I], i, GML_TYPE_DOUBLE);
         while (utwCmp(i, (GMLReal) pipe->n, CMP_LT)) {
             const GMLReal x = (GMLReal) inst->x, y = (GMLReal) inst->y;
-            // offx: row 0 x + sin((i - xa) / 3) * xm [pipe 0: - i * 2]; row 1 x - sin(...) * xm [pipe 0: + i * 2] + op.
+            // The segment's x: the sine wave across, its sign by row (pipe 0 also leans with the index; row 1 adds the offset).
             const GMLReal sx = utwSin((i - (GMLReal) pipe->xa) / (GMLReal) 3) * (GMLReal) pipe->xm;
             GMLReal offx = row == 0 ? x + sx : x - sx;
             if (variant == 0) offx = row == 0 ? offx - i * (GMLReal) 2 : offx + i * (GMLReal) 2;
             if (row == 1) offx = offx + op;
             utwStore(pOffx, offx, GML_TYPE_VARIABLE);
-            // offy = y + cos((i - ya) / yd) * ym + cos((i + siner) / 6) * 8.
+            // The segment's y: the two cosine waves down.
             const GMLReal cy = utwCos((i - (GMLReal) pipe->ya) / yd) * (GMLReal) pipe->ym;
             const GMLReal wave = utwCos((i + siner) / (GMLReal) 6);
             GMLReal offy = (y + cy) + wave * (GMLReal) 8;
             utwStore(pOffy, offy, GML_TYPE_VARIABLE);
-            // offs = sin((siner + i * 4) / 6) * 2; if (offs > 1) offs = (offs - 1) / 3; else offs = 0.
+            // The pulse: a sine of the phase and index, kept only above its threshold, scaled down.
             GMLReal offs = utwSin((siner + i * (GMLReal) 4) / (GMLReal) 6) * (GMLReal) 2;
             if (utwCmp(offs, (GMLReal) 1, CMP_GT)) {
                 offs = (offs - (GMLReal) 1) / (GMLReal) 3;
@@ -255,8 +254,8 @@ RValue UtFlowey_pipeDraw(VMContext* ctx, uint32_t k, AotFn generated, const int3
                 offs = 0;
                 utwStore(pOffs, offs, GML_TYPE_DOUBLE);
             }
-            // The rotation: pipes 0 and 1 i * rotM + rotK; pipe 2 offv, row 0 i * -12 - 330, i * -20 - 310 past 5,
-            // i * -22 - 310 past 7; row 1 i * 12 + magicfactor, i * 30 + magicfactor2, i * 20 + magicfactor3.
+            // The rotation: pipes 0 and 1 linear in the index (rotM, rotK); pipe 2 from the index in three bands (row 0),
+            // or the index plus the three magic factors (row 1).
             GMLReal rot;
             if (variant != 2) {
                 rot = i * (GMLReal) pipe->rotM[row] + (GMLReal) pipe->rotK[row];
@@ -280,8 +279,8 @@ RValue UtFlowey_pipeDraw(VMContext* ctx, uint32_t k, AotFn generated, const int3
             utwInt(&S[8], 1, GML_TYPE_VARIABLE);
             int call = row * 2;
             if (utwCmp(soul, (GMLReal) pipe->soul[row], CMP_LT)) {
-                // xs, ys: 1 + offs (an int push plus a real: gml 2); pipe 2 ys (1 + offs) - sin(i / 5) * 0.3 and row
-                // 1's xs -1 - offs. The colour: image_blend (row 0) or blend2 (row 1).
+                // The scales: one plus the pulse (an int push plus a real: gml 2); pipe 2's y scale also waves and its row
+                // 1's x scale is mirrored. The colour: the instance's blend (row 0) or the second one (row 1).
                 GMLReal xs = (GMLReal) 1 + offs, ys = xs;
                 uint8_t ysType = GML_TYPE_INT32;
                 if (variant == 2) {
@@ -296,7 +295,7 @@ RValue UtFlowey_pipeDraw(VMContext* ctx, uint32_t k, AotFn generated, const int3
             } else {
                 call++;
                 if (variant == 0) {
-                    // offy = y + cos((i - 45) / 3) * 50 + cos((i + siner) / 6) * 4; offs = 0; xs = ys = 1 + offs.
+                    // Pipe 0's grey row: a bigger wave down, no pulse, scales of one.
                     offy = (y + cy) + wave * (GMLReal) 4;
                     utwStore(pOffy, offy, GML_TYPE_VARIABLE);
                     offs = 0;
@@ -304,7 +303,7 @@ RValue UtFlowey_pipeDraw(VMContext* ctx, uint32_t k, AotFn generated, const int3
                     utwReal(&S[4], (GMLReal) 1 + offs, GML_TYPE_INT32);
                     utwReal(&S[5], (GMLReal) 1 + offs, GML_TYPE_INT32);
                 } else {
-                    // xs = 1 (pipe 2's row 1: -1), ys = 1: int pushes converted to Variable.
+                    // Scales of one (pipe 2's row 1 mirrored): int pushes converted to Variable.
                     utwInt(&S[4], variant == 2 && row == 1 ? -1 : 1, GML_TYPE_VARIABLE);
                     utwInt(&S[5], 1, GML_TYPE_VARIABLE);
                 }
@@ -312,7 +311,7 @@ RValue UtFlowey_pipeDraw(VMContext* ctx, uint32_t k, AotFn generated, const int3
                 utwInt(&S[7], 8421504, GML_TYPE_VARIABLE);
             }
             utwDraw(ctx, B, draw, (uint32_t) a[UTW_CALL0 + call]);
-            // i += 1.
+            // The next segment.
             i = i + (GMLReal) 1;
             utwStore(p[UTW_I], i, GML_TYPE_VARIABLE);
         }

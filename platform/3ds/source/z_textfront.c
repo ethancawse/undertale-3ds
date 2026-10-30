@@ -11,20 +11,10 @@
 // string_width and draw builtin (string copies, the Crisp path's glyph walk); the cast roll spent about half its Draw
 // time interpreting the scaled script and the substr calls it makes, and drew every line, on screen or not.
 //
-// What: the scaled script is
-//   display_scale = surface_get_width(application_surface) / view_wview[view_current];
-//   lineheight = round(string_height(" ") * yscale);
-//   eol = string_pos("#", text);
-//   yy = round(yy * display_scale) / display_scale;
-//   while (eol != 0) {
-//       line = substr(text, 1, eol); text = substr(text, eol + 1);   // the "#" stays on the end of line
-//       width = string_width(line) * xscale;
-//       line_x = round((xx - width / 2) * display_scale) / display_scale;
-//       draw_text_transformed(line_x, yy, line, xscale, yscale, 0);
-//       yy += lineheight; eol = string_pos("#", text);
-//   }
-//   width = string_width(text) * xscale;
-//   draw_text_transformed(round(xx - width / 2), yy, text, xscale, yscale, 0);
+// What: the scaled script works out the display scale (the application surface's width over the view's width)
+// and the line height (a space's height, scaled), snaps the y to the display's pixels, then splits the text at
+// each "#": each piece but the last is measured and drawn centred on xx with its x snapped to the display's pixels,
+// one line height further down each time; the last piece is drawn centred on xx with a plain rounded x.
 // and the centred one calls it with both scales int32 1. substr(s, p, n) is string_copy(s, p, n) and substr(s, p) the
 // rest from p; string_pos, string_copy and string_length all count UTF-8 code points, so on ASCII text (the only text
 // split here) a line is the bytes up to and including a "#" and the rest the bytes after it. The front does exactly
@@ -223,17 +213,17 @@ static TF_CODE RValue tfRun(VMContext* ctx, const RValue* args, const RValue* xs
     if (camera == NULL || camera->viewWidth == 0) return aotx_executeLoop(ctx);
     GMLReal sw = tfCall(ctx, TF_SURFACE_W, tfReal((GMLReal) runner->applicationSurfaceId));
     if (sw == (GMLReal) 0) return aotx_executeLoop(ctx);
-    // display_scale = surface_get_width(application_surface) / view_wview[view_current]
+    // The display scale: the application surface's width over the view's width.
     GMLReal scale = sw / (GMLReal) camera->viewWidth;
     TF_OPAQUE(scale);
-    // lineheight = round(string_height(" ") * yscale)
+    // The line height: a space's height, scaled and rounded.
     GMLReal lh = 0;
     if (multi) {
         GMLReal t = tfCall(ctx, TF_HEIGHT, tfString(tfSpace)) * tfNum(yscale);
         TF_OPAQUE(t);
         lh = tfCall(ctx, TF_ROUND, tfReal(t));
     }
-    // yy = round(yy * display_scale) / display_scale
+    // y snapped to the display's pixels.
     GMLReal t = tfNum(&args[1]) * scale;
     TF_OPAQUE(t);
     GMLReal y = tfCall(ctx, TF_ROUND, tfReal(t)) / scale;
@@ -253,8 +243,8 @@ static TF_CODE RValue tfRun(VMContext* ctx, const RValue* args, const RValue* xs
         }
         // The last line's x is round's; a "#" line's is round's over display_scale, whole when that is 1.
         if (!(xWhole && (e == NULL || scale == (GMLReal) 1) && tfOut(runner->renderer, line, y, yscale))) {
-            // width = string_width(line) * xscale; x = round((xx - width / 2) * display_scale) / display_scale, or
-            // round(xx - width / 2) for the last line
+            // The piece's scaled width, then its centred x snapped to the display's pixels, or
+            // plainly rounded for the last line
             GMLReal v = tfCall(ctx, TF_WIDTH, tfString(line)) * tfNum(xscale);
             TF_OPAQUE(v);
             v = v / (GMLReal) 2;
@@ -270,7 +260,7 @@ static TF_CODE RValue tfRun(VMContext* ctx, const RValue* args, const RValue* xs
                 x = x / scale;
                 TF_OPAQUE(x);
             }
-            // draw_text_transformed(x, yy, line, xscale, yscale, 0)
+            // The draw (draw_text_transformed, angle 0).
             RValue a[6];
             a[0] = tfReal(x);
             a[1] = tfReal(y);
@@ -281,7 +271,7 @@ static TF_CODE RValue tfRun(VMContext* ctx, const RValue* args, const RValue* xs
             (void) draw(ctx, a, 6);
         }
         if (e == NULL) break;
-        // yy += lineheight
+        // One line height down.
         y = y + lh;
         TF_OPAQUE(y);
         s = e + 1;

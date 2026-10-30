@@ -48,13 +48,9 @@ def target(root, name):
     return path
 
 
-def read(root, product):
-    """An existing record for update detection; corrupt/foreign records are untrusted."""
+def validated(record, product):
+    """Accept only bounded, explicit installer ownership; never infer it from a folder."""
     try:
-        path = target(root, relative_path(product))
-        if path.stat().st_size > MAX_BYTES:
-            return None
-        record = json.loads(path.read_bytes())
         if (record['schema'] != 1 or record['game'] != product.key
                 or not isinstance(record['version'], str) or not record['version']
                 or not isinstance(record['files'], list) or len(record['files']) > 50000):
@@ -73,13 +69,37 @@ def read(root, product):
         return None
 
 
+def parse(data, product):
+    """The same validation for a local record and bounded FTP read-back."""
+    if len(data) > MAX_BYTES:
+        return None
+    try:
+        return validated(json.loads(data), product)
+    except (ValueError, TypeError, RecursionError):
+        return None
+
+
+def read(root, product):
+    """An existing record for update detection; corrupt/foreign records are untrusted."""
+    try:
+        path = target(root, relative_path(product))
+        with path.open('rb') as stream:
+            return parse(stream.read(MAX_BYTES + 1), product)
+    except OSError:
+        return None
+
+
 def invalidate(root, product):
     """A previous completion record must not describe a partial new installation."""
     target(root, relative_path(product)).unlink(missing_ok=True)
 
 
-def write(root, product, names, cancelled=lambda: False):
-    """Inventory only this delivery's explicit paths; atomic replacement is its final write."""
+def write(root, product, names, cancelled=lambda: False, *, previous=None, present=None, removed=()):
+    """Hash new payloads and retain known, still-present prior files' expected hashes.
+
+    Retained files are not recopied or silently re-certified: their original
+    expected hashes still expose corruption to the install-record checker.
+    """
     entries = []
     seen = set()
     for name in sorted(set(names)):
@@ -100,9 +120,21 @@ def write(root, product, names, cancelled=lambda: False):
         if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
             raise OSError('Installer payload changed during inventory')
         entries.append(dict(path=name, size=after.st_size, sha256=digest.hexdigest()))
+    prior = validated(previous, product)
+    removed = {name.casefold() for name in removed}
+    if prior:
+        present = present or (lambda name: target(root, name).is_file())
+        for entry in prior['files']:
+            if cancelled():
+                raise InterruptedError('cancelled')
+            key = entry['path'].casefold()
+            if key not in seen and key not in removed and present(entry['path']):
+                entries.append(dict(path=entry['path'], size=entry['size'], sha256=entry['sha256']))
+                seen.add(key)
+    entries.sort(key=lambda entry: entry['path'])
     record = dict(schema=1, game=product.key, version=products.release_contract.read()['version'], files=entries)
     data = (json.dumps(record, indent=2) + '\n').encode('utf-8')
-    if len(data) > MAX_BYTES:
+    if len(entries) > 50000 or len(data) > MAX_BYTES:
         raise ValueError('Installer inventory too large')
     final = target(root, relative_path(product))
     temporary = target(root, relative_path(product) + '.part')

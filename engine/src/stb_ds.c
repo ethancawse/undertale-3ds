@@ -44,3 +44,33 @@ _Static_assert(offsetof(stbds_hash_index, slot_count) == 4 && offsetof(stbds_has
                offsetof(stbds_hash_index, tombstone_count) == 20 && offsetof(stbds_hash_index, storage) == 48,
                "freewins_maps.h hash index");
 #endif
+
+#if defined(PLATFORM_3DS) && defined(__GNUC__)
+// creddodge lever 2 (both games): a direct-mapped cache in front of the instance-by-id lookup. reach_gate.h's
+// RUNNER_INSTANCE_BY_ID calls cdHmgetKey with hmget's arguments, so each site's code is base's with one call target
+// changed. A slot keeps the entry index the last lookup of an id with those low bits found. It is used only when the
+// map's entry there still holds that id: keys are unique, and stb_ds keeps every entry below the length in the hash
+// index (put appends, delete moves the last entry into the hole, a rebuild or a realloc keeps the entries), so that
+// entry is the one stbds_hm_find_slot would find. A hit sets the header's temp as stbds_hmget_key does and returns
+// the same pointer; anything else is stbds_hmget_key itself.
+static uint32_t cdIdSlots[16] __attribute__((section(".bss.cdid_late")));
+extern void* cdIdFullGet(void* a, size_t elemsize, void* key, size_t keysize, int mode) __asm__("stbds_hmget_key");
+__attribute__((noinline, section(".text.cdid_late"))) void* cdHmgetKey(void* a, size_t elemsize, void* key,
+                                                                       size_t keysize, int mode) {
+    if (a != NULL && elemsize == 8 && keysize == 4 && mode == STBDS_HM_BINARY) {
+        int32_t id = *(const int32_t*) key;
+        uint32_t* slot = &cdIdSlots[(uint32_t) id & 15];
+        stbds_array_header* h = stbds_header(STBDS_HASH_TO_ARR(a, 8));
+        uint32_t i = *slot;
+        if (i < h->length - 1 && ((const int32_t*) a)[i * 2] == id) {
+            h->temp = (ptrdiff_t) i;
+            return a;
+        }
+        a = cdIdFullGet(a, elemsize, key, keysize, mode);
+        ptrdiff_t found = stbds_temp(STBDS_HASH_TO_ARR(a, 8));
+        if (found >= 0) *slot = (uint32_t) found;
+        return a;
+    }
+    return cdIdFullGet(a, elemsize, key, keysize, mode);
+}
+#endif

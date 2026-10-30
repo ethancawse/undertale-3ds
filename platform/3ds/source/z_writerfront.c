@@ -9,36 +9,16 @@
 // over 36 KiB of code lines: on the Old 3DS's 16 KiB instruction cache, 72-86% of a writer's time is fetch stalls
 // (freebies round 3: nx_lem's 12 writers 1.5-2.1 ms each, one Toriel box 6-8 ms).
 //
-// What: the bytecode, step for step, for one character at a time:
-//   myx = writingx; myy = writingy; halfsize = 0; n = 1;
-//   while (n <= stringpos) {
-//     ch = string_char_at(originalstring, n); myletter = "";
-//     if (ch == "^" && string_char_at(originalstring, n + 1) != "0") n += 1;
-//     else if (ch == "\\") { n += 1; ch = string_char_at(originalstring, n);
-//       R G W Y X B O L P p: mycolor = <colour>; E: n += 1; global.faceemotion = real(<char n>);
-//       F: n += 1; global.facechoice = real(<char n>); global.facechange = 1; S: n += 1;
-//       T: n += 1; "-": halfsize = 1; "+": halfsize = 0; (C M z * > and other T letters: the fallback) }
-//     else if (ch == "&") script_execute(<newline script>);      // myx = writingx; myy += vspacing
-//     else if (ch == "/") { halt = 1; (next "%": 2, "^" not before "0": 4, "*": 6); exit; }
-//     else if (ch == "%") (the fallback)
-//     else { myletter = string_char_at(originalstring, n); if (myletter == "^") n += 1;
-//       if (!vtext && myx > writingxend) script_execute(<newline script>);
-//       letterx = myx; offsetx = 0; offsety = 0; halfscale = 1;
-//       if (halfsize) { halfscale = 0.5; offsety += vspacing * 0.33; }
-//       if (global.typer == 18) letterx += <papyrus kerning before>;
-//       scr_setfont(myfont); draw_set_color(mycolor); angle = 0;
-//       if (shake > 38) { 39: direction += 10; 41, 42, 43: direction += k * n (k = 10, 20, 30);
-//         offsetx += hspeed; offsety += vspeed (43: hspeed * 0.7 + 10, vspeed * 0.7); 41-43: direction -= k * n;
-//         (40: only the offsets; any other: nothing) }
-//       else { offsetx += random(shake) - shake / 2; offsety += random(shake) - shake / 2; }
-//       display_scale = surface_get_width(application_surface) / view_wview[view_current];
-//       finalx = round((letterx + offsetx) * display_scale) / display_scale;
-//       finaly = round((myy + offsety) * display_scale) / display_scale;
-//       draw_text_transformed(finalx, finaly, myletter, htextscale * halfscale, vtextscale * halfscale, angle);
-//       letterx += spacing; letterx += <fnt 8 / fnt 9 kerning after>;
-//       if (halfsize) myx = round(myx + (letterx - myx) / 2); else myx = letterx; }
-//     n += 1;
-//   }
+// What: the bytecode's steps, in its order, for one character at a time. The writer starts at its first position and
+// walks the string up to the typed position. A caret before anything but 0 is skipped. A backslash escape sets the
+// colour, a face's emotion or choice (from the next character) or the half-size state, or skips one character;
+// take the fallback. An ampersand runs the newline script (back to the left edge, one line down). A slash halts the
+// writer (with the halt kind the next character gives) and ends the Draw; a percent sign takes the fallback.
+// Any other character is a letter: a new line comes first if it would pass the right edge; then its place, half
+// size and offset, the kerning before it (one typer's font), the font and colour, the shake (a random jitter, or for
+// shake values 39-43 a motion of their own), the place snapped to the display scale's pixels, the draw of the letter
+// with draw_text_transformed, the spacing and the kerning after it (two fonts), and the next letter's place
+// (halfway for half size). The front covers that
 // for vtext false and global.language "en" (otherwise the fallback). Every value is an RValue made as the interpreter makes
 // it: each Add, Sub, Mul and Div through vmArithNumbers / vmDivNumbers with the instruction's result type and behind an
 // empty asm statement (-ffast-math), each store through coerceIntStoreToRealInPlace with the instruction's type2 and
@@ -269,7 +249,7 @@ static WF_CODE void wfMotion(VMContext* ctx, const RValue* shake, const RValue* 
     if (s > 40) wfTurn(ctx, k, nv, VM_ARITH_SUB);
 }
 
-// The newline script's body for vtext 0: myx = writingx; myy = myy + vspacing.
+// The newline script's body for vtext 0: back to the left edge, one line down.
 static WF_CODE void wfNewline(RValue** sv) {
     RValue t;
     wfSet(sv[V_MYX], sv[V_WX], GML_TYPE_VARIABLE);
@@ -296,7 +276,7 @@ static WF_CODE void wfGlyph(VMContext* ctx, RValue** sv, RValue** gv, char lette
         wfOp(&oy, &oy, &t, VM_ARITH_ADD);
     }
     if (wfCmp(gv[G_TYPER], &wfK[K_18], CMP_EQ)) wfKern(&lx, wfKernPap, letter);
-    // scr_setfont(myfont) with language "en" is draw_set_font(myfont)
+    // The font script with language "en" just sets the writer's font (draw_set_font).
     wfCall1(ctx, &t, F_FONT, sv[V_FONT]);
     wfCall1(ctx, &t, F_COLOR, sv[V_COLOR]);
     if (wfCmp(sv[V_SHAKE], &wfK[K_38], CMP_GT)) {
@@ -305,7 +285,7 @@ static WF_CODE void wfGlyph(VMContext* ctx, RValue** sv, RValue** gv, char lette
         wfShake(ctx, &ox, sv[V_SHAKE]);
         wfShake(ctx, &oy, sv[V_SHAKE]);
     }
-    // display_scale = surface_get_width(application_surface) / view_wview[view_current]
+    // The display scale: the application surface's width over the view's width.
     RValue surf = {.real = (GMLReal) ctx->runner->applicationSurfaceId, .type = RVALUE_REAL, .gmlStackType = GML_TYPE_VARIABLE};
     wfCall(ctx, &t, F_SURFW, &surf, 1);
     wfOp(&ds, &t, vw, WF_DIV);
@@ -322,7 +302,7 @@ static WF_CODE void wfGlyph(VMContext* ctx, RValue** sv, RValue** gv, char lette
     if (wfCmp(sv[V_FONT], &wfK[K_8], CMP_EQ)) wfKern(&lx, wfKern8, letter);
     else if (wfCmp(sv[V_FONT], &wfK[K_9], CMP_EQ)) wfKern(&lx, wfKern9, letter);
     if (halfsize) {
-        // myx = round(myx + (letterx - myx) / 2)
+        // Half size: the next letter goes halfway, rounded.
         wfOp(&t, &lx, sv[V_MYX], VM_ARITH_SUB);
         wfOp(&t, &t, &wfK[K_2], WF_DIV);
         wfOp(&t, sv[V_MYX], &t, VM_ARITH_ADD);

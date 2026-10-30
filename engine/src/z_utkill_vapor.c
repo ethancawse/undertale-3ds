@@ -83,8 +83,8 @@ bool Utkill_codeIs(DataWin* dw, int32_t codeId, const uint32_t* words, uint32_t 
     return c == callCount;
 }
 
-// The dust pixel's Create, as Utkill_pixelCreate's shape: action_set_gravity(90, random(0.5) + 0.2);
-// action_set_hspeed(random(4) - 2).
+// The dust pixel's Create, as Utkill_pixelCreate's shape: a random fall strength (gravity pointing down) and a
+// random sideways speed.
 extern const uint32_t Utkill_pixelCreateWords[24];
 const uint32_t Utkill_pixelCreateWords[24] = {
     0xC0000000, 0x00000000, 0x3FE00000, 0x07500000, 0xD9020001, 0, 0xC0000000, 0x9999999A, 0x3FC99999, 0x0C500000,
@@ -194,26 +194,13 @@ static int32_t ukvAsciiLength(const char* s) {
 
 // The dust maker's Draw (ops: the 15 variables' IDs in first-use order, the 7 functions, the dust pixel's object, the
 // strings "0", "}", "~", "~"):
-//     dn = 1; ht_a = sprite_height - line * 2; ht_b = y + line * 2; ht_c = line * 2;
-//     if (dn == 1) draw_sprite_part_ext(sprite_index, image_index, 0, ht_c, wd, ht_a, x, ht_b, image_xscale,
-//                                       image_yscale, 0xFFFFFF, 1);
-//     if (finishedreading == 0) repeat (4) {
-//         ww = 0; mychar = "0";
-//         while (mychar != "}" && mychar != "~") {
-//             mychar = string_char_at(mydata, myread + 1);
-//             draw_set_color(0);
-//             if (ord(mychar) >= 84 && ord(mychar) <= 121) for (i = 0; i < ord(mychar) - 85; i += 1) ww += 2;
-//             draw_set_color(0xFFFFFF);
-//             if (ord(mychar) >= 39 && ord(mychar) <= 82) {
-//                 if (wd > 120 && spec == 0) { <one wide pixel: blk = instance_create(...); ...; with (blk) event_user(0)> }
-//                 else for (i = 0; i < ord(mychar) - 40; i += 1) { instance_create(x + ww, y + line * 2 + 2, <pixel>); ww += 2; }
-//             }
-//             myread += 1;
-//         }
-//         ww = 0; line += 1;
-//         if (mychar == "~") { finishedreading = 1; instance_destroy(); exit; }
-//         alarm[0] = 1 + myvapor;
-//     }
+//     Each call first draws the part of the sprite below the rows already turned to dust, in white at full alpha.
+//     While the dust is not finished it then reads up to four rows of the monster's dust data, one character at
+//     a time until a row's end mark: a character in one range skips that many pixel steps across, a character in
+//     another range makes that many dust pixels side by side on the row's line (a wide sprite makes one wide
+//     pixel object instead), and the draw colour is set to black and back to white around every character.
+//     After each row the next row begins further down the sprite; at the data's final mark the dust is finished
+//     and the maker destroys itself, otherwise its alarm is set again from its delay.
 // The wide case (a sprite over 120 pixels wide) is left to the generated function.
 RValue Utkill_vaporDraw(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* ops) {
     (void) k;
@@ -336,7 +323,7 @@ RValue Utkill_vaporDraw(VMContext* ctx, uint32_t k, AotFn generated, const int32
         }
     }
 
-    // dn = 1; ht_a = sprite_height - line * 2; ht_b = y + line * 2; ht_c = line * 2;
+    // The drawn part's flag, height, top on the screen and top in the sprite, from the row counter.
     ukvStore(pDn, ukvReal(1.0, GML_TYPE_DOUBLE));
     {
         RValue sh = VMBuiltins_getVariable(ctx, inst, BUILTIN_VAR_SPRITE_HEIGHT, "sprite_height", -1);
@@ -364,7 +351,7 @@ RValue Utkill_vaporDraw(VMContext* ctx, uint32_t k, AotFn generated, const int32
         UKV_OPAQUE(t);
         ukvStore(pHtC, t);
     }
-    // draw_sprite_part_ext(sprite_index, image_index, 0, ht_c, wd, ht_a, x, ht_b, image_xscale, image_yscale, 0xFFFFFF, 1)
+    // The draw of the sprite's undissolved part (draw_sprite_part_ext, its 12 arguments in order).
     {
         RValue a[12];
         a[0] = ukvReal((GMLReal) inst->spriteIndex, GML_TYPE_VARIABLE);
@@ -404,7 +391,7 @@ RValue Utkill_vaporDraw(VMContext* ctx, uint32_t k, AotFn generated, const int32
                 int32_t n = c - 40;
                 lastCount = n > 0 ? n : 0;
                 for (int32_t j = 0; j < n; j++) {
-                    // instance_create(x + ww, y + line * 2 + 2, <pixel>)
+                    // One dust pixel at this step of the row (instance_create).
                     RValue a[3];
                     a[0] = ukvReal((GMLReal) inst->x, GML_TYPE_VARIABLE);
                     RValue w = ukvReal(ww, GML_TYPE_VARIABLE);
@@ -437,7 +424,7 @@ RValue Utkill_vaporDraw(VMContext* ctx, uint32_t k, AotFn generated, const int32
         ukvCallDrop(ctx, ops[F_SETCOLOR], &colour, 1);
     }
     if (lastCount >= 0) {
-        // for (i = 0; ...; i += 1): i = 0 stores a real (an int store), each i += 1 a real typed Variable.
+        // The last loop's counter: its first store is a real (an int store), each later one a real typed Variable.
         ukvStore(pI, lastCount == 0 ? ukvReal(0.0, GML_TYPE_DOUBLE) : ukvReal((GMLReal) lastCount, GML_TYPE_VARIABLE));
     }
     ukvStore(pWw, ukvReal(0.0, GML_TYPE_DOUBLE));
@@ -459,7 +446,7 @@ RValue Utkill_vaporDraw(VMContext* ctx, uint32_t k, AotFn generated, const int32
     line.ownsReference = false;
     ukvStore(pLine, line);
     if (!finish || rows > 1) {
-        // alarm[0] = 1 + myvapor (the same value after every row that isn't the last).
+        // The alarm set again from the delay (the same value after every row that isn't the last).
         RValue v = ukvInt(1, GML_TYPE_INT16);
         RValue mv;
         vmWeakCopyInto(&mv, pMyvapor);
@@ -475,7 +462,7 @@ RValue Utkill_vaporDraw(VMContext* ctx, uint32_t k, AotFn generated, const int32
 }
 
 // The dust pixel's Create (ops: random, action_set_gravity, action_set_hspeed, then the constants 90, 4 and 2):
-//     action_set_gravity(90, random(0.5) + 0.2); action_set_hspeed(random(4) - 2);
+//     a random fall strength (gravity pointing down) and a random sideways speed.
 // A dust pixel's whole Create event: its arguments built and the builtins called as the generated code does it,
 // without the stack. The doubles 0.5 and 0.2 are written here: the shape's digest pins both whole (all 64 bits), so a
 // data.win with any other value there doesn't bind.

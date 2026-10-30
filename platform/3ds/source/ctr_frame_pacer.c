@@ -26,7 +26,7 @@
 // It doesn't wait for that frame's flips: the next frame's draws start at
 // once, and only its screen transfers wait in the GPU's queue until the
 // flips have been shown (and let go here, see CtrPacer_screenReady). Held
-// flips are let go from the top screen's vblank callback.
+// flips are let go from the game screen's vblank callback (pacebot, end).
 // A frame is still shown after its CPU and GPU time together, though.
 // Low input delay is invariant (decided 2026-10-28). A missed deadline
 // drops or extends that picture; it never arms an extra vblank for later
@@ -1084,3 +1084,127 @@ __attribute__((section(".text.frametrace_late"))) void CtrPacer_ftState(uint32_t
     LightLock_Unlock(&pace.lock);
 }
 #endif
+
+// ===[ pacebot: the game screen's vblanks (pacer, late code) ]===
+//
+// GSP shows a screen's present from that screen's own vblank: VBlank0 the top, VBlank1 the bottom (docs/3ds-hardware.md,
+// "The bottom screen flips on its own vblank"). With the game on the bottom screen the pacer keeps to VBlank1, so a
+// frame held for its slot's last vblank shows at the slot's end on the bottom screen as on the top. With the game on
+// top nothing here changes what runs. Link options in CMakeLists.txt; sections last in late_reserve.ld.
+// - C3D_FrameCounter(0) counts the game screen's vblanks: the pacer's vblankCount (slots, holds, forced releases at
+//   suspend and at the next frame, shown counts) and every other caller's (the FPS counters, the Rosalina probe).
+// - The two slot waits (the only gspWaitForEvent(VBlank0, false) calls: every other caller passes true) wait on
+//   VBlank1.
+// - Held flips are let go from VBlank1's callback, chained ahead of the GPU queue's own (onVBlank1) on the GSP event
+//   thread that runs every callback, so it takes the pacer's lock as onVBlank0's release does and lets it go before
+//   the queue's callback runs (no lock is held across the two). The queue's callback counts this vblank after it, so
+//   the release reads the count it is about to make (count + 1: the pacer sets citro3d's rate to 60 at init, so the
+//   queue counts every vblank), as onVBlank0 counts before it lets the pacer flip. The top
+//   screen's release (CtrPacer_onVBlank's wrap above) stays as a no-op fallback: it finds nothing held past its vblank.
+//   Not the top screen's callback with the bottom count instead: on a New 3DS VBlank1's callback ran 0.03-0.16 ms
+//   after VBlank0's (pacer vbphase row, 10-14), so the two interrupts are near-simultaneous and a flip let go from
+//   VBlank0's callback could land on either side of VBlank1's (a vblank late or not); from VBlank1's own callback it
+//   always shows at the next bottom vblank.
+// - A screen change mid-game (the options menu) moves the schedule into the new screen's count: both count every
+//   vblank, so they differ by a constant.
+// - The next frame's forced release (CtrPacer_frameEnding) counts the game screen's flip, as the vblank's does.
+// - The game moved between the screens: its carried frame is waited for on its own screen's vblank.
+// - Suspend, sleep, HOME: citro3d's hook turns both callbacks off and on together (the VBlank1 one is chained again as
+//   it is set), and both counts stop together, as they did for the top screen's.
+
+#define PACEBOT_TEXT __attribute__((noinline, optimize("Os"), section(".text.pacebot_late")))
+#define PACEBOT_BSS __attribute__((section(".bss.pacebot_late")))
+
+static ThreadFunc pacebotQueueVBlank1 PACEBOT_BSS;
+
+u32 __real_C3D_FrameCounter(int id);
+u32 __wrap_C3D_FrameCounter(int id);
+PACEBOT_TEXT u32 __wrap_C3D_FrameCounter(int id) {
+    extern uint8_t CtrScreens_pacerGame;
+    return __real_C3D_FrameCounter(id == 0 ? (int) CtrScreens_pacerGame : id);
+}
+
+void __real_gspWaitForEvent(GSPGPU_Event id, bool nextEvent);
+void __wrap_gspWaitForEvent(GSPGPU_Event id, bool nextEvent);
+PACEBOT_TEXT void __wrap_gspWaitForEvent(GSPGPU_Event id, bool nextEvent) {
+    extern uint8_t CtrScreens_pacerGame;
+    if (id == GSPGPU_EVENT_VBlank0 && !nextEvent && CtrScreens_pacerGame != GFX_TOP) id = GSPGPU_EVENT_VBlank1;
+    __real_gspWaitForEvent(id, nextEvent);
+}
+
+void CtrScreens_pacerFlip(gfxScreen_t screen, bool hasStereo, uint32_t now);
+
+// releaseHeld with the game on the bottom screen, counting the game screen's flip (CtrScreens_pacerFlip), as the top
+// screen's vblank release above does. Called with the lock held.
+PACEBOT_TEXT static void pacebotRelease(uint32_t now, bool force) {
+    extern __typeof__(pace) pacebotPace __asm__("pace");
+    if (!pacebotPace.holding || (!force && 0 > (int32_t) (now - pacebotPace.holdUntil))) return;
+    pacebotPace.holding = false;
+    if (pacebotPace.heldTop) CtrScreens_pacerFlip(GFX_TOP, pacebotPace.heldTopStereo, now);
+    if (pacebotPace.heldBottom) CtrScreens_pacerFlip(GFX_BOTTOM, false, now);
+    pacebotPace.heldTop = pacebotPace.heldBottom = false;
+}
+
+PACEBOT_TEXT static void pacebotOnVBlank1(void* data) {
+    extern uint8_t CtrScreens_pacerGame;
+    extern __typeof__(pace) pacebotPace __asm__("pace");
+    if (CtrScreens_pacerGame != GFX_TOP && pacebotPace.ready) {
+        LightLock_Lock(&pacebotPace.lock);  // a bottom-to-top move may have rebased to the top clock meanwhile
+        if (CtrScreens_pacerGame != GFX_TOP) pacebotRelease(__real_C3D_FrameCounter(1) + 1u, false);
+        LightLock_Unlock(&pacebotPace.lock);
+    }
+    pacebotQueueVBlank1(data);
+}
+
+// The next frame's forced release of anything still held (CtrPacer_frameEnding's releaseHeld, which counts only the
+// top screen's flips) done first with the game on the bottom, so the game screen's forced flip is counted as the
+// game's; frameEnding then finds nothing held. (Under pacestress, a test control, it now comes before the stress sleep.)
+// The APT hook's forced release stays as it was: it invalidates the shown count right after.
+void __real_CtrPacer_frameEnding(void);
+void __wrap_CtrPacer_frameEnding(void);
+PACEBOT_TEXT void __wrap_CtrPacer_frameEnding(void) {
+    extern uint8_t CtrScreens_pacerGame;
+    extern __typeof__(pace) pacebotPace __asm__("pace");
+    if (CtrScreens_pacerGame != GFX_TOP) {
+        LightLock_Lock(&pacebotPace.lock);
+        pacebotRelease(__real_C3D_FrameCounter(1), true);
+        LightLock_Unlock(&pacebotPace.lock);
+    }
+    __real_CtrPacer_frameEnding();
+}
+
+void __real_gspSetEventCallback(GSPGPU_Event id, ThreadFunc cb, void* data, bool oneShot);
+void __wrap_gspSetEventCallback(GSPGPU_Event id, ThreadFunc cb, void* data, bool oneShot);
+PACEBOT_TEXT void __wrap_gspSetEventCallback(GSPGPU_Event id, ThreadFunc cb, void* data, bool oneShot) {
+    if (id == GSPGPU_EVENT_VBlank1 && cb != nullptr) {
+        pacebotQueueVBlank1 = cb;
+        cb = pacebotOnVBlank1;
+    }
+    __real_gspSetEventCallback(id, cb, data, oneShot);
+}
+
+// screensMoveGame's wait for the game's carried frame (ctr_renderer.c): that frame's own screen's vblank, where it waited
+// for the top screen's (gspWaitForVBlank); the same three words at the call, so screensMoveGame keeps its size.
+void CtrScreens_pacerWaitShown(gfxScreen_t screen, bool nextEvent);
+PACEBOT_TEXT void CtrScreens_pacerWaitShown(gfxScreen_t screen, bool nextEvent) {
+    __real_gspWaitForEvent(screen == GFX_BOTTOM ? GSPGPU_EVENT_VBlank1 : GSPGPU_EVENT_VBlank0, nextEvent);
+}
+
+// CtrPacer_setGameScreen (above, kept in its slot) with the schedule moved to the new screen's vblanks. ctr_renderer.c
+// calls it with nothing held (the GPU idle).
+void __wrap_CtrPacer_setGameScreen(gfxScreen_t screen);
+PACEBOT_TEXT void __wrap_CtrPacer_setGameScreen(gfxScreen_t screen) {
+    extern uint8_t CtrScreens_pacerGame;
+    extern __typeof__(pace) pacebotPace __asm__("pace");
+    LightLock_Lock(&pacebotPace.lock);
+    uint32_t shift = __real_C3D_FrameCounter((int) screen) - __real_C3D_FrameCounter((int) CtrScreens_pacerGame);
+    pacebotPace.slotStart += shift;
+    pacebotPace.holdUntil += shift;
+    pacebotPace.frameDue += shift;
+    pacebotPace.doneVblank += shift;
+    pacebotPace.displayDue += shift;
+    pacebotPace.checkDue += shift;
+    CtrScreens_pacerGame = (uint8_t) screen;
+    pacebotPace.lastShownValid = false;
+    LightLock_Unlock(&pacebotPace.lock);
+}

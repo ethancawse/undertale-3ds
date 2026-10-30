@@ -37,7 +37,7 @@
 //
 // The strips (swarm v3, utkill15). Undyne's neutral death and the Glad Dummy melt through obj_vaporized instead.
 // Its Alarm 0 makes a row of obj_blkpxltall strips each frame, and each strip's Create makes one pixel and keeps its
-// id: dt = instance_create(x, y, obj_whtpxlgrav). Each strip's Step is if (!instance_exists(dt)) instance_destroy().
+// id in dt. Each strip's Step destroys the strip once that pixel no longer exists.
 // The strips go in the swarm too (swCreateStrip, from the instance_create wrapper), as records in swSt beside the
 // pixels: the strip's id, then its pixel through swCreate with the strip as the caller (id + 1, the same Create),
 // then the strip's creator. What a strip's instance would hold never changes: it doesn't move, image_index stays 0
@@ -758,9 +758,9 @@ static int32_t swEventDigest(DataWin* dw, const ObjectEvent* ev, uint32_t subtyp
 
 // The strips (swarm v3): obj_blkpxltall exactly as UNDERTALE 1.08 has it (Steam and GOG), and obj_vaporized's Alarm 0
 // that makes them:
-//     Create:      dt = instance_create(x, y, obj_whtpxlgrav)
-//     Step:        if (!instance_exists(dt)) instance_destroy()
-//     User event 0: dt.image_xscale = image_xscale   (nothing calls it)
+//     Create: makes one dust pixel where the strip is and keeps its id (dt).
+//     Step: destroys the strip once that pixel no longer exists.
+//     User event 0: copies the strip's horizontal scale to its pixel (nothing calls it).
 // No parent or children, not solid or persistent, no physics; a sprite of one subimage (image_index stays 0) and no
 // Draw event (drawn as draw_self). Null when they can go in the swarm (swStripObject, swVapObject and swDtVar set).
 static const char* swStripBind(VMContext* ctx) SW_COLD;
@@ -922,7 +922,7 @@ static inline RValue swInt(int32_t v, uint8_t gmlType) {
 #define SW_OPAQUE(v) __asm__("" : "+m"(v))
 
 // The pixel's Create as z_utkill_vapor.c's Utkill_pixelCreate runs it (the code bound there):
-//     action_set_gravity(90, random(0.5) + 0.2); action_set_hspeed(random(4) - 2);
+//     a random fall strength (gravity pointing down) and a random sideways speed.
 static void swPixelCreate(VMContext* ctx) SW_LATE;
 static void swPixelCreate(VMContext* ctx) {
     RValue a[2];
@@ -1106,7 +1106,7 @@ static bool swStRoom(void) {
 
 // instance_create(x, y, obj_blkpxltall) from obj_vaporized's Alarm 0, its result dropped: builtin_instance_create and
 // Runner_createInstance in their order for the strip (its id, the object's count, the draw list marked), then its
-// Create, dt = instance_create(x, y, obj_whtpxlgrav), on swStripMake (the strip's id and position: all its Create
+// Create (one dust pixel where the strip is, its id kept in dt) on swStripMake (the strip's id and position: all its Create
 // reads) through swCreate (the pixel, id + 1, its creator the strip), then the strip's record (its creator the
 // alarm's instance; dt is its id + 1). False (nothing done) when the runner has to make it.
 static bool swCreateStrip(VMContext* ctx, RValue* args, RValue* out) {
@@ -1223,7 +1223,7 @@ void Utsw_animate(Runner* runner) {
     }
 }
 
-// The Step pass has run each strip's Step: if (!instance_exists(dt)) instance_destroy(). Its pixel was gone by then
+// The Step pass has run each strip's Step (the strip goes once its pixel is gone). Its pixel was gone by then
 // when it went at an Animation End this frame or at an Outside Room the frame before (nothing else ends one while it
 // is in the swarm), so the strip went (Runner_destroyInstance: no Destroy or CleanUp event, nothing holds its id).
 // A room change pending since Utsw_animate (which made the swarm instances then) blocks the Step events of the

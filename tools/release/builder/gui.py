@@ -2233,6 +2233,7 @@ class BuildPage(Page):
         self.packaging.pack_forget()
         if err is None:
             self.st.build_ok = True
+            self.st.outputs = pipeline.available_outputs(self.st.artifacts)
             self.intro.config(text="Build complete.")
             self.bar.config(value=100)
             self.eta.config(text="100%")
@@ -2241,6 +2242,8 @@ class BuildPage(Page):
                                                for r in self.st.records)]
             for a in self.st.artifacts:
                 lines.append("%s (%.1f MB)" % (a.path, a.size / 1e6))
+            for notice in dict.fromkeys(n for r in self.st.records for n in r.get('notices', [])):
+                lines.append(notice)
             self.status.config(text="\n".join(lines))
         else:
             self.failed = err

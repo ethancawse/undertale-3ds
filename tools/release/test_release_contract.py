@@ -259,3 +259,32 @@ class ReleaseContractTests(unittest.TestCase):
                 for model in ('n3ds', 'o3ds'):
                     stem = contract['package_stem'].format(game=game, model=model)
                     self.assertIn(stem + '|%s-port-o3ds.3dsx', result.stderr)
+
+class CandidateBuildProfileTests(unittest.TestCase):
+    def test_candidate_and_bound_builder_use_identical_legal_environment(self):
+        for game in ('undertale', 'deltarune'):
+            for commit in ('1' * 40, 'a' * 40):
+                descriptor = release_contract.source_descriptor(game, '1.0.0-beta.1', 'd' * 64)
+                descriptor['public_commit'] = commit
+                verified = release_contract.validate_source(descriptor, game, '1.0.0-beta.1', 'd' * 64)
+                original = {'PATH': 'keep-this', 'CTRPORT_RELEASE_SOURCE_URL': 'https://wrong.invalid/'}
+                env = release_contract.build_environment(game, commit, original)
+                self.assertEqual(env['CTRPORT_RELEASE_SOURCE_URL'], verified['source_url'])
+                self.assertEqual(env['PATH'], original['PATH'])
+                self.assertEqual(original['CTRPORT_RELEASE_SOURCE_URL'], 'https://wrong.invalid/')
+
+    def test_candidate_rejects_ambiguous_or_injected_identity(self):
+        for commit in ('', '0' * 40, 'deadbeef', 'A' * 40, 'a' * 40 + '\n', 'v1.0.0-beta.1'):
+            with self.subTest(commit=commit), self.assertRaises(ValueError):
+                release_contract.build_environment('undertale', commit, {})
+        with self.assertRaises(ValueError):
+            release_contract.build_environment('../other', '1' * 40, {})
+
+    def test_candidate_cli_reaches_child_with_release_profile_and_exit_code(self):
+        child = 'import os,sys; print(os.environ["CTRPORT_RELEASE_SOURCE_URL"]); raise SystemExit(7)'
+        result = subprocess.run([sys.executable, '-I', str(ROOT/'tools/release/release_contract.py'),
+            '--game', 'undertale', '--public-commit', 'a' * 40, '--', sys.executable, '-I', '-c', child],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertEqual(result.stdout.decode().strip(),
+            'https://github.com/ethancawse/undertale-3ds/tree/' + 'a' * 40)

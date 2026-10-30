@@ -53,7 +53,16 @@
 #define LK_WAIT_SECONDS 15
 
 extern void (*__system_retAddr)(void);
-Result __real_svcControlMemory(u32* addr_out, u32 addr0, u32 addr1, u32 size, MemOp op, MemPerm perm);
+#ifdef ENABLE_WAD16
+// usstop rev 5 (UNDERTALE): what this file passes on goes through ctr_audio_system.c's exit veto first.
+#define LK_NEXT_CONTROL CtrSvcControlMemory_usstop
+#else
+#define LK_NEXT_CONTROL __real_svcControlMemory
+#endif
+Result LK_NEXT_CONTROL(u32* addr_out, u32 addr0, u32 addr1, u32 size, MemOp op, MemPerm perm);
+// exitpanic (2026-10-30): what leavekeep's test passes on goes through the exit-wide keep below first, then on to
+// LK_NEXT_CONTROL. (Not a macro rename of __real_svcControlMemory: in DELTARUNE LK_NEXT_CONTROL is that name.)
+Result CtrSvcControlMemory_exitpanic(u32* addr_out, u32 addr0, u32 addr1, u32 size, MemOp op, MemPerm perm);
 Result __wrap_svcControlMemory(u32* addr_out, u32 addr0, u32 addr1, u32 size, MemOp op, MemPerm perm);
 void __real__exit(int status) __attribute__((noreturn));
 void CTR_EXIT_ONCE(int status) __attribute__((noreturn));
@@ -119,7 +128,8 @@ LK_CODE void CtrLeavekeep_rev2Keep(void) {
 // the heap: the owner counts itself into lkEntered, so __wrap_svcControlMemory's "a second thread is in the exit"
 // test skips libctru's MEMOP_FREE calls (with no return address, as for every keep). lkEntered only grows, so no
 // other thread can take the keep back (rev 2 overwrote lkKeepHeap: c26rev r10 F1). Returns whether the exit keeps
-// the heap; on any other thread, false and nothing changes.
+// the heap; on any other thread, false and nothing changes. (Rev 5: on a keep with no loader address, the caller
+// also sets ctr_audio_system.c's veto, which skips the frees even if a return address turns up after this.)
 // Its section is named outside .text.*: late_reserve.ld takes z_leavekeep.o's .text.* in leavekeep's place.
 __attribute__((noinline, section(".usstop_keep_text"))) bool CtrLeavekeep_ownerKeep(bool want) {
     u32 self = lkSelf();
@@ -137,7 +147,39 @@ LK_CODE Result __wrap_svcControlMemory(u32* addr_out, u32 addr0, u32 addr1, u32 
         return 0;
     }
     LK_COUNT_FREE(1);
-    return __real_svcControlMemory(addr_out, addr0, addr1, size, op, perm);
+    return CtrSvcControlMemory_exitpanic(addr_out, addr0, addr1, size, op, perm);
+}
+
+// exitpanic (2026-10-30; docs/3ds-hardware.md, "Freeing the heap at exit under a running thread panics the kernel"):
+// once a thread owns the exit (CTR_EXIT_ONCE), every heap free is skipped when the loader gave no return address, so
+// no thread of ours, and no kernel call made for one (an FS read into the heap, a wait), is left on unmapped memory.
+// libctru's __libctru_exit frees the linear heap and the heap, then calls __system_retAddr if set, then
+// svcExitProcess: with no loader address the process ends there (aptExit's own address, aptExitProcess, returns).
+// leavekeep's test above wants __system_retAddr NULL at the frees, but libctru's aptExit stores aptExitProcess there
+// for an application that is not chainloading (a CIA, a .3dsx on Azahar) and on every close the system ordered
+// (HOME > Close, the POWER button; apt.o's aptExit, the 0x600 "should close" flags), on any loader. So a DELTARUNE
+// crash or hang leave left that way freed the heap under its running threads, and no normal exit kept it. The
+// kernel frees the process's memory when it ends the process. The loader's address is recorded at the first call
+// (libctru's __libctru_init sets __system_retAddr before __system_allocateHeaps' MEMOP_ALLOC, long before any
+// aptExit). Every call before the exit, and every exit to a loader's own address, is untouched. Its code and record
+// are named outside .text.* and .bss.* (this file's catch-alls) and placed last (late_reserve.ld), so no existing
+// address moves; leavekeep's wrap changes only its call target.
+// 0 before the first call, then 1: the loader gave no return address, 2: it gave one. Nobits spelled out, as
+// z_smalltext.c's BC_BSS ('@' starts an assembler comment, ending GCC's own flags).
+static u32 lkLoader __attribute__((section(".bss_exitpanic_late,\"aw\",%nobits @")));
+__attribute__((noinline, section(".exitpanic_text"))) Result CtrSvcControlMemory_exitpanic(u32* addr_out, u32 addr0,
+        u32 addr1, u32 size, MemOp op, MemPerm perm) {
+    u32 loader = lkLoader;
+    if (loader == 0) lkLoader = loader = 1u + (__system_retAddr != NULL);
+    if ((op & MEMOP_OP_MASK) == MEMOP_FREE && loader == 1u && !LK_OLD_EXIT &&
+        __atomic_load_n(&lkOwner, __ATOMIC_ACQUIRE) != 0) {
+#ifdef CTRPORT_EXITTRAIL
+        lkFrees[0]++; // skipped; leavekeep's wrap counted it as passed on
+        lkFrees[1]--;
+#endif
+        return 0;
+    }
+    return LK_NEXT_CONTROL(addr_out, addr0, addr1, size, op, perm);
 }
 
 void __real_CtrLab_poll(void);

@@ -466,6 +466,30 @@ def send(value, items, *, factory=ConsoleFTP, cancelled=lambda: False, progress=
         ftp.close()
 
 
+def read_install_record(ftp, product, cancelled=lambda: False):
+    """Read only bounded installer metadata from the already identified console."""
+    import install_record
+    path = remote_path(install_record.relative_path(product))
+    length = size(ftp, path)
+    if length is None or length > install_record.MAX_BYTES:
+        return None
+    chunks, count = [], 0
+    def take(block):
+        nonlocal count
+        check_cancel(cancelled)
+        count += len(block)
+        if count > install_record.MAX_BYTES:
+            raise TransferError('A file on the 3DS changed during the check. Send again: ' + path)
+        chunks.append(block)
+    try:
+        ftp.retrbinary('RETR ' + path, take, blocksize=BLOCK)
+    except ftplib.error_perm as exc:
+        if str(exc)[:3] in ('550', '553'):
+            return None
+        raise
+    return install_record.parse(b''.join(chunks), product)
+
+
 def send_product(value, product, artifacts, folder, work, parts=None, *, cancelled=lambda: False,
                  progress=lambda event: None, log=lambda message: None):
     """Use the ordinary destination-verified PC layout, including textures and receipts."""
@@ -475,7 +499,26 @@ def send_product(value, product, artifacts, folder, work, parts=None, *, cancell
     probe = connect(value)
     probe.close()
     saved = deliver.save_files(product, artifacts, folder, work, parts, cancelled=cancelled, log=log)
-    items = [deliver.CopyItem(str(p), p.relative_to(saved.root).as_posix(), p.stat().st_size)
-             for p in Path(saved.root).rglob('*') if p.is_file()]
-    send(value, items, cancelled=cancelled, progress=progress)
+    import install_record
+    ftp = connect(value)
+    try:
+        with friendly_errors():
+            previous = read_install_record(ftp, product, cancelled)
+            current = install_record.read(saved.root, product)
+            if current is None:
+                raise ValueError('Invalid installer inventory path')
+            names = [entry['path'] for entry in current['files']]
+            # Transfer invalidates these receipts for every data.win it checks.
+            removed = [str(PurePosixPath(name).parent / 'cache/data-version.txt')
+                       for name in names if PurePosixPath(name).name.casefold() == 'data.win']
+            def record_cancelled():
+                check_cancel(cancelled)
+                return False
+            install_record.write(saved.root, product, names, record_cancelled, previous=previous,
+                present=lambda name: size(ftp, remote_path(name)) is not None, removed=removed)
+            items = [deliver.CopyItem(str(p), p.relative_to(saved.root).as_posix(), p.stat().st_size)
+                     for p in Path(saved.root).rglob('*') if p.is_file()]
+            Transfer(ftp, cancelled=cancelled, progress=progress).send(items)
+    finally:
+        ftp.close()
     return saved
