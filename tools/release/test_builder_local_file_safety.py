@@ -199,6 +199,24 @@ class LocalSafetyTests(unittest.TestCase):
         self.assertEqual(changed.read_bytes(), b'PLAYER EDIT')
         self.assertIn(str(personal), '\n'.join(kept))
 
+    def test_a_later_tool_step_owns_what_it_adds_and_never_the_players_additions(self):
+        root = self.base/'devkitpro'
+        compiler, personal, library = (root/n for n in (
+            'devkitARM/bin/arm-none-eabi-gcc', 'projects/my-homebrew/only-copy.c', 'libctru/lib/libctru.a'))
+        cleanup.record_before(self.work, [root])
+        compiler.parent.mkdir(parents=True)
+        compiler.write_bytes(b'COMPILER')
+        cleanup.record_after(self.work, [root])
+        personal.parent.mkdir(parents=True)
+        personal.write_bytes(b'PLAYER DOCUMENT')
+        cleanup.record_before(self.work, [root])  # The same root's next step, as toolchain.run_step records it.
+        library.parent.mkdir(parents=True)
+        library.write_bytes(b'LIBRARY')
+        cleanup.record_after(self.work, [root])
+        deleted, kept = cleanup.remove(cleanup.plan(self.work), ['tools'])
+        self.assertEqual({Path(path).resolve() for path in deleted}, {compiler.resolve(), library.resolve()})
+        self.assertEqual(personal.read_bytes(), b'PLAYER DOCUMENT')
+
     def test_home_and_drive_root_are_refused_without_creating_a_lease(self):
         with mock.patch.object(Path, 'home', return_value=self.work):
             with self.assertRaisesRegex(pipeline.WorkLockError, 'home folder or a drive root'):

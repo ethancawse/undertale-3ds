@@ -130,6 +130,13 @@ def record_before(work, paths, category='tools'):
         if found is None:
             journal['entries'].append({'root': str(path), 'category': category, 'preexisting': path.exists(),
                                        'files': [], 'complete': False})
+        elif found.get('complete') and not found['preexisting'] and found['category'] != 'build':
+            # Another visit to a root this builder made. What is there now without a record was added by the
+            # player or another installer since, and stays theirs whatever this step goes on to write.
+            recorded = {f['path'] for f in found['files']}
+            added = {str(p) for p in files_under(path)} - recorded
+            if added - set(found.get('kept', [])):
+                found['kept'] = sorted(added | set(found.get('kept', [])))
     write_journal(work, journal)
 
 
@@ -163,14 +170,17 @@ def record_after(work, paths):
         if entry['category'] == 'build' and (entry.get('complete') or not root.exists()):
             continue  # Never adopt later player additions to an already recorded build area.
         previous = {f['path']: f for f in entry['files']}
+        kept = set(entry.get('kept', []))  # a set: a player's own packages can be tens of thousands of files
         for path in files_under(root):
             key = str(path)
             if key in previous and previous[key]['sha256'] != digest(path):
                 # Changed since our earlier install: a later user/other installer owns this file now.
                 previous.pop(key)
-                entry.setdefault('kept', []).append(key)
-            elif key not in entry.get('kept', []):
+                kept.add(key)
+            elif key not in kept:
                 previous[key] = {'path': key, 'bytes': path.stat().st_size, 'sha256': digest(path)}
+        if kept:
+            entry['kept'] = sorted(kept)
         entry['files'] = list(previous.values())
         entry['complete'] = True
     write_journal(work, journal)
