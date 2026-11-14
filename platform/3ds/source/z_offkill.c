@@ -1,13 +1,13 @@
-// offkill (offdraw; UNDERTALE only): early destroy of bullets that have left the view for good.
+// offkill (change offdraw; UNDERTALE only): early destroy of bullets that have left the view for good.
 //
 // Some of UNDERTALE's bullets fly on past the view and live on until a far line (the room's edge plus a margin, a
 // timer, the end of the turn), running their Step and Draw events the whole time. The builder lists the ones whose
-// PC code proves they can never come back or matter again (tools/aot/offkill.py lists the reasons) in
+// PC code proves they can never come back or matter again (tools/aot/offkill.py; change offdraw) in
 // romfs:/offkill.bin: per entry an object index, an axis (0 = x, 1 = y), a direction (+1 = right or down, -1 = left
 // or up) and a reach in pixels, the farthest any of its pixels can lie from its position plus twice the scene's
 // largest view shake. At the end of each frame (after Draw, from Utsw_handleRoomChange) an instance of a listed object
 // that is moving away along the axis and is farther than the reach past that edge of view 0 is destroyed without its
-// Destroy event (the gameplay-state rule, "Early destroy": only the early-destroyed instances differ). Without the file, nothing.
+// Destroy event (RULES.md, "Early destroy": only the early-destroyed instances differ). Without the file, nothing.
 
 #include "runner.h"
 
@@ -39,7 +39,7 @@ static const char okMode[] __attribute__((section(".rodata.offkill_in_text"))) =
 bool CtrOffdraw_offkillOff(void);
 #endif
 
-// Inactive for good (omegaflowey, GO 11-02, "Omega Flowey after the
+// Inactive for good (change omegaflowey, GO 11-02, "Omega Flowey after the
 // 2nd SOUL"). Some bullets save their state and load it back later; one that went inactive and invisible in between
 // stays an instance with its own "active" variable 0 until the end of the phase, and every frame it still runs the
 // collision pass against the heart (its event does nothing while inactive). The builder lists the objects whose PC
@@ -136,7 +136,7 @@ void OffKill_roomChange(Runner* runner) {
         hi[0] = lo[0] + (float) cam->viewWidth;
         hi[1] = lo[1] + (float) cam->viewHeight;
     }
-    // Each rule walks only its object's instances (pacer 10-31): every instance of runner->instances is in
+    // Each rule walks only its object's instances (change pacer 10-31): every instance of runner->instances is in
     // instancesByExactObject under its current object until the cleanup after its destroy (runner.c, "Draw passes
     // with no instance"), and a destroy changes no list. Position before speed: an instance in view reads no more.
     // (the lists are read per rule: hoisted, the pointer is kept across Runner_destroyInstance on the stack)

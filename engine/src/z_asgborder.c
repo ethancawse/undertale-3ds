@@ -8,7 +8,7 @@
 // text. A build without WAD 16 (DELTARUNE's) has none of it.
 #include "wad_versions.h"
 
-#if defined(ENABLE_WAD16)
+#if defined(ENABLE_WAD16) && defined(CTRPORT_AOT)
 
 #include "aot/vm_aot.h"
 #include "data_win.h"

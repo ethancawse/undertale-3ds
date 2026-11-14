@@ -754,9 +754,17 @@ BACKLIGHT_CODE void __wrap_CtrRenderer_requestPlayerScreenshot(struct Renderer* 
 }
 #endif
 
-// For ctr_rosalina.c's watcher thread (rosalina2): whether this app has the bottom backlight off, read atomically.
+// For ctr_rosalina.c's watcher thread (change rosalina2): whether this app has the bottom backlight off, read atomically.
 bool CtrScreens_bottomDark(void);
 __attribute__((noinline, section(".text.rosalina2_late"))) bool CtrScreens_bottomDark(void) {
     return (__atomic_load_n(&backlightsDark, __ATOMIC_ACQUIRE) & GSPLCD_SCREEN_BOTTOM) != 0;
 }
 #endif // CTR_SCREENS_SETTINGS_ONLY
+
+#if defined(ENABLE_WAD16) && !defined(CTR_SCREENS_SETTINGS_ONLY)
+extern u32 dimlightDarkMask __asm__("backlightsDark");
+Result CtrDimlight_lightsInit(u32 screen);
+__attribute__((noinline, noipa, section(".text.late.dimlight"))) Result CtrDimlight_backlightsInit(void) {
+    return CtrDimlight_lightsInit(__atomic_load_n(&dimlightDarkMask, __ATOMIC_ACQUIRE));
+}
+#endif

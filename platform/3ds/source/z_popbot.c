@@ -6,6 +6,11 @@
 // the dialogue's own list), and adds two transparent quads at the surface's corners. With those, presentDialogue's own fit puts the popup at its own
 // pixel on the 320x240 bottom screen, exactly where the game places it in its 320x240 view.
 //
+// Steps 5 and 6 (the elevators' panels, the True Lab's tape list, Snowdin's crossword, the gold panel, and one answer
+// a frame) are z_popbot2.c, appended after every other late input. This file stays as it was composed, apart from the
+// three calls into z_popbot2.c (each wrapper's first or last call): z_popbot2.c does the work and sets this file's
+// popup slots to -1 at every ask, so its own code below finds no popup and changes nothing.
+//
 // No new VRAM (the dialogue option's bottom target is the only target used), no allocation of its own, and no
 // .bss or .data: the state lives in the policy's unused block slots, inside the renderer. When a popup closes, the
 // recorder's array is freed, so the heap returns to what dialogue alone uses. With dialogue on the top screen
@@ -53,6 +58,10 @@ void __real_CtrDialogue_init(CtrDialoguePolicy* policy, const DataWin* dataWin);
 bool __real_CtrDialogue_allowed(const CtrDialoguePolicy* policy, Runner* runner);
 void CtrRenderer_chainDisplayInputlate(Renderer* renderer, const CtrDisplaySettings* settings);
 void CtrPopbot_setDisplay(Renderer* renderer, const CtrDisplaySettings* settings);
+// z_popbot2.c: each calls the real function (or the next link) itself.
+void CtrPopbot2_init(CtrDialoguePolicy* policy, const DataWin* dataWin);
+bool CtrPopbot2_allowed(const CtrDialoguePolicy* policy, Runner* runner);
+void CtrPopbot2_setDisplay(Renderer* renderer, const CtrDisplaySettings* settings);
 
 PB_CODE static bool pbAlive(Runner* runner, int32_t object, Instance** out) {
     Instance** list = runner->instancesByObject[object];
@@ -123,7 +132,7 @@ PB_CODE static void pbClose(uint8_t* renderer, CtrDialoguePolicy* policy) {
 }
 
 PB_CODE void __wrap_CtrDialogue_init(CtrDialoguePolicy* policy, const DataWin* dataWin) {
-    __real_CtrDialogue_init(policy, dataWin);
+    CtrPopbot2_init(policy, dataWin);
     if (policy->blockCount > PB_LIMIT) return;
     policy->blockObjects[PB_STATE] = 0;
     for (int32_t k = 0; PB_FAMILIES > k; k++) {
@@ -136,7 +145,7 @@ PB_CODE void __wrap_CtrDialogue_init(CtrDialoguePolicy* policy, const DataWin* d
 }
 
 PB_CODE bool __wrap_CtrDialogue_allowed(const CtrDialoguePolicy* constPolicy, Runner* runner) {
-    bool dialogue = __real_CtrDialogue_allowed(constPolicy, runner);
+    bool dialogue = CtrPopbot2_allowed(constPolicy, runner);
     // The renderer's own policy (renderer->dlg.policy), passed as const only by the declaration.
     CtrDialoguePolicy* policy = (CtrDialoguePolicy*) constPolicy;
     if (policy->blockCount > PB_LIMIT || policy->redirect == nullptr || runner->instancesByObject == nullptr) return dialogue;
@@ -180,6 +189,6 @@ PB_CODE void CtrPopbot_setDisplay(Renderer* renderer, const CtrDisplaySettings* 
     if (!settings->dialogueBottom && PB_LIMIT >= policy->blockCount && (policy->blockObjects[PB_STATE] & 1) != 0) {
         pbClose((uint8_t*) renderer, policy);
     }
-    CtrRenderer_chainDisplayInputlate(renderer, settings);
+    CtrPopbot2_setDisplay(renderer, settings);
 }
 #endif

@@ -73,7 +73,7 @@
 // its texels at even rows and columns as a 12x5 bitmap (fnt_curs variant 3); with the key on that bitmap is drawn
 // instead, one texel per screen pixel, at the screen pixel the sprite's top left is in, in the sprite's colour.
 //
-// The Crisp cards (round 18, playtest 10-25: Mettaton EX's "HAPPY BREAKTIME" card "looked broken"): with the Text part
+// The Crisp cards (round 18, maintainer 10-25: Mettaton EX's "HAPPY BREAKTIME" card "looked broken"): with the Text part
 // Crisp (key crisp_ut_dialogue), each frame of a card in the menu data (stmenu.py: its letters derived from the
 // player's data.win as half-size glyphs, no hand-drawn pixel) is drawn instead of the sprite, one texel per screen
 // pixel at the screen pixel the sprite's top left is in, opaque black where no letter is, in the draw's colour and
@@ -95,7 +95,7 @@
 // settings.ini with only the keys the display knows, so CtrArgui_saveEdits' chain writes crisp_carry back (if the file
 // had it) and the menu's lines after.
 //
-// DELTARUNE on New 3DS (sansfont round 3, playtest 10-26: "all new fonts approved for crisp mode"): the same code,
+// DELTARUNE on New 3DS (sansfont round 3, maintainer 10-26: "all new fonts approved for crisp mode"): the same code,
 // compiled through z_smalltext_dr.c (ST_DR_UNIT) with sections named smalltext_dr, linked last (late_reserve.ld), so
 // nothing merged before it moves. DELTARUNE has no Smoothing parts menu: the Text part is on (Recommended's choice) and
 // adds crisp_dr_dialogue (fnt_dotumche, the enemies' bubbles); fnt_comicsans (Sans) is the UNDERTALE remake, the same
@@ -204,6 +204,12 @@ void CTR_FONTVERDICTS_AFTER_SMALLTEXT(Renderer* renderer);
 #define __real_CtrArgui_saveEdits CtrArgui_chainSaveEditsCrispart
 void Crispart_drawTexture(Renderer* renderer, C3D_Tex* tex, const CaFrame* frame, float x, float y, uint32_t color, float alpha);
 #endif
+#if defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
+// UNDERTALE: battlesplit's links (z_battlesplit.c: battle_layout) come between smalltext and argui.
+#define __real_CtrArgui_override CtrArgui_chainOverrideBattlesplit
+#define __real_CtrArgui_saveEdits CtrArgui_chainSaveEditsBattlesplit
+#endif
+#line 193
 bool __real_CtrArgui_override(CtrDisplaySettings* settings, const char* line, CtrDisplayCaps caps);
 bool CtrArgui_chainOverrideSmalltext(CtrDisplaySettings* settings, const char* line, CtrDisplayCaps caps);
 void __real_CtrArgui_saveEdits(const CtrDisplaySettings* before, const CtrDisplaySettings* after, const char* path, CtrDisplayCaps caps);
@@ -513,10 +519,24 @@ static ST_LATE bool stTouchPc(const StFont* f, const uint8_t* a, int32_t ax, con
 static int32_t stBubbleClip(Runner* runner, const StFont* f, float pen); // bubbleclip (the file's end)
 static int32_t asrPcDy(Renderer* renderer, const StFont* f, float y, float py, int32_t dy);
 #define ST_GAP_KEEP 99 // stEvenLine, stEvenSame: on PC the two touch, so nothing moves
+#if defined(CTRPORT_LDMEMO) && defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
+// letterdraw's glyph-pair memo (the file's end): stCarry's touch loop and the Line adapters' calls (their targets
+// only). stEvenLine and stWordLine stay as the memo's fallback (no block), so the even gaps' section keeps its size.
+static bool stTouchNativeM(const StFont* f, const uint8_t* a, int32_t ax, const uint8_t* b, int32_t bx, int32_t dy);
+static int32_t stEvenLineM(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy);
+static int32_t stWordLineM(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy);
+#define ST_CARRY_TOUCH stTouchNativeM
+#define ST_EVEN_LINE stEvenLineM
+#define ST_WORD_LINE stWordLineM
+#else
+#define ST_CARRY_TOUCH stTouchNative
+#define ST_EVEN_LINE stEvenLine
+#define ST_WORD_LINE stWordLine
+#endif
 static int32_t stEvenLine(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy);
 static int32_t stWordLine(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy);
 static int32_t stEvenSame(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry);
-static int32_t stWordSame(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry); static int32_t stEvenLineTx(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy); static int32_t stWordLineTx(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy); static int32_t stEvenSameTx(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry); static int32_t stWordSameTx(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry);
+static int32_t stWordSame(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry); static int32_t stEvenLineTx(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy); static int32_t stWordLineTx(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy); static int32_t stEvenSameTx(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry); static int32_t stWordSameTx(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry); static int32_t stEvenLineTy(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy); static int32_t stEvenSameTy(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry); static int32_t stEvenLineTz(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy); static int32_t stBubbleClipZ(Runner* runner, const StFont* f, float pen);
 #line 474
 #endif
 #ifdef CTRPORT_BUBBLE_CHECK
@@ -526,7 +546,7 @@ static __attribute__((noinline)) void bckGlyph(Renderer* renderer, const StFont*
 // The native x of a whole-pixel glyph (entry g, pen in 640 space, nominal native x nx0) with carry spacing.
 static ST_LATE int32_t stCarry(Renderer* renderer, const StFont* f, const uint8_t* g, float pen, float y, int32_t nx0, bool spaceBefore) {
 #ifndef ST_DR_UNIT
-    int32_t bubbleShift = stBubbleClip(renderer->runner, f, pen);
+    int32_t bubbleShift = stBubbleClipZ(renderer->runner, f, pen);
 #endif
 #line 481
     int32_t frame = renderer->runner != nullptr ? renderer->runner->frameCount : 0;
@@ -578,11 +598,11 @@ static ST_LATE int32_t stCarry(Renderer* renderer, const StFont* f, const uint8_
     }
 #else
     if (line->prev != nullptr && !spaceBefore && (float) f->adv + 1.0f >= pen - line->pen) {
-        int32_t move = stEvenLineTx(line, g, (int32_t) pen, nx, dyPc, dy);
+        int32_t move = stEvenLineTz(line, g, (int32_t) pen, nx, dyPc, dy);
         if (move != ST_GAP_KEEP) {
             carry += move;
             nx += move;
-            for (int32_t k = 0; 2 > k && stTouchNative(f, line->prev, line->x, g, nx, dy); k++) {
+            for (int32_t k = 0; 2 > k && ST_CARRY_TOUCH(f, line->prev, line->x, g, nx, dy); k++) {
                 carry++;
                 nx++;
             }
@@ -592,7 +612,11 @@ static ST_LATE int32_t stCarry(Renderer* renderer, const StFont* f, const uint8_
         carry += move;
         nx += move;
     }
+#if defined(CTRPORT_LDMEMO) && defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
+    ST_SLOT_FILL(68); // the memo's touch call is 32 B shorter here (UNDERTALE Old only)
+#else
     ST_SLOT_FILL(36);
+#endif
 #endif
 #line 523
     line->carry = carry;
@@ -1080,7 +1104,7 @@ static ST_LATE bool stDraw(Renderer* renderer, const char* text, float x, float 
     else if (renderer->drawValign == 2) valignOffset = -(float) lineCount * lineStride;
     float cursorY = valignOffset - (float) font->ascenderOffset;
 #ifdef ST_CULL_INLINE
-    // cullcrisp (credfix, 2026-10-27): a string wholly above or below the view draws nothing, so its glyphs are
+    // cullcrisp (change credfix, 2026-10-27): a string wholly above or below the view draws nothing, so its glyphs are
     // neither carried nor blitted, as drawTextImpl skips such strings (the credits dodger draws ~190 names a frame,
     // most of them off screen). Its glyphs still take their shake slots, so later text in the frame shakes as before.
     bool out = false;
@@ -1310,7 +1334,7 @@ ST_LATE void __wrap_CtrRenderer_loadFontVerdicts(Renderer* renderer) {
 // ===[ soulshake: the Crisp soul's place tolerates the view offset's float error ]===
 // The soul and the cards add the view offset (stSurfaceOx/Oy), a float from the projection: Photoshop Flowey's intro
 // scrolls the view 478 -> 0 with the SOUL riding it, and oy came out as -478.00003 or -477.00006 on some frames, so a
-// SOUL on a whole place (900 - 478 = 422) floored to 421 and the Crisp SOUL hopped up 1 px on those frames (playtest,
+// SOUL on a whole place (900 - 478 = 422) floored to 421 and the Crisp SOUL hopped up 1 px on those frames (maintainer,
 // 2026-10-26). A 1/64 place allowance takes whole places back; a real fraction only ever moves by less than 1/64.
 __attribute__((noinline, section(".text_soulshake_crisp"))) static int32_t stHalfFloorView(float v) {
     return stHalfFloor(v + 1.0f / 64.0f);
@@ -1321,7 +1345,7 @@ __attribute__((noinline, section(".text_soulshake_crisp"))) static int32_t stHal
 // ===[ bubbleclip: a carried line stays inside its bubble ]===
 // Carry moves every later glyph of a line right (fnt_plain's 4 px glyphs at a 4.5 px advance gain about half a pixel
 // a letter), so a long line can end several pixels right of PC's: Alphys's date bubble "chance of a successful" ran
-// into the bubble's edge and tail (playtest, 2026-10-26). Option B: such a line gives the pixels back at its word
+// into the bubble's edge and tail (maintainer, 2026-10-26). maintainer picked B: such a line gives the pixels back at its word
 // gaps, and every letter keeps its gap. For a writer's glyph (the current instance has writingxend and spacing, and
 // vtext is off), the writer's lines are worked out once (per writer, string, place and surface x; a few writers kept)
 // from originalstring as obj_base_writer lays it out: each letter at myx, which moves on by spacing plus the font's
@@ -1349,9 +1373,10 @@ __attribute__((noinline, section(".text_soulshake_crisp"))) static int32_t stHal
 #define BC_LINES 8
 #define BC_COLS 32
 #define BC_GIVES 8   // the places a line gives pixels back at, at most (a line that needs more is left as it is)
-#define BC_SLOTS 3
+#define BC_SLOTS 16  // the writers a frame keeps plans for (asgorelong T1: bc.plan, then bcMore; Lemon Bread draws 12)
 #define BC_MARGIN 2  // native px of margin from the bubble's edge, at most (PC's own when it leaves less)
 #define BC_MINGAP 3  // native px a word gap keeps
+#define BC_SHAKE 2.0f // 640 px: a plan's bubble at most this from where the plan saw it (each axis) keeps the plan
 #define BC_FILE_MAX 4096u
 #define BC_MAGIC 0x42535444u // "DTSB"
 #define BC_KERN 112u         // a kerning entry: the font's name (16 chars, NUL padded), then int8 px for chars 32..127
@@ -1368,7 +1393,9 @@ typedef struct {
     uint8_t gives[BC_LINES];
     int16_t at[BC_LINES][BC_GIVES];
     int8_t px[BC_LINES][BC_GIVES];
-} BcPlan;
+    int16_t d256;      // bcMake's d in 1/256 px (INT16_MIN: out of range), in the tail padding (asgorelong, bcPlanFor)
+} BcPlan; static void bcMakeZ(Runner* runner, const StFont* f, BcPlan* p, const float* v, const char* text, float d); // crispread2 (the file's end)
+_Static_assert(sizeof(BcPlan) == 224, "d256 must stay in BcPlan's padding: bc and bcMore keep their sizes");
 static struct {
     const VMContext* vm; // the context the ids are from
     int32_t id[BC_VARS]; // varNameMap ids, -1 for none
@@ -1377,12 +1404,48 @@ static struct {
     const uint8_t* kern;
     bool read;
     uint32_t next;
-    BcPlan plan[BC_SLOTS];
+    BcPlan plan[3];    // plans 0-2 of BC_SLOTS (bcAt); 3 on are bcMore, below (asgorelong T1)
     int32_t frame;      // the last writer's frame and instance id, and its plan (nullptr: none, this frame)
     uint32_t inst;
     const BcPlan* last;
     float v[BC_VARS];   // its vars (myx and myy read per glyph)
 } bc BC_BSS;
+// asgorelong T1: a plan per writer drawn in a frame, up to BC_SLOTS. With 3 (bc.plan alone), Lemon Bread's 12 writers
+// missed every lookup and bcMake ran 12 times a frame. With 3 a plan was also remade at every burst of writers past
+// three, which hid that bcMake reads more than the lookup's key (writer, string hash, writingx, writingy, surface x):
+// a plan now lives its writer's whole life, so bcAux keeps the rest, and bcPlanFor remakes a plan when any of it
+// changes: the Smoothing menu's fixed-W and fixed-star settings (every plan), the font, the room, writingxend, spacing,
+// vspacing, the plan's bubble (gone, moved more than BC_SHAKE px, another sprite, scaled or inactive), or a bubble created since the plan
+// that the writer starts in (an instance id from nextInstanceId past the plan's; room instances keep the ids the room
+// gives them, below). What stays as with 3 slots for a writer's life: another bubble that was there before moving to
+// where the writer starts. The first glyph's pen offset (bcMake's d) is in the key too, to 1/256 px, but only for a
+// plan with a bubble that is not a motion line's, while that bubble is exactly where the plan saw it: the text then
+// moved against a still edge, as the many-writer groups' text does for a few frames when it appears (asgorelong d
+// key). A motion line's first line leaves d out in bcMake, and a shaken bubble (bcSameBubble 1: Mettaton's news, whose
+// bubble and text both shake) holds its plan whatever d does, so neither remakes every frame. Plans 3 on,
+// the bookkeeping and the functions are appended (late_reserve.ld's last BSS and text lines), named outside .bss.* and
+// .text.* like bc. The pad keeps .text_bubbleclip_late at its size before T1 (stBubbleClip is shorter with the lookup
+// in bcPlanFor), so every later late symbol keeps its address; never read.
+static BcPlan bcMore[BC_SLOTS - 3] __attribute__((section(".bss_asgorelong_late,\"aw\",%nobits @")));
+static struct {
+    uint32_t keys; // st.keys' fixed-W and fixed-star bits the plans were made with
+    struct {
+        const StFont* f;
+        uint32_t gen; // runner->nextInstanceId when the plan was made or last found with no new bubble
+        int32_t room;
+        float xend, sp, vsp;
+        uint32_t bubble; // the bubble bcMake picked (instance id; 0: none), its sprite and top left as bcMake saw them
+        int32_t sprite;
+        float l, t;
+    } p[BC_SLOTS];
+} bcAux __attribute__((section(".bss_asgorelong_late,\"aw\",%nobits @")));
+#define ASL_BCPAD 47 // words: stBubbleClip is 188 B shorter (Old and New, -Os)
+#define BC_FRESH __attribute__((noinline, section(".text_asgorelong_bc")))
+static BC_FRESH void bcClear(void);
+static BC_FRESH const BcPlan* bcPlanFor(Runner* runner, const StFont* f, uint32_t id, uint32_t hash, const float* v, float ox,
+                                        const char* text, float d);
+__attribute__((used, section(".text_asgorelong_bcpad"))) static const uint32_t bcPad[ASL_BCPAD] = {0};
+#line 1386
 
 // The bubble table's rows of sprite `sprite` (*rows of them: each the inner right edge's column, 0 for none), or nullptr.
 // The table is read at the first lookup (its own read: stReadRomfs's callers stay as they were).
@@ -1545,7 +1608,7 @@ static BC_LATE void bcMake(Runner* runner, const StFont* f, BcPlan* p, const flo
             }
             int32_t nx = nx0 + carry;
             if (prev != nullptr && (float) f->adv + 1.0f >= pen - prevPen) {
-                int32_t move = stEvenSameTx(f, prev, (int32_t) prevPen, prevX, g, (int32_t) pen, nx, carry);
+                int32_t move = stEvenSameTy(f, prev, (int32_t) prevPen, prevX, g, (int32_t) pen, nx, carry);
                 if (move != ST_GAP_KEEP) {
                     carry += move;
                     nx += move;
@@ -1663,7 +1726,7 @@ static BC_LATE int32_t stBubbleClip(Runner* runner, const StFont* f, float pen) 
             bc.id[i] = 0 > k ? -1 : vm->varNameMap[k].value;
         }
         bc.vm = vm;
-        memset(bc.plan, 0, sizeof(bc.plan));
+        bcClear();
         bc.frame = runner->frameCount - 1;
     }
     float* v = bc.v;
@@ -1681,21 +1744,7 @@ static BC_LATE int32_t stBubbleClip(Runner* runner, const StFont* f, float pen) 
             return 0;
         uint32_t hash = 2166136261u;
         for (const char* c = str->string; *c != '\0'; c++) hash = (hash ^ (uint8_t) *c) * 16777619u;
-        float ox = stSurfaceOx(runner->renderer);
-        BcPlan* p = nullptr;
-        for (int32_t i = 0; BC_SLOTS > i; i++) {
-            BcPlan* q = &bc.plan[i];
-            if (q->id == in->instanceId && q->hash == hash && q->x0 == v[BC_X0] && q->y0 == v[BC_Y0] && q->ox == ox) p = q;
-        }
-        if (p == nullptr) {
-            p = &bc.plan[bc.next++ % BC_SLOTS];
-            p->id = in->instanceId;
-            p->hash = hash;
-            p->x0 = v[BC_X0];
-            p->y0 = v[BC_Y0];
-            p->ox = ox;
-            bcMake(runner, f, p, v, str->string, pen - v[BC_MYX]);
-        }
+        const BcPlan* p = bcPlanFor(runner, f, in->instanceId, hash, v, stSurfaceOx(runner->renderer), str->string, pen - v[BC_MYX]);
         if (p->ok) bc.last = p;
     }
     if (bc.last == nullptr) return 0;
@@ -1707,6 +1756,150 @@ static BC_LATE int32_t stBubbleClip(Runner* runner, const StFont* f, float pen) 
         if (rel >= (float) bc.last->at[li][k]) shift -= bc.last->px[li][k];
     return shift;
 }
+
+// Plan i of BC_SLOTS (asgorelong T1).
+static inline BcPlan* bcAt(int32_t i) {
+    return 3 > i ? &bc.plan[i] : &bcMore[i - 3];
+}
+
+// No plans (a new VM's ids, or the settings bcMake reads changed).
+static BC_FRESH void bcClear(void) {
+    memset(bc.plan, 0, sizeof(bc.plan));
+    memset(bcMore, 0, sizeof(bcMore));
+}
+
+// Of the bubbles writingx, writingy in v is in (bcMake's test) with an instance id at least from, the one bcMake picks
+// (its rule: the nearest top left corner), and its top left in l, t; nullptr: none. bcEdges through its assembler name,
+// as bubbleread calls it (below): a call-graph edge from here changed GCC's order of bcEdges and bcKern in
+// .text_bubbleclip_late.
+const uint8_t* bcEdgesLate(Runner* runner, int32_t sprite, uint32_t* rows) __asm__("bcEdges");
+static BC_FRESH const Instance* bcFind(Runner* runner, const float* v, uint32_t from, float* l, float* t) {
+    DataWin* dw = runner->dataWin;
+    float x0 = v[BC_X0], y0 = v[BC_Y0], left = 0.0f, top = 0.0f;
+    const Instance* pick = nullptr;
+    for (ptrdiff_t k = 0; arrlen(runner->instances) > k; k++) {
+        const Instance* b = runner->instances[k];
+        uint32_t h;
+        if (from > b->instanceId || b->destroyed || !b->active || b->imageXscale != 1.0f || b->imageYscale != 1.0f || 0 > b->spriteIndex ||
+            bcEdgesLate(runner, b->spriteIndex, &h) == nullptr)
+            continue;
+        const Sprite* sp = &dw->sprt.sprites[b->spriteIndex];
+        float bl = b->x - (float) sp->originX, bt = b->y - (float) sp->originY;
+        if (bl > x0 || bt > y0 || x0 >= bl + (float) sp->width || y0 >= bt + (float) h || (pick != nullptr && left + top > bl + bt)) continue;
+        pick = b;
+        left = bl;
+        top = bt;
+    }
+    *l = left;
+    *t = top;
+    return pick;
+}
+
+// Whether an instance created since plan i (an id at least its gen) is a bubble that writingx, writingy in v is in, so
+// bcMake might pick another bubble; gen moves on to now.
+static BC_FRESH bool bcNewBubble(Runner* runner, int32_t i, const float* v) {
+    uint32_t gen = bcAux.p[i].gen;
+    if (gen == runner->nextInstanceId) return false;
+    bcAux.p[i].gen = runner->nextInstanceId;
+    float l, t;
+    return bcFind(runner, v, gen, &l, &t) != nullptr;
+}
+
+// The bubble bcMake picks for v into plan i's bcAux; none: bubble 0.
+static BC_FRESH void bcPick(Runner* runner, int32_t i, const float* v) {
+    const Instance* pick = bcFind(runner, v, 0u, &bcAux.p[i].l, &bcAux.p[i].t);
+    bcAux.p[i].bubble = pick != nullptr ? pick->instanceId : 0u;
+    bcAux.p[i].sprite = pick != nullptr ? pick->spriteIndex : -1;
+}
+
+// Whether plan i's bubble is still as bcMake saw it: there, active, unscaled, the same sprite, and its top left at most
+// BC_SHAKE px (640) from where it was then on each axis. A bubble that shakes keeps its plan, as base kept it:
+// Mettaton's news bubbles sit at their start place plus random(2) on each axis every frame, and a plan remade at each
+// new place gave a line's pixels back 1-2 px differently frame to frame while PC's text stays still (asgorelong
+// ASGT-2). A real move remakes it: the only code that moves a bubble that already exists makes the news battle's wide
+// bubble follow Mettaton at 7 px a frame, and its writer's writingx moves with it. Inclusive: x and y are floats, and
+// start + random(2) can round to exactly start + 2 (random(2) = 1.9999995 from 510 stores 512.0); the follow steps of
+// 2 px or less (Mettaton's hit shudder) still remake on writingx, which is in the key (asgorelong ASGT-4).
+// Returns 0: changed, moved past BC_SHAKE or gone (remake); 1: shaken, within BC_SHAKE but not exactly where it was
+// (keep, d left out); 2: exactly where it was, or no bubble (keep unless d changed; bcPlanFor).
+static BC_FRESH int bcSameBubble(Runner* runner, int32_t i) {
+    if (bcAux.p[i].bubble == 0u) return 2;
+    int key = (int) bcAux.p[i].bubble;
+    const Instance* b = hmget(runner->instancesById, key);
+    if (b == nullptr || b->destroyed || !b->active || b->imageXscale != 1.0f || b->imageYscale != 1.0f || b->spriteIndex != bcAux.p[i].sprite)
+        return 0;
+    const Sprite* sp = &runner->dataWin->sprt.sprites[b->spriteIndex];
+    float dl = b->x - (float) sp->originX - bcAux.p[i].l, dt = b->y - (float) sp->originY - bcAux.p[i].t;
+    if (!(-BC_SHAKE <= dl && dl <= BC_SHAKE && -BC_SHAKE <= dt && dt <= BC_SHAKE)) return 0;
+    return dl == 0.0f && dt == 0.0f ? 2 : 1;
+}
+
+// Writer id's plan for string hash, its vars v and surface x ox, made (bcMake: text, d) where there is none or what it
+// was made from changed (bcAux, above).
+#if defined(CTRPORT_LDPLAN) && defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
+// letterdraw's plan variants (the file's end; UNDERTALE Old): the body below is bcPlanForL, appended last in late text,
+// and bcPlanFor keeps its address and size as the call to it.
+#define BC_LDP __attribute__((noinline, section(".text_letterdraw_plan")))
+static BC_LDP bool bcVarSwap(Runner* runner, int32_t at, const float* v, float d);
+static BC_LDP void bcVarMade(int32_t at, float d);
+static BC_LDP const BcPlan* bcPlanForL(Runner* runner, const StFont* f, uint32_t id, uint32_t hash, const float* v, float ox,
+                                       const char* text, float d);
+static BC_FRESH const BcPlan* bcPlanFor(Runner* runner, const StFont* f, uint32_t id, uint32_t hash, const float* v, float ox,
+                                        const char* text, float d) {
+    ST_SLOT_FILL(720); // the old body's extent less the call
+    return bcPlanForL(runner, f, id, hash, v, ox, text, d);
+}
+#define BC_PLAN_FOR static BC_LDP const BcPlan* bcPlanForL
+#else
+#define BC_PLAN_FOR static BC_FRESH const BcPlan* bcPlanFor
+#endif
+#line 1776
+BC_PLAN_FOR(Runner* runner, const StFont* f, uint32_t id, uint32_t hash, const float* v, float ox,
+                                        const char* text, float d) {
+    uint32_t keys = st.keys & (1u << ST_KEY_FIX_W | 1u << ST_KEY_FIX_STAR);
+    if (keys != bcAux.keys) {
+        bcAux.keys = keys;
+        bcClear();
+    }
+    int32_t at = -1, still = 0;
+    float d256 = d * 256.0f;
+    int16_t dk = -32767.0f < d256 && d256 < 32767.0f ? (int16_t) d256 : INT16_MIN;
+    for (int32_t i = 0; BC_SLOTS > i; i++) {
+        const BcPlan* q = bcAt(i);
+        if (q->id == id && q->hash == hash && q->x0 == v[BC_X0] && q->y0 == v[BC_Y0] && q->ox == ox) at = i;
+    }
+    if (0 <= at && bcAux.p[at].f == f && bcAux.p[at].room == runner->currentRoomIndex && bcAux.p[at].xend == v[BC_XEND] &&
+        bcAux.p[at].sp == v[BC_SP] && bcAux.p[at].vsp == v[BC_VSP] && (still = bcSameBubble(runner, at)) != 0 &&
+        (still == 1 || bcAt(at)->ok != 1u || bcAt(at)->d256 == dk) && !bcNewBubble(runner, at, v))
+        return bcAt(at);
+#if defined(CTRPORT_LDPLAN) && defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
+    // kept but for d alone (its bubble exactly where it was): the variant made for this d, if one is kept
+    if (still == 2 && bcAt(at)->ok == 1u && bcAt(at)->d256 != dk && bcVarSwap(runner, at, v, d)) return bcAt(at);
+#endif
+#line 1794
+    if (0 > at) at = (int32_t) (bc.next++ % BC_SLOTS);
+    BcPlan* p = bcAt(at);
+    p->id = id;
+    p->hash = hash;
+    p->x0 = v[BC_X0];
+    p->y0 = v[BC_Y0];
+    p->ox = ox;
+    bcAux.p[at].f = f;
+    bcAux.p[at].gen = runner->nextInstanceId;
+    bcAux.p[at].room = runner->currentRoomIndex;
+    bcAux.p[at].xend = v[BC_XEND];
+    bcAux.p[at].sp = v[BC_SP];
+    bcAux.p[at].vsp = v[BC_VSP];
+    bcMakeZ(runner, f, p, v, text, d);
+    p->d256 = dk;
+#if defined(CTRPORT_LDPLAN) && defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
+    bcVarMade(at, d);
+#endif
+#line 1809
+    bcPick(runner, at, v);
+    return p;
+}
+#line 1560
 #ifdef CTRPORT_BUBBLE_CHECK
 // ===[ bubblecheck: test builds only (build.sh bubblecheck; release builds have none of it) ]===
 // Every Crisp glyph stDraw draws (any font the pack has, so a font added to the pack is checked with no change here;
@@ -2050,7 +2243,7 @@ static __attribute__((noinline)) void bckGlyph(Renderer* renderer, const StFont*
 #endif // !ST_DR_UNIT (bubbleclip)
 
 #ifndef ST_CULL_INLINE // UNDERTALE Old has cullcrisp inside stDraw (the layout event at the top)
-// ===[ cullcrisp (credfix, 2026-10-27): Crisp text wholly out of view draws nothing ]===
+// ===[ cullcrisp (change credfix, 2026-10-27): Crisp text wholly out of view draws nothing ]===
 // The renderer's drawTextImpl skips a string wholly above or below the view (the true ending's credits dodger draws
 // some 190 names a frame, most of them off screen), but stDraw carried and blitted every glyph of every string: in
 // Azahar Old that cost the dodger ~2.6 ms of CPU a frame against Smooth text. The outer table's text entries now ask
@@ -2195,7 +2388,7 @@ static __attribute__((noinline, section(".text.late.asrtext"))) int32_t asrPcDy(
 #endif
 
 #if defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
-// bubbleread (omegaflowey, GO 11-02): the bubble table is read at the room change, hidden in the load, not at
+// bubbleread (change omegaflowey, GO 11-02): the bubble table is read at the room change, hidden in the load, not at
 // its first lookup in a writer's Draw, where on the Old 3DS that RomFS read queued behind the audio loader's SD job
 // (73-99 ms at the Asgore battle's fade-in, docs/3ds-hardware.md). A link of CtrRenderer_loadFontVerdicts
 // (ctr_wrap_chain.h): the next link first, then bcEdges through its assembler name, which adds no call-graph edge, so
@@ -2329,13 +2522,13 @@ static ST_HUD_GAP int32_t stHudMove(const StFont* f, const uint8_t* a, int32_t a
 
 static ST_HUD_GAP int32_t stEvenLineTx(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy) {
     const StFont* f = line->font;
-    if (f->key != ST_HUD_KEY) return stEvenLine(line, b, bPen, bx, dyPc, dy);
+    if (f->key != ST_HUD_KEY) return ST_EVEN_LINE(line, b, bPen, bx, dyPc, dy);
     if (stTouchPc(f, line->prev, (int32_t) line->pen, b, bPen, dyPc)) return ST_GAP_KEEP;
     return stHudMove(f, line->prev, line->x, b, bx, dy, line->carry);
 }
 
 static ST_HUD_GAP int32_t stWordLineTx(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy) {
-    return line->font->key == ST_HUD_KEY ? 0 : stWordLine(line, b, bPen, bx, dyPc, dy);
+    return line->font->key == ST_HUD_KEY ? 0 : ST_WORD_LINE(line, b, bPen, bx, dyPc, dy);
 }
 
 static ST_HUD_GAP int32_t stEvenSameTx(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry) {
@@ -2346,5 +2539,540 @@ static ST_HUD_GAP int32_t stEvenSameTx(const StFont* f, const uint8_t* a, int32_
 
 static ST_HUD_GAP int32_t stWordSameTx(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry) {
     return f->key == ST_HUD_KEY ? 0 : stWordSame(f, a, aPen, ax, b, bPen, bx, carry);
+}
+#endif
+
+#if defined(ENABLE_WAD16) && !defined(ST_DR_UNIT) // UNDERTALE only, as crisphud above
+// ===[ crispread: Mettaton EX's letters kept apart (maintainer, 2026-11-08) ]===
+// Mettaton EX's bubbles (typers 51, 53 and 54) step fnt_plain at 8 px, under its 9 px advance, so its PC letters touch
+// and carry left them where they fell: 4-5 px glyphs at a 4 px step overlapped a column ("NO" read "ND", B sat on L).
+// For fnt_plain at a step under its advance, a glyph that touches the last one on PC now moves right while it shares a
+// column with it on the same row, at most 2 px, and the carry keeps that; letters may still touch, as they do on PC
+// (review decision 11-08, option 1: a 1 px gap widened the longest lines up to 18 px, past the bubble). Every other font and
+// step is as before (ST_GAP_KEEP). stCarry and bcMake call these in place of the HUD's adapters (their call target
+// only); appended last in late text (late_reserve.ld), so no earlier late code moves. Their touch loop (right while the
+// glyphs touch, at most twice) runs after the move these return, so a glyph that still touches where it should stay is
+// returned 2 px left of that place: touching is monotonic in x, so the loop's two steps end exactly there. Model:
+// smalltext_carry.Line(tight=True), stmenu.Line(tight=True).
+#define ST_TIGHT __attribute__((noinline, section(".text_crispread")))
+static const char stTightName[12] __attribute__((aligned(4), section(".rodata_crispread"))) = "fnt_plain";
+
+static ST_TIGHT bool stTight(const StFont* f, int32_t step) {
+    if (step >= (int32_t) f->adv) return false;
+    for (int32_t i = 0; 10 > i; i++) {
+        if (f->name[i] != stTightName[i]) return false;
+    }
+    return true;
+}
+
+// Does glyph b (native x bx, its top dy native rows below a's) reach a column of a (ax) on the same row?
+static ST_TIGHT bool stOverlapNative(const StFont* f, const uint8_t* a, int32_t ax, const uint8_t* b, int32_t bx, int32_t dy) {
+    for (int32_t r = 0; f->rows > r; r++) {
+        int32_t q = r - dy;
+        if (0 > q || q >= f->rows) continue;
+        uint32_t ma = (uint32_t) a[6 + 2 * r] | ((uint32_t) a[7 + 2 * r] << 8);
+        uint32_t mb = (uint32_t) b[6 + 2 * q] | ((uint32_t) b[7 + 2 * q] << 8);
+        if (ma != 0 && mb != 0 && ax + 31 - __builtin_clz(ma) >= bx + __builtin_ctz(mb)) return true;
+    }
+    return false;
+}
+
+// The move for the caller to add before its touch loop: the glyph's place d (0..2, the first with no shared column),
+// or d - 2 when it touches there (the loop's two steps then end at d).
+static ST_TIGHT int32_t stTightMove(const StFont* f, const uint8_t* a, int32_t ax, const uint8_t* b, int32_t bx, int32_t dy) {
+    int32_t d = 0;
+    while (2 > d && stOverlapNative(f, a, ax, b, bx + d, dy)) d++;
+    return stTouchNative(f, a, ax, b, bx + d, dy) ? d - 2 : d;
+}
+
+static ST_TIGHT int32_t stEvenLineTy(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy) {
+    int32_t move = stEvenLineTx(line, b, bPen, bx, dyPc, dy);
+    if (move != ST_GAP_KEEP || !stTight(line->font, bPen - (int32_t) line->pen)) return move;
+    return stTightMove(line->font, line->prev, line->x, b, bx, dy);
+}
+
+static ST_TIGHT int32_t stEvenSameTy(const StFont* f, const uint8_t* a, int32_t aPen, int32_t ax, const uint8_t* b, int32_t bPen, int32_t bx, int32_t carry) {
+    int32_t move = stEvenSameTx(f, a, aPen, ax, b, bPen, bx, carry);
+    if (move != ST_GAP_KEEP || !stTight(f, bPen - aPen)) return move;
+    return stTightMove(f, a, ax, b, bx, 0);
+}
+#endif
+
+#if defined(ENABLE_WAD16) && !defined(ST_DR_UNIT) // UNDERTALE only, as crispread above
+// ===[ crispread2: per-line B, 1 px gaps where the whole line fits its bubble (maintainer, 2026-11-08) ]===
+// maintainer's pick from the review sheet: Mettaton EX's letters (fnt_plain at a step under its advance, crispread above)
+// keep a 1 px gap on a line when the whole line, so spaced, fits its bubble; any other line keeps option 1 (letters
+// apart only while they share a column). A writer's plan (bubbleclip) is made as before, then bcFitB lays each of its
+// lines out a second time with the gaps and keeps it as a gap line when its ink keeps bubbleclip's own margin from the
+// bubble's inner edge with no pixel given back: the line's PC rows all in the bubble, the writer drawing at myx
+// (shaken glyphs never reach carry). A gap line gives nothing back (its plan's gives are cleared). As stCarry places a
+// glyph, stBubbleClipZ notes whether it is on a gap line, and there stEvenLineTz returns 0 for a tight pair where
+// crispread returns its move: the caller's touch loop then moves the glyph right while it touches, at most 2 px,
+// exactly as bcFitB's copy of it did. Every other line, font and writer is as before. stCarry and bcPlanFor (where
+// stBubbleClip's plans are made since asgorelong T1) change only call targets (stBubbleClipZ, stEvenLineTz, bcMakeZ);
+// appended last in late text, so no earlier late code moves; its state comes after every other late static. Model: smalltext_carry.Line(tight=True, gaps=True), bubble_fit.
+#define CR2_LATE __attribute__((noinline, section(".text_crispread2")))
+#define CR2_FLAT __attribute__((noinline, flatten, section(".text_crispread2")))
+static struct {
+    uint8_t lines[BC_SLOTS]; // plan slot i's gap lines, a bit a line
+    bool on;                 // the glyph stCarry is placing is on a gap line
+} cr2 __attribute__((section(".bss_crispread2,\"aw\",%nobits @")));
+
+// Plan p's slot (bcAt's i), -1 for none: plans 0-2 are bc.plan and 3 on bcMore (asgorelong T1, on the line
+// before crispread2, whose branch has the 3 slots of bc.plan alone, where p - bc.plan was the slot).
+static inline int32_t cr2Slot(const BcPlan* p) {
+    for (int32_t i = 0; BC_SLOTS > i; i++)
+        if (bcAt(i) == p) return i;
+    return -1;
+}
+
+// The lines (a bit each) of a writer's plan p that fit its bubble with 1 px letter gaps: bcMake's layout, bubble and
+// margin, the glyphs placed as stCarry places them on a gap line.
+static CR2_FLAT uint32_t bcFitB(Runner* runner, const StFont* f, const BcPlan* p, const float* v, const char* text, float d) {
+    if (d != 0.0f) return 0; // a writer drawing away from myx: no gap lines
+    float x0 = v[BC_X0], y0 = v[BC_Y0], xend = v[BC_XEND], myx = x0;
+    int32_t s = (int32_t) v[BC_SP], vsp = (int32_t) v[BC_VSP];
+    struct {
+        uint8_t c;
+        int16_t at;
+    } gl[BC_LINES][BC_COLS];
+    uint8_t count[BC_LINES];
+    memset(count, 0, sizeof(count));
+    const int8_t* kern = bcKern(f);
+    int32_t li = 0;
+    for (const char* c = text; *c != '\0'; c++) { // bcMake's layout
+        if (*c == '^' && c[1] != '0' && c[1] != '\0') c++;
+        else if (*c == '\\') {
+            const char* k = c[1] != '\0' ? strchr(bcCodes, c[1]) : nullptr;
+            if (k == nullptr) return 0;
+            c += k >= bcCodes + 11 && c[2] != '\0' ? 2 : 1;
+        } else if (*c == '&') {
+            li++;
+            myx = x0;
+        } else if (*c == '/' || *c == '%') break;
+        else if (*c == '^') return 0;
+        else {
+            if (myx > xend) {
+                li++;
+                myx = x0;
+            }
+            if (li >= BC_LINES) return 0;
+            uint8_t ch = (uint8_t) *c;
+            if (ch != ' ') {
+                if (count[li] >= BC_COLS) return 0;
+                gl[li][count[li]].c = ch;
+                gl[li][count[li]++].at = (int16_t) (myx - x0);
+            }
+            myx += (float) s + (kern != nullptr && ch >= 32u && 128u > ch ? (float) kern[ch - 32u] : 0.0f);
+        }
+    }
+    DataWin* dw = runner->dataWin; // bcMake's bubble
+    const uint8_t* edge = nullptr;
+    uint32_t rows = 0;
+    float left = 0.0f, top = 0.0f;
+    for (ptrdiff_t i = 0; arrlen(runner->instances) > i; i++) {
+        const Instance* b = runner->instances[i];
+        uint32_t h;
+        const uint8_t* e;
+        if (b->destroyed || !b->active || b->imageXscale != 1.0f || b->imageYscale != 1.0f || 0 > b->spriteIndex ||
+            (e = bcEdges(runner, b->spriteIndex, &h)) == nullptr)
+            continue;
+        const Sprite* sp = &dw->sprt.sprites[b->spriteIndex];
+        float l = b->x - (float) sp->originX, t = b->y - (float) sp->originY;
+        if (l > x0 || t > y0 || x0 >= l + (float) sp->width || y0 >= t + (float) h || (edge != nullptr && left + top > l + t)) continue;
+        edge = e;
+        rows = h;
+        left = l;
+        top = t;
+    }
+    if (edge == nullptr) return 0;
+    bool fixW = (st.keys >> ST_KEY_FIX_W & 1u) != 0 && f->fixW != 0, fixStar = (st.keys >> ST_KEY_FIX_STAR & 1u) != 0 && f->fixStar != 0;
+    uint32_t fit = 0;
+    for (li = 0; BC_LINES > li; li++) {
+        int32_t n = 0, carry = 0, prevX = 0, pcRight = -100000, right = -100000;
+        const uint8_t* prev = nullptr;
+        float prevPen = 0.0f;
+        uint32_t inked = 0; // PC rows with ink
+        for (int32_t j = 0; count[li] > j; j++) {
+            uint32_t c = gl[li][j].c, e = c < 128u ? f->lut[c] : 0u;
+            if (e-- == 0) continue;
+            if (c == 'W' && fixW) e = (uint32_t) f->fixW - 1u;
+            else if (c == '*' && fixStar) e = (uint32_t) f->fixStar - 1u;
+            const uint8_t* g = stEntry(f, e);
+            if (g[2] == 0) continue;
+            float pen = x0 + (float) gl[li][j].at, gx = pen + 2.0f * (float) (int8_t) g[3];
+            int32_t q = stGridPixel(pen + p->ox), off = -(q & 1) - (int32_t) (int8_t) g[5];
+            if (-2 >= off) gx += 2.0f * (float) (-off / 2);
+            else if (off >= 2) gx -= 2.0f * (float) (off / 2);
+            int32_t nx0 = stGridPixel(gx + p->ox) >> 1;
+            if (prev != nullptr && (prevPen >= pen || pen - prevPen > 4.0f * (float) f->adv)) {
+                prev = nullptr;
+                carry = 0;
+            }
+            int32_t nx = nx0 + carry;
+            if (prev != nullptr && (float) f->adv + 1.0f >= pen - prevPen) {
+                int32_t move = stEvenSameTx(f, prev, (int32_t) prevPen, prevX, g, (int32_t) pen, nx, carry);
+                if (move == ST_GAP_KEEP && stTight(f, (int32_t) pen - (int32_t) prevPen)) move = 0; // a tight pair
+                if (move != ST_GAP_KEEP) {
+                    carry += move;
+                    nx += move;
+                    for (int32_t k = 0; 2 > k && bcTouch(f, prev, prevX, g, nx); k++) {
+                        carry++;
+                        nx++;
+                    }
+                }
+            } else {
+                int32_t move = stWordSameTx(f, prev, (int32_t) prevPen, prevX, g, (int32_t) pen, nx, carry);
+                carry += move;
+                nx += move;
+            }
+            int32_t z = -99;
+            for (int32_t r = 0; f->rows > r; r++) {
+                uint32_t m = (uint32_t) g[6 + 2 * r] | ((uint32_t) g[7 + 2 * r] << 8);
+                if (m != 0 && 31 - __builtin_clz(m) > z) z = 31 - __builtin_clz(m);
+            }
+            const int8_t* ext = (const int8_t*) (g + 6 + 2 * f->rows);
+            for (int32_t r = 0; f->pcRows > r && 32 > r; r++) {
+                if (ext[2 * r] > ext[2 * r + 1]) continue;
+                inked |= 1u << r;
+                if ((int32_t) pen + ext[2 * r + 1] > pcRight) pcRight = (int32_t) pen + ext[2 * r + 1];
+            }
+            if (nx + z > right) right = nx + z;
+            n++;
+            prev = g;
+            prevX = nx;
+            prevPen = pen;
+        }
+        if (n == 0) continue;
+        int32_t in = 1000; // bcMake's edge and margin
+        for (int32_t r = 0; 32 > r; r++) {
+            int32_t row = (int32_t) (y0 + (float) (li * vsp) - top) + r;
+            if ((inked >> r & 1u) == 0) continue;
+            if (0 > row || row >= (int32_t) rows || edge[row] == 0) in = -1;
+            else if (in > edge[row]) in = edge[row];
+        }
+        if (0 > in) continue;
+        float x = left + (float) in;
+        int32_t pc = (int32_t) x - 1 - pcRight, req = pc / 2;
+        if (req > BC_MARGIN) req = BC_MARGIN;
+        int32_t gap = (stGridPixel(x + p->ox) >> 1) - 1 - right;
+        if (gap >= req) fit |= 1u << li;
+#ifdef CTRPORT_BUBBLE_CHECK
+        logInfo("bubblecheck: gaps room %d frame %d font %s line %d x %d y %d edge %d req %d gap %d mode %c\n", (int) runner->currentRoomIndex,
+                (int) runner->frameCount, f->name, (int) li, (int) x0, (int) (y0 + (float) (li * vsp)), (int) x, (int) req, (int) gap,
+                gap >= req ? 'B' : '1');
+#endif
+    }
+    return fit;
+}
+
+// bcMake's call from bcPlanFor: the plan, then its gap lines, which give nothing back.
+static CR2_LATE void bcMakeZ(Runner* runner, const StFont* f, BcPlan* p, const float* v, const char* text, float d) {
+    bcMake(runner, f, p, bc.v, text, d); // v is bc.v, stBubbleClip's only vars, as bcMake has always had it
+    uint32_t fit = (p->ok & 1u) != 0 ? bcFitB(runner, f, p, v, text, d) : 0u;
+    for (int32_t li = 0; BC_LINES > li; li++)
+        if ((fit >> li & 1u) != 0) p->gives[li] = 0;
+    int32_t slot = cr2Slot(p);
+    if (0 <= slot) cr2.lines[slot] = (uint8_t) fit;
+}
+
+// stBubbleClip's call from stCarry: its shift, and whether the glyph is on a gap line of the writer's plan (bc.last,
+// for this frame and instance; the line from the myy stBubbleClip just read).
+static CR2_LATE int32_t stBubbleClipZ(Runner* runner, const StFont* f, float pen) {
+    int32_t shift = stBubbleClip(runner, f, pen);
+    cr2.on = false;
+    if (runner == nullptr || runner->vmContext == nullptr || runner->vmContext->currentInstance == nullptr || bc.last == nullptr ||
+        bc.frame != runner->frameCount || bc.inst != runner->vmContext->currentInstance->instanceId)
+        return shift;
+    float fl = (bc.v[BC_MYY] - bc.v[BC_Y0]) / bc.v[BC_VSP];
+    int32_t li = (int32_t) fl;
+    int32_t slot = cr2Slot(bc.last);
+    if (fl == (float) li && li >= 0 && BC_LINES > li && 0 <= slot) cr2.on = (cr2.lines[slot] >> li & 1u) != 0;
+    return shift;
+}
+
+// stEvenLineTy's call from stCarry: on a gap line a tight pair moves 0 (the touch loop then makes the 1 px gap).
+static CR2_LATE int32_t stEvenLineTz(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy) {
+    if (!cr2.on) return stEvenLineTy(line, b, bPen, bx, dyPc, dy);
+    int32_t move = stEvenLineTx(line, b, bPen, bx, dyPc, dy);
+    if (move == ST_GAP_KEEP && stTight(line->font, bPen - (int32_t) line->pen)) return 0;
+    return move;
+}
+#endif
+
+#if defined(CTRPORT_LDPLAN) && defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
+// letterdraw's plan variants (change letterdraw L1, 11-11; UNDERTALE Old). A writer whose bubble is exactly where its
+// plan saw it remakes the plan when the first glyph's pen offset (bcMake's d) changes. Lemon Bread's 12 writers shake
+// their text, so the first glyph steps between 3 places and all 12 plans are remade 4 times every 18 frames (bcMake
+// 72k instructions each). Each writer's plan for the d it leaves is kept here (a variant), and when d comes back to
+// it, the variant is swapped into the plan slot instead of being made again.
+// Exact: bcPlanFor asks only where it would remake for d alone (every other input as the slot's plan saw it, the
+// bubble exactly still), and a variant is taken only when everything bcMake and bcFitB read is what they would read
+// now. The writer, string hash, writingx, writingy and surface x are the slot's key. Font, room, writingxend, spacing
+// and vspacing are in bcAux. The fixed-W and fixed-star bits are bcAux.keys, and bc.vm the context: a change of either
+// clears every plan (bcClear), so the block is cleared too. d (bit for bit, not only to 1/256 px) and the glyph pack
+// (st.file, which a plan outlives) are kept with each plan (BcMade). The bubble must be the one bcPick picks now
+// (bcFind from 0, as the remake's bcPick), with the same sprite and top left. Taking a variant leaves the slot as the
+// remake would: the same plan and gap lines (cr2.lines), bcAux as bcPick sets it, gen now. Where any of it differs,
+// the plan is made as before.
+// Fixed size: one heap block of BC_VAR_N variants, made at the first plan and kept. A writer keeps at most BC_VAR_PER
+// variants: a third evicts its oldest; otherwise the oldest of all (or an empty one) goes. Every variant is checked as
+// above when taken, so an evicted or stale one can only cost a remake. No block (the heap couldn't give it): today's
+// remakes, every time.
+#define BC_VAR_N 24  // Lemon Bread: 12 writers x 2 (each writer's plan in its slot, plus the other two places)
+#define BC_VAR_PER 2
+typedef struct {
+    float d;             // bcMake's d
+    const uint8_t* pack; // st.file
+} BcMade;
+typedef struct {
+    BcPlan plan;
+    __typeof__(bcAux.p[0]) aux;
+    BcMade made;
+    uint32_t used; // when it was kept (0: empty)
+    uint8_t fit;   // its cr2 gap lines
+} BcVar;
+typedef struct {
+    const VMContext* vm; // bc.vm and bcAux.keys the variants were kept with
+    uint32_t keys, clock;
+    BcMade made[BC_SLOTS]; // what each slot's plan was made with
+    BcVar e[BC_VAR_N];
+} BcVarBlock;
+_Static_assert(sizeof(BcVar) == 280 && sizeof(BcVarBlock) == 12 + 8 * BC_SLOTS + 280 * BC_VAR_N, "the block is 6,860 bytes");
+// The block, (void*) 1 when the heap couldn't give it, or nullptr before the first plan (4 bytes of late data).
+static void* bcVarRoot __attribute__((section(".data_letterdraw_plan"))) = nullptr;
+
+// The block, made at the first plan; nullptr: none.
+static BC_LDP BcVarBlock* bcVarBlock(void) {
+    void* b = bcVarRoot;
+    if (b == nullptr) {
+        b = malloc(sizeof(BcVarBlock));
+        if (b != nullptr) memset(b, 0, sizeof(BcVarBlock));
+        bcVarRoot = b != nullptr ? b : (void*) 1;
+    }
+    return (uintptr_t) b <= 1u ? nullptr : (BcVarBlock*) b;
+}
+
+// x's bits (d is compared bit for bit).
+static inline uint32_t bcBits(float x) {
+    uint32_t u;
+    memcpy(&u, &x, sizeof(u));
+    return u;
+}
+
+// Slot at's plan was just made with d.
+static BC_LDP void bcVarMade(int32_t at, float d) {
+    BcVarBlock* k = bcVarBlock();
+    if (k == nullptr) return;
+    k->made[at].d = d;
+    k->made[at].pack = st.file;
+}
+
+// The next keep's stamp. Where the clock would wrap to 0 (empty), the kept stamps are numbered again 1..n in their
+// order first (they are distinct: each came from the clock), so the oldest stays oldest.
+static BC_LDP uint32_t bcVarTick(BcVarBlock* k) {
+    if (k->clock == UINT32_MAX) {
+        uint32_t rank[BC_VAR_N], n = 0;
+        for (int32_t i = 0; BC_VAR_N > i; i++) {
+            rank[i] = 0;
+            if (k->e[i].used == 0u) continue;
+            n++;
+            for (int32_t j = 0; BC_VAR_N > j; j++)
+                if (k->e[j].used != 0u && k->e[i].used >= k->e[j].used) rank[i]++;
+        }
+        for (int32_t i = 0; BC_VAR_N > i; i++) k->e[i].used = rank[i];
+        k->clock = n;
+    }
+    return ++k->clock;
+}
+
+// Slot at's plan holds but for d (bcPlanFor): swap in the variant made for d and true, or keep the slot's plan as a
+// variant and false (bcPlanFor then remakes it).
+static BC_LDP bool bcVarSwap(Runner* runner, int32_t at, const float* v, float d) {
+    BcVarBlock* k = bcVarBlock();
+    if (k == nullptr) return false;
+    if (k->vm != bc.vm || k->keys != bcAux.keys) {
+        memset(k->e, 0, sizeof(k->e));
+        k->vm = bc.vm;
+        k->keys = bcAux.keys;
+    }
+    BcPlan* p = bcAt(at);
+    __typeof__(bcAux.p[0])* a = &bcAux.p[at];
+    BcVar *hit = nullptr, *own = nullptr, *old = &k->e[0];
+    int32_t mine = 0;
+    for (int32_t i = 0; BC_VAR_N > i; i++) {
+        BcVar* e = &k->e[i];
+        if (old->used > e->used) old = e;
+        if (e->used == 0u || e->plan.id != p->id || e->plan.hash != p->hash || e->plan.x0 != p->x0 || e->plan.y0 != p->y0 ||
+            e->plan.ox != p->ox)
+            continue;
+        mine++;
+        if (own == nullptr || own->used > e->used) own = e;
+        if (bcBits(e->made.d) == bcBits(d) && e->made.pack == st.file && e->aux.f == a->f && e->aux.room == a->room &&
+            e->aux.xend == a->xend && e->aux.sp == a->sp && e->aux.vsp == a->vsp)
+            hit = e;
+    }
+    if (hit != nullptr) {
+        float l, t;
+        const Instance* b = bcFind(runner, v, 0, &l, &t); // every instance, as bcPick
+        if (b != nullptr && b->instanceId == hit->aux.bubble && b->spriteIndex == hit->aux.sprite && l == hit->aux.l && t == hit->aux.t) {
+            uint32_t now = bcVarTick(k);
+            BcVar keep;
+            keep.plan = *p;
+            keep.aux = *a;
+            keep.made = k->made[at];
+            keep.fit = cr2.lines[at];
+            *p = hit->plan;
+            *a = hit->aux;
+            a->gen = runner->nextInstanceId;
+            k->made[at] = hit->made;
+            cr2.lines[at] = hit->fit;
+            *hit = keep;
+            hit->used = now;
+            return true;
+        }
+    }
+    BcVar* to = mine >= BC_VAR_PER ? own : old;
+    uint32_t now = bcVarTick(k);
+    to->plan = *p;
+    to->aux = *a;
+    to->made = k->made[at];
+    to->fit = cr2.lines[at];
+    to->used = now;
+    return false;
+}
+#endif
+
+#if defined(CTRPORT_LDMEMO) && defined(ENABLE_WAD16) && !defined(ST_DR_UNIT)
+// letterdraw's glyph-pair memo (change letterdraw, 11-11; UNDERTALE Old): stCarry asks the same glyph pairs every frame.
+// Each touch and gap test is, for glyphs a and b on rows dy apart, a minimum over their rows that does not depend on
+// where they are: M = min(ctz(b's row) - (31 - clz(a's row))) natively, min(b's left - a's right) on PC (rows at most
+// one apart, as the tests). Then gap is min(99, rel + M - 1), rel = bx - ax, and touch is gap <= 0; no common rows (M
+// none) is gap 99, no touch: the tests' answers exactly. M is kept by (a, b, dy, PC) in one fixed heap block of 256
+// entries, made at the first ask and kept: a and b are entries of the glyph pack (st.file), whose bytes never change
+// while it is loaded, so an entry's answer holds while the block's pack is st.file; a new pack clears the block.
+// No block (the heap couldn't give it): today's tests, every time.
+#define ST_LDM __attribute__((noinline, optimize("Os"), section(".text_letterdraw_memo")))
+#define ST_MEMO_N 256
+#define ST_MEMO_NONE 0x7FFF
+#define ST_MEMO_DY 4000
+typedef struct {
+    const uint8_t* a;
+    const uint8_t* b;
+    int16_t k; // dy * 2 + (PC)
+    int16_t m;
+} StMemo;
+typedef struct {
+    const uint8_t* pack; // st.file when the entries were kept
+    StMemo e[ST_MEMO_N];
+} StMemoBlock;
+_Static_assert(sizeof(StMemoBlock) == 4 + 256 * 12, "the memo block is 3,076 bytes");
+// The block, (void*) 1 when the heap couldn't give it, or nullptr before the first ask (4 bytes of late data).
+static void* stMemoRoot __attribute__((section(".data_letterdraw_memo"))) = nullptr;
+
+// Row r's ink edge of glyph g, natively or on PC: its left column (left) or its right; ST_MEMO_NONE for no ink.
+static inline __attribute__((always_inline)) int32_t stEdge(const StFont* f, const uint8_t* g, int32_t r, int32_t pc, int32_t left) {
+    if (pc) {
+        const int8_t* e = (const int8_t*) (g + 6 + 2 * f->rows);
+        return e[2 * r] > e[2 * r + 1] ? ST_MEMO_NONE : e[2 * r + !left];
+    }
+    uint32_t m = (uint32_t) g[6 + 2 * r] | ((uint32_t) g[7 + 2 * r] << 8);
+    return m == 0 ? ST_MEMO_NONE : left ? __builtin_ctz(m) : 31 - __builtin_clz(m);
+}
+
+// The block for this pack, made at the first ask; nullptr: none (today's tests).
+static ST_LDM StMemoBlock* stMemoBlock(void) {
+    void* b = stMemoRoot;
+    if (b == nullptr) {
+        b = malloc(sizeof(StMemoBlock));
+        if (b != nullptr) ((StMemoBlock*) b)->pack = nullptr;
+        stMemoRoot = b != nullptr ? b : (void*) 1;
+    }
+    if ((uintptr_t) b <= 1u) return nullptr;
+    StMemoBlock* k = (StMemoBlock*) b;
+    if (k->pack != st.file) {
+        memset(k->e, 0, sizeof k->e);
+        k->pack = st.file;
+    }
+    return k;
+}
+
+// stGapNative (pc 0) or stGapPc (pc 1), through the memo (blk not nullptr).
+static ST_LDM int32_t stGapM(StMemoBlock* blk, const StFont* f, const uint8_t* a, int32_t ax, const uint8_t* b, int32_t bx, int32_t dy,
+                             int32_t pc) {
+    int16_t k = (int16_t) (dy * 2 + pc);
+    StMemo* e = nullptr;
+    int32_t m = ST_MEMO_NONE + 1;
+    if (ST_MEMO_DY >= dy && dy >= -ST_MEMO_DY) {
+        e = &blk->e[((uint32_t) (uintptr_t) a * 0x9E3779B1u ^ (uint32_t) (uintptr_t) b * 0x85EBCA77u ^ (uint32_t) k * 0xC2B2AE3Du) >> 24];
+        if (e->a == a && e->b == b && e->k == k) m = e->m;
+    }
+    if (m > ST_MEMO_NONE) {
+        m = ST_MEMO_NONE;
+        int32_t n = pc ? f->pcRows : f->rows;
+        for (int32_t r = 0; n > r; r++) {
+            int32_t right = stEdge(f, a, r, pc, 0);
+            if (right == ST_MEMO_NONE) continue;
+            for (int32_t q = r - dy - 1; r - dy + 1 >= q; q++) {
+                if (0 > q || q >= n) continue;
+                int32_t left = stEdge(f, b, q, pc, 1);
+                if (left != ST_MEMO_NONE && m > left - right) m = left - right;
+            }
+        }
+        if (e != nullptr) {
+            e->a = a;
+            e->b = b;
+            e->k = k;
+            e->m = (int16_t) m;
+        }
+    }
+    if (m == ST_MEMO_NONE) return ST_GAP_NONE;
+    int32_t d = bx - ax + m - 1;
+    return ST_GAP_NONE > d ? d : ST_GAP_NONE;
+}
+
+// stCarry's touch loop: stTouchNative
+static ST_LDM bool stTouchNativeM(const StFont* f, const uint8_t* a, int32_t ax, const uint8_t* b, int32_t bx, int32_t dy) {
+    StMemoBlock* blk = stMemoBlock();
+    if (blk == nullptr) return stTouchNative(f, a, ax, b, bx, dy);
+    return 0 >= stGapM(blk, f, a, ax, b, bx, dy, 0);
+}
+
+// stEvenLine: stTouchPc and stEven's stGapPc ask the same pair, so PC's gap once
+static ST_LDM int32_t stEvenLineM(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy) {
+    StMemoBlock* blk = stMemoBlock();
+    if (blk == nullptr) return stEvenLine(line, b, bPen, bx, dyPc, dy);
+    const StFont* f = line->font;
+    const uint8_t* a = line->prev;
+    int32_t carry = line->carry, pc = stGapM(blk, f, a, (int32_t) line->pen, b, bPen, dyPc, 1);
+    if (0 >= pc) return ST_GAP_KEEP;
+    int32_t gap = stGapM(blk, f, a, line->x, b, bx, dy, 0), most = carry - ST_CARRY_MIN, want = pc >> 1;
+    if (pc == ST_GAP_NONE || gap == ST_GAP_NONE) {
+        most = carry > 0 ? carry : 0;
+        want = 1;
+    }
+    if (1 > want) want = 1;
+    if (gap == ST_GAP_NONE) return -most;
+    if (gap > want) return gap - want > most ? -most : want - gap;
+    return want - gap > 2 ? 2 : want - gap;
+}
+
+// stWordLine
+static ST_LDM int32_t stWordLineM(const StLine* line, const uint8_t* b, int32_t bPen, int32_t bx, int32_t dyPc, int32_t dy) {
+    int32_t carry = line->carry;
+    if (carry == 0) return 0;
+    StMemoBlock* blk = stMemoBlock();
+    if (blk == nullptr) return stWordLine(line, b, bPen, bx, dyPc, dy);
+    const StFont* f = line->font;
+    const uint8_t* a = line->prev;
+    int32_t gap = stGapM(blk, f, a, line->x, b, bx, dy, 0);
+    if (carry > 0) {
+        int32_t give = gap - ST_WORD_GAP;
+        return give > 0 ? (give > carry ? -carry : -give) : 0;
+    }
+    int32_t pc = stGapM(blk, f, a, (int32_t) line->pen, b, bPen, dyPc, 1);
+    if (pc == ST_GAP_NONE || gap == ST_GAP_NONE || gap >= 2 * ST_WORD_GAP) return -carry;
+    int32_t room = (pc >> 1) - gap;
+    return room > 0 ? (room > -carry ? -carry : room) : 0;
 }
 #endif

@@ -2,7 +2,7 @@
 # 10 bench scenes, 315 rooms and 104 encounters; it fills 16 MB at 85 bytes an instruction. Names only: the
 # code is generated from your own data.win at build time (gmlaot.py --selection, platform/3ds/build.sh aot).
 # Gain is GML instructions a frame (select.py --weigh ops, each profile counted up to 33000 a frame).
-# Hand-edited for UT Old (aotprof, 2026-10-28): exactly the UT Old set, in
+# Hand-edited for UT Old (change aotprof, 2026-10-28): exactly the UT Old set, in
 # order. 16 entries hot on the board's worst frames (credits dodger, Photoshop Flowey, the opera) came in for
 # 23 cold everywhere, so the code, its constants and the string pool all end at or before the base build's
 # (tools/aot/selection/undertale-o3ds-pad.txt pads them back, and nothing after the AOT block moves). Not re-ranked

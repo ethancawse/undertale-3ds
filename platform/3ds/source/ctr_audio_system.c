@@ -350,7 +350,7 @@ struct CtrAudioSystem {
     bool initialized;
     bool ndspReady;
     bool suspended;
-    bool shutDown;
+    bool shutDown; struct SlState* slState; // seamlocal's (UNDERTALE): in the hole before voices
 
     Voice voices[VOICE_COUNT];
     int32_t voiceLimit;
@@ -374,7 +374,7 @@ struct CtrAudioSystem {
     uint8_t* soundForms; // per SOND index, SoundForm
     bool* noBackgroundRead; // per SOND index: a background read failed, read it directly
 
-    StreamEntry streamEntries[MAX_STREAM_ENTRIES];
+    StreamEntry streamEntries[MAX_STREAM_ENTRIES]; int32_t* lcStop; // lcstop's (UNDERTALE): in the hole before streams
     StreamContext streams[STREAM_CONTEXTS];
 
     Thread thread;
@@ -2805,8 +2805,8 @@ static void ctrStopAll(AudioSystem* audio) {
 
 #if defined(ENABLE_WAD16)
 __attribute__((noinline)) static bool ctrIsPlaying(AudioSystem* audio, int32_t soundOrInstance) {
-    bool audparIsPlaying(AudioSystem* audio, int32_t soundOrInstance);
-    return audparIsPlaying(audio, soundOrInstance);
+    bool lcstopIsPlaying(AudioSystem* audio, int32_t soundOrInstance); // lcstop (file end), then audparIsPlaying
+    return lcstopIsPlaying(audio, soundOrInstance);
 }
 #else
 static bool ctrIsPlaying(AudioSystem* audio, int32_t soundOrInstance) {
@@ -3171,7 +3171,7 @@ static bool ctrDestroyStream(AudioSystem* audio, int32_t streamIndex) {
 
 // ===[ Creation ]===
 
-__attribute__((noinline, section(".text.pcmwait_late"))) static void pcmWaitUpdate(AudioSystem* audio, float deltaTime); __attribute__((noinline, noipa, optimize("Os"), section(".text.audofix_late"))) static bool audofixIsPlaying(AudioSystem* audio, int32_t id); FLOWEND_BURST_DECL AUDOFIX_FEED_DECL static AudioSystemVtable ctrAudioSystemVtable = {
+__attribute__((noinline, section(".text.pcmwait_late"))) static void pcmWaitUpdate(AudioSystem* audio, float deltaTime); __attribute__((noinline, noipa, optimize("Os"), section(".text.audofix_late"))) static bool audofixIsPlaying(AudioSystem* audio, int32_t id); FLOWEND_BURST_DECL AUDOFIX_FEED_DECL LCSTOP_DECL static AudioSystemVtable ctrAudioSystemVtable = {
     .init = ctrInit,
     .destroy = ctrDestroy,
     .update = CTR_UPDATE_ENTRY,
@@ -3180,7 +3180,7 @@ __attribute__((noinline, section(".text.pcmwait_late"))) static void pcmWaitUpda
     .setSoundEmitterGain = ctrSetSoundEmitterGain,
     .setListenerPosition = ctrSetListenerPosition,
     .stopSound = CTR_STOP_ENTRY,
-    .stopAll = ctrStopAll,
+    .stopAll = CTR_STOPALL_ENTRY, // lcstop (file end)
     .isPlaying = audofixIsPlaying, // audofix M1 (file end)
     .pauseSound = ctrPauseSound,
     .resumeSound = ctrResumeSound,
@@ -3281,7 +3281,7 @@ static uint8_t menuHeld MENUPAUSE_BSS;
 static bool menuReleasePending MENUPAUSE_BSS;
 static u64 menuHeldSince MENUPAUSE_BSS;
 static void (*menuRealUpdate)(AudioSystem* audio, float deltaTime) MENUPAUSE_BSS;
-// The menu's sounds (gamedir2): new code and state in its own late sections, at the end of the late
+// The menu's sounds (change gamedir2): new code and state in that change's own late sections, at the end of the late
 // blocks (late_reserve.ld), named outside .text.late.* and .bss.late.* so the catch-alls leave them there.
 #define MENUSOUND_CODE __attribute__((noinline, section(".text_gamedir2_late")))
 static int32_t menuVoice __attribute__((section(".bss.gamedir2_late"))); // the instance of the menu's last sound
@@ -3455,7 +3455,7 @@ typedef struct {
     uint8_t chans, bytes; // channels, bytes per frame
     int8_t trigger[2]; // a loop seam to smooth, per channel
     uint8_t seamBuilt;
-    uint16_t nextSeq; uint8_t mlIn; // mlIn, in padding: musicloop's fade-in after a resume (mlFrameLock)
+    uint16_t nextSeq; uint8_t mlIn, slSet; // in padding: musicloop's fade-in after a resume (mlFrameLock), seamlocal's
     uint32_t off; // the cursor: the next frame of segment cur to queue
     uint32_t seamN, tailEnd;
     float rate;
@@ -4512,7 +4512,7 @@ UTSFX_DATA static struct {
     CtrAudioSystem* wrapped;
     const AudioSystemVtable* inner;
     AudioSystemVtable outer;
-    uint32_t installed, installedKb, dropped, failed;
+    uint32_t installed, installedKb, dropped, failed; struct HplState* hplState; // hplcopy's (UT Old Tremor): in the hole before workTicks
     u64 workTicks;
 } usw; UTSFX_DATA static volatile uint32_t usDoneCount; UTSFX_DATA static uint32_t usDoneSeen; static void usFastCheck(void);
 
@@ -5018,7 +5018,7 @@ UTSFX_CODE int CtrAudioSystem_preloadSfx(int32_t soundIndex, uint32_t bytes, uin
 #endif
 
 #ifdef CTRPORT_SPIKEREC
-// spikerec (z_spikerec.c, playtest builds only): the game thread's sound load time in this stats window so far
+// change spikerec (z_spikerec.c, playtest builds only): the game thread's sound load time in this stats window so far
 // (logWindowStats clears it), read once a frame on the game thread.
 __attribute__((noinline, section(".text.spikerec_late"))) uint64_t CtrAudioSystem_spikeLoadTicks(AudioSystem* audio) {
     return ((CtrAudioSystem*) audio)->windowLoadTicks;
@@ -5222,7 +5222,7 @@ static inline void usFastCheck(void) {} // shipped builds: the skip makes no cal
 int32_t __real_CtrDecoder_read(CtrDecoder* dec, int16_t* out, uint32_t maxFrames); int32_t audofixReadLink(CtrDecoder* dec, int16_t* out, uint32_t maxFrames);
 int32_t __wrap_CtrDecoder_read(CtrDecoder* dec, int16_t* out, uint32_t maxFrames);
 
-// ===[ flowhitch rev 3 (flowend r22c; UNDERTALE): the first buffer of a spare, decoded ahead ]===
+// ===[ flowhitch rev 3 (change flowend r22c; UNDERTALE): the first buffer of a spare, decoded ahead ]===
 // A stream's first buffer (4,096 frames, 93 ms of sound) is decoded before anything is queued: 37-45 ms on the Old
 // models even for a stream opened ahead (Azahar Old, timing mode, run r22-hdiag-flowey-old), so a pre-opened song
 // started 1-2 frames after its play call and a shed cue replayed as a stream 3-10 frames after (its open too). The
@@ -5245,11 +5245,20 @@ int32_t CtrAudioSystem_chainReadFlowhitch(CtrDecoder* dec, int16_t* out, uint32_
 #define FLOWHITCH_READ_NEXT CtrAudioSystem_chainReadFlowhitch
 bool CtrAudioSystem_chainOpenFlowhitch(CtrDecoder* dec, const char* path);
 #define FLOWHITCH_OPEN_NEXT CtrAudioSystem_chainOpenFlowhitch
-void CtrAudioSystem_chainNoteFlowhitch(const char* state); void CtrAudioSystem_chainNoteLoadclass(const char* state);
-#define FLOWHITCH_NOTE_NEXT CtrAudioSystem_chainNoteLoadclass // loadclass's link (this file's end), then flowhitch's
+void CtrAudioSystem_chainNoteFlowhitch(const char* state); void CtrAudioSystem_chainNoteLoadclass(const char* state); void CtrAudioSystem_chainNotePair(const char* state); void CtrAudioSystem_chainNoteBootahead(const char* state);
+#define FLOWHITCH_NOTE_NEXT CtrAudioSystem_chainNoteBootahead // bootahead's link, then loadclass 4c's, then loadclass's (all at this file's end), then flowhitch's
 void __real_CtrReadAhead_shutdown(void); // UNDERTALE's link wraps it (usstop, at this file's end)
 void CtrAudioSystem_chainStopFlowhitch(void);
+#if defined(CTRPORT_TARGET_O3DS) // UNDERTALE Old (Tremor): hplcopy's workers are stopped and joined first (its block)
+void hplShutdownLink(void) __asm__("hplShutdown");
+#define FLOWHITCH_STOP_NEXT hplShutdownLink
+// usstop's aptExit calls the real one through hplAptExit (its block): a worker still running keeps the heap there.
+void hplAptExitLink(void) __asm__("hplAptExit");
+#define __real_aptExit hplAptExitLink
+#else
 #define FLOWHITCH_STOP_NEXT CtrAudioSystem_chainStopFlowhitch
+#endif
+#line 4933
 
 // The read link after flowend's (decode thread, and the rare other reader): a taken spare's first frames come from
 // the copy decoded ahead.
@@ -5444,7 +5453,7 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static 
 // room missed the cache: it played as a stream while the audio loader probed and decoded it into the cache again
 // (probe 144-190 ms, decode 2.4 s on the Old models), taking back the linear memory the guard had just freed. Omega
 // Flowey's turn-4 buzz and its destroyed theme did this, and the game thread waited on the newlib heap lock or
-// the loader's loadLock for 10-69 ms in that window (bfprobe3, o3DS XL): held frames of 42.7-59.4 ms (flowend
+// the loader's loadLock for 10-69 ms in that window (bfprobe3, o3DS XL): held frames of 42.7-59.4 ms (change flowend
 // r20b, case 2). Each sound of at least FLOWHITCH_MIN_BYTES that a shed frees is marked FORM_STREAMED, so its later
 // plays stream as before but queue no new probe or decode from streamWhileCaching, until the next room change puts
 // its form back. Other paths can still cache it again (a small embedded WAV's buildSfx, a prepare job already in
@@ -6031,7 +6040,7 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) static 
 }
 
 #ifdef ENABLE_WAD16
-// ===[ flowhitch rev 3: three spares for the shed cues (flowend r22c) ]===
+// ===[ flowhitch rev 3: three spares for the shed cues (change flowend r22c) ]===
 // A cue of FLOWHITCH_MIN_BYTES or more that the guard shed replays as a stream for the rest of the room; its open
 // took 160-310 ms on the Old consoles (alarm, repeat_1), where cand27's cache hit started in the frame of the call.
 // At a quiet second, as the other spares, the opener keeps open the files of the three shed cues played most recently
@@ -6055,7 +6064,7 @@ static uint32_t flowhitchWaking __attribute__((section(".bss.flowhitch_late")));
 
 #include "renderer.h" // rev 4's room link reads the runner's room
 #include "runner.h"
-// flowhitch rev 4 (flowend r25): the musical's two cold song starts. Its first song has no open before it in the
+// flowhitch rev 4 (change flowend r25): the musical's two cold song starts. Its first song has no open before it in the
 // room to guess from, and the song it plays twice in a row is cold the second time (the number-guess spare already
 // holds the song after it): 179-193 and 185-188 ms of open on the Old models (cand26), each a song start that late
 // against the PC game's. The room link marks the musical's room (the FNV-1a hash of its name, as the song table's);
@@ -6434,7 +6443,7 @@ __attribute__((noinline, optimize("Os"), section(".text.flowend_late"))) void __
 }
 #endif
 
-// stallfix (rev 3, ctr_benchheld.inc): the game thread's sound load time in this stats window so far (logWindowStats
+// change stallfix (rev 3, ctr_benchheld.inc): the game thread's sound load time in this stats window so far (logWindowStats
 // clears it), read once a measured bench frame on the game thread, for the bench's held-frame lines. Late code at the
 // end of the file (platform/3ds/late_reserve.ld, .text.stallfix_late). Not in DELTARUNE Old builds (CTRPORT_BENCH_HELD).
 #ifdef CTRPORT_BENCH_HELD
@@ -6533,10 +6542,10 @@ AM_CODE static void amStatsUnlock(LightLock* lock) {
 #ifdef CTRPORT_ADPCM_SFXPACK
 #include "ctr_adpcm_pack.inc"
 #endif
-// ===[ flowpitch: every voice at the game's frame clock (late code, both games; flowend, 2026-10-28) ]===
+// ===[ flowpitch: every voice at the game's frame clock (late code, both games; change flowend, 2026-10-28) ]===
 // Every rate this file sets goes through here (ctr_audio_utaudio.h's ndspChnSetRate): each voice, music, sound effect
 // or stream, gets its rate times CTR_MUSIC_RATE_SCALE (ctr_music_clock.h), so its samples keep pace with the game's
-// 29.9156 frames a second, as the whole game does (ruling 10-28: no music/sfx split, nothing to classify). Set
+// 29.9156 frames a second, as the whole game does (review decision 10-28: no music/sfx split, nothing to classify). Set
 // with the rate, so once per start and per pitch, gain or pause change, as before; nothing per frame. What the game
 // reads stays in the sound's own time: the track position (the DSP's sample position over the sample rate), lengths
 // and loops are counted in samples, and audio_sound_get_pitch returns the game's pitch. The silent path (no DSP)
@@ -7374,7 +7383,7 @@ USSTOP_TEXT void __wrap_CtrReadAhead_shutdown(void) {
         }
 #endif
     }
-    FLOWHITCH_STOP_NEXT(); // flowhitch's stop link (flowend r22e), which calls the real one
+    FLOWHITCH_STOP_NEXT(); // flowhitch's stop link (change flowend r22e), which calls the real one
 }
 // aptExit (exit trail builds: after z_exittrail.c's wrap). Only the exit's owner gets a keep from
 // CtrLeavekeep_ownerKeep; the lab leave's own earlier aptExit call (ctr_lab.c, not the owner yet) passes through, but
@@ -7745,7 +7754,7 @@ AUDOFIX_FEED_CODE int32_t audofixFeedRead(CtrDecoder* dec, int16_t* out, uint32_
 }
 // The two links by name: aliases GCC doesn't see, so flowhitch's and pcmwait's functions call what looks to it like
 // the same external function as before (a call to a function of this file reorders flowend's block: b8).
-__asm__(".set audofixReadLink, audofixFeedRead\n.set audofixFreeLink, audofixFree\n");
+__asm__(".set audofixReadLink, " HPL_READ_LINK "\n.set audofixFreeLink, audofixFree\n"); // hplcopy's read first on Old
 #endif
 
 #if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
@@ -7807,7 +7816,7 @@ __asm__(".set CtrAudioSystem_chainFlame, flamePreload\n");
 // stream's setup header again for each stream: one calloc, then per book vorbis_book_init_decode (sort, code words,
 // unquantized values, first table: ~470 allocations for UNDERTALE's main header) and the static book's free. UNDERTALE
 // has 216 Vorbis streams but only 5 distinct setup headers; 206 streams (sound effects and music alike)
-// carry the same 38 books, so the work is the same every time (pacer, C3; a setup census). Here the first
+// carry the same 38 books, so the work is the same every time (change pacer, C3). Here the first
 // stream with a given set of static books builds the decoded books once, and every later stream whose static books are
 // byte for byte equal (every field vorbis_book_init_decode reads: dim, entries, each length, map type, q_min, q_delta,
 // q_quant, q_sequencep and each quantized value) uses that set. vorbis_book_init_decode is a pure function of those
@@ -8506,12 +8515,12 @@ PA_CODE void* __wrap__malloc_r(struct _reent* r, size_t n) {
     return p ? p : __real__malloc_r(r, n);
 #endif
 }
-
+void* paCallocZero(void* p, int c, size_t n); // numcache (z_numcache.c): calloc's zeroing, the whole block
 PA_CODE void* __wrap__calloc_r(struct _reent* r, size_t c, size_t n) {
     size_t t;
     int who = paWho();
     void* p = NULL;
-    if (who && !__builtin_mul_overflow(c, n, &t) && t <= PA_SMALL && (p = paAlloc(r, who, t, 8))) return memset(p, 0, t);
+    if (who && !__builtin_mul_overflow(c, n, &t) && t <= PA_SMALL && (p = paAlloc(r, who, t, 8))) return paCallocZero(p, 0, t);
     if (who) pa.bypass[who - 1]++;
     PA_REQ(who, 2, c * n);
     p = __real__calloc_r(r, c, n);
@@ -10243,3 +10252,1436 @@ __attribute__((noinline, optimize("Os"), section(".text_papvoice"))) int CtrAudi
     return got;
 }
 #endif
+
+// logfix (change scanout, logaudit G8): the way in to postMessage for z_logfix.c, whose CtrLogfix_post the sound-effect
+// pack's posts now come to (ctr_adpcm_pack.inc's table). One branch in the appended late code (.text_logfix, an appended
+// late section, where a new name belongs), its arguments untouched: no code here changes or moves.
+#ifdef CTRPORT_ADPCM_SFXPACK
+void CtrLogfix_postMessage(void* ca, const char* format, ...);
+__attribute__((naked, noinline, section(".text_logfix"))) void CtrLogfix_postMessage(void* ca __attribute__((unused)),
+                                                                                     const char* format __attribute__((unused)), ...) {
+    __asm__("b postMessage");
+}
+
+// A record of several lines (CtrLogfix_post's split one) goes in whole or not at all: under one hold of the lock, its
+// lines take that many free slots in a row, so no other thread's line comes between them; with too few free, none is
+// queued and each counts as a dropped message, as postMessage counts one. fill writes line i into its slot (one copy,
+// no formatting: the lock's hold stays short); nothing here waits for room or allocates.
+bool CtrLogfix_postLines(void* vp, uint32_t count, void (*fill)(void* ctx, uint32_t i, char* slot, uint32_t size), void* ctx);
+__attribute__((noinline, noipa, section(".text_logfix"))) bool CtrLogfix_postLines(void* vp, uint32_t count,
+                                                                                   void (*fill)(void*, uint32_t, char*, uint32_t),
+                                                                                   void* ctx) {
+    CtrAudioSystem* ca = (CtrAudioSystem*) vp;
+    LightLock_Lock(&ca->msgLock);
+    bool room = MESSAGE_SLOTS >= count && MESSAGE_SLOTS - count >= ca->msgCount;
+    if (room) {
+        for (uint32_t i = 0; count > i; i++) fill(ctx, i, ca->messages[(ca->msgHead + ca->msgCount + i) % MESSAGE_SLOTS], MESSAGE_LENGTH);
+        ca->msgCount += count;
+    } else {
+        ca->msgDropped += count;
+    }
+    LightLock_Unlock(&ca->msgLock);
+    return room;
+}
+#endif
+
+// ===[ loadclass 4c: two layers of one song join sample-locked (change loadclass, UNDERTALE) ]===
+// (Respun after the S8b noon line: the code reviewed as R434c..R434g, in its own late section .text_lcpair, so no
+// earlier late code moves. Its only hooks into earlier code are call targets: flowend's note call goes to
+// CtrAudioSystem_chainNotePair (the join line, then loadclass's link), and the load mix's frame-callback
+// registration and pause alias to this block's links, as described below.)
+// Toriel's house plays its song and a quiet layer of it (gain 0.01, raised by the house's rooms) in one step, as two
+// looping streams; in its slowed version, the same song twice at pitch 0.4, gains 1 and 0.01. On PC both start
+// together and stay in step. Here the opener thread opens one stream at a time, so the layer started one open later:
+// 836 ms in maintainer's o3DS log (s8b7), and it stays that far behind, so when a room raises it the two are heard out of
+// step. Holding the first until the second opened would start the house's song that much later, so instead the first
+// plays at once (the leader) and the layer joins it at the leader's sample, as gomusic joins copies of one song: its
+// first pause write holds it (gomusic's hold bit, so every pause write keeps it paused), it is sent to the sample the
+// leader will be at GOM_MARGIN DSP frames on, and it is unpaused in the frame callback in which the leader gets there.
+// From then on the two play as on PC; before it only the layer is missing (gain 0.01 in the house's first rooms).
+// Only these pairs (by name hash): the song and its layer, or the slowed song twice. Only two plays next to each other
+// (voice serials one apart: the house's music object plays them one after the other), asked for in the same game step
+// (no step gomusic noted ended between them: loadclassSameStep) and at equal game clocks (clockSeconds: so neither was
+// paused through an update since). Same pitch, same rate, neither paused nor given a start position (a consumed one
+// too: seekSeconds).
+// Anything else runs as before. A layer that can't join (its leader stopped, paused, seeked or replaced, its own pause,
+// a plan missed GOM_TRIES times, or GOM_HOLD_FRAMES past its plan) leaves as gomusic's copies do (gomLeave): its plan,
+// taken or not, gives way to a seek to its first sample, and it stays held until that is queued, so it plays from its
+// start as before this code; a seek of the game's stays. LOADCLASS_LEAD_FRAMES bounds only when a layer may still be
+// admitted after its leader's open; an admitted layer's wait is bounded by its plans and GOM_HOLD_FRAMES (DSP frames,
+// which a menu or a suspend does not count).
+// The leader is noted in gomusic's context slot for its stream, which gomusic leaves alone for any other song (group 0,
+// no stamp): copy LOADCLASS_LEADS, its voice's serial in batch0, its sample in the snapshot gomPlan reads. A layer held
+// to join is copy LOADCLASS_JOINS, the leader's context in sound and its voice's serial in batch1. gomusic's state and helpers are reached by asm aliases,
+// as gounder's are: a direct use adds call-graph edges, and GCC then emits gomusic's functions and strings in another order. One log
+// line per layer, through gomusic's format (copy 2), from the opener's note: when it was heard after the leader first
+// was, its sample and residual, and the measured offset at the join and GOM_MEASURE frames on (0 = in step).
+#if defined(ENABLE_WAD16) && defined(CTRPORT_HAVE_TREMOR)
+#define LCPAIR_CODE __attribute__((noinline, noipa, optimize("Os"), section(".text_lcpair")))
+#define LOADCLASS_HOUSE1 0x43DABBAAu // the house's song (a sound's name)
+#define LOADCLASS_HOUSE2 0x42DABA17u // its quiet layer (a sound's name)
+#define LOADCLASS_TORIEL 0x4BB394B4u // the slowed house's song, both layers (a sound's name)
+#define LOADCLASS_LEADS 0xA6 // gomusic slot copy value: a layer song that played first
+#define LOADCLASS_JOINS 0xA5 // gomusic slot copy value: a layer held to join its leader
+#define LOADCLASS_LEAD_FRAMES 600 // DSP frames (about 2.9 s) a leader waits for a layer after its open
+
+extern __typeof__(gom) loadclassGom;
+extern __typeof__(menuHeld) loadclassMenuHeld;
+int loadclassGomPhys(const StreamContext* s);
+bool loadclassGomPos(const StreamContext* s, int p, uint32_t* out);
+bool loadclassGomPlan(CtrAudioSystem* ca, int k, int leader, uint32_t margin);
+bool loadclassGomReady(const StreamContext* s);
+bool loadclassGomSeekedAway(const StreamContext* s, const GomCtx* g);
+bool loadclassGomOffset(CtrAudioSystem* ca, int leader, const StreamContext* s, int p, int32_t* out);
+void loadclassGomUnhold(CtrAudioSystem* ca, GomCtx* g);
+void loadclassGomDsp(void* data);
+void loadclassGomPaused(int p, bool paused);
+extern const char loadclassJoinFormat[], loadclassJoined[], loadclassRanAlone[];
+__asm__(".set loadclassGom, gom\n.set loadclassMenuHeld, menuHeld\n.set loadclassGomPhys, gomPhys\n.set loadclassGomPos, gomPos\n"
+        ".set loadclassGomPlan, gomPlan\n.set loadclassGomReady, gomReady\n.set loadclassGomSeekedAway, gomSeekedAway\n"
+        ".set loadclassGomOffset, gomOffset\n.set loadclassGomUnhold, gomUnhold\n.set loadclassGomDsp, gomDspCallback\n"
+        ".set loadclassGomPaused, gomPhysPaused\n.set loadclassJoinFormat, gomJoinFormat\n.set loadclassJoined, gomJoined\n"
+        ".set loadclassRanAlone, gomRanAlone\n.set loadclassCallbackLink, loadclassSetCallback\n");
+
+LCPAIR_CODE static bool loadclassLayer(const char* name) {
+    uint32_t h = loadclassHash(name);
+    return h == LOADCLASS_HOUSE1 || h == LOADCLASS_HOUSE2 || h == LOADCLASS_TORIEL;
+}
+
+// The two songs are one of the pairs: the song and its layer (either opens first), or the slowed song twice.
+LCPAIR_CODE static bool loadclassPair(const char* a, const char* b) {
+    uint32_t x = loadclassHash(a), y = loadclassHash(b);
+    return (x == LOADCLASS_HOUSE1 && y == LOADCLASS_HOUSE2) || (x == LOADCLASS_HOUSE2 && y == LOADCLASS_HOUSE1) ||
+           (x == LOADCLASS_TORIEL && y == LOADCLASS_TORIEL);
+}
+
+// Two voices one serial apart asked for in the same game step, and at equal game clocks. The step: gomUpdate notes, at
+// each audio update, the first voice serial after the step just run (serialEnd; it only rises). A step ended between
+// the two plays exactly when some step's serialEnd is the later serial. The ring holds the last GOM_STEPS steps: when
+// every step it holds ended after both (none below the later serial; the zeroed BSS counts as below), it can't tell
+// and says no. The opener reads it while the game thread writes it, so a scan of single words is no snapshot: two
+// updates during one scan can replace the proof after it was read (R434f-1). It is read as one (loadclassRingSteps).
+// The clocks (the game thread writes them): a read during its update that does not hold still is taken as not equal.
+// Either no: the layer runs alone as before.
+// The opener reads gomusic's ring of step ends while the game thread writes it (gomUpdate, one entry per audio update,
+// with no lock or sequence count of its own). Read entry by entry, a scan can see an entry from before two updates
+// and the rest from after them, and the entry that proved a step between the two plays is gone (R434f-1). So the ring
+// is read twice, with a barrier between, and the first read counts only if the second matches it word for word. An
+// entry only rises (each write is the voice serial counter, which only rises), so an entry read the same twice held
+// that value all the time between, and every entry's two reads span the barrier: the first read is the ring as it was
+// at that instant. A step ending at the later serial ends the check at once (a no needs no snapshot). Up to three
+// tries, then no. True: one instant's ring reaches back before both plays and none of its steps ended between them.
+LCPAIR_CODE static bool loadclassRingSteps(uint32_t later) {
+    uint32_t seen[GOM_STEPS]; // no initializer list: a constant copy would land in .rodata
+    for (int t = 0; 3 > t; t++) {
+        bool before = false, same = true;
+        for (int i = 0; GOM_STEPS > i; i++) {
+            uint32_t end = *(const volatile uint32_t*) &loadclassGom.steps[i].serialEnd;
+            if (end == later) return false; // a step ended between them
+            before |= (int32_t) (end - later) < 0;
+            seen[i] = end;
+        }
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        for (int i = 0; GOM_STEPS > i; i++) same &= *(const volatile uint32_t*) &loadclassGom.steps[i].serialEnd == seen[i];
+        if (same) return before;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    }
+    return false;
+}
+
+LCPAIR_CODE static bool loadclassSameStep(const Voice* v, const Voice* w) {
+    uint32_t later = (int32_t) (v->serial - w->serial) > 0 ? v->serial : w->serial;
+    // The ring as one instant (loadclassRingSteps): it reaches back before both plays and no step in it ended between them.
+    if (!loadclassRingSteps(later)) return false;
+    const volatile double* a = &v->clockSeconds;
+    const volatile double* b = &w->clockSeconds;
+    for (int i = 0; 3 > i; i++) {
+        double x = *a, y = *b;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (x == *a && y == *b) return x == y;
+    }
+    return false;
+}
+
+// A noted stream still plays for the voice it was noted for.
+LCPAIR_CODE static bool loadclassAlive(const CtrAudioSystem* ca, int k) {
+    const StreamContext* s = &ca->streams[k];
+    int owner = s->owner;
+    StreamState state = s->state;
+    return owner >= 0 && VOICE_COUNT > owner && ca->voices[owner].serial == loadclassGom.c[k].batch0 && !s->stopRequested &&
+           state != CTX_FREE && state != CTX_DONE;
+}
+
+// The pause link before gomusic's hold (any thread). A layer song's first pause write on the opener thread is its open's
+// (openStream, under its lock, its rate set): next to a leader that plays, it is held and planned; otherwise it leads.
+// (Other threads write its channel while it opens too: the load mix's repairs, before its decoder has a rate.)
+LCPAIR_CODE void loadclassPhysPaused(int p, bool paused) {
+    CtrAudioSystem* ca = gShutdownTarget;
+    bool opener = ca != NULL && ca->opener != NULL && threadGetCurrent() == ca->opener;
+    for (int k = 0; opener && UTA_CHANNELS > p && p >= 0 && STREAM_CONTEXTS > k; k++) {
+        StreamContext* s = &ca->streams[k];
+        GomCtx* g = &loadclassGom.c[k];
+        if (s->state != CTX_OPENING || s->opened || g->group != 0 || g->copy != 0 || loadclassGomPhys(s) != p) continue;
+        int owner = s->owner;
+        if (owner < 0 || owner >= VOICE_COUNT || s->sampleRate == 0 || !loadclassLayer(s->name)) break;
+        const Voice* v = &ca->voices[owner];
+        int lead = -1;
+        for (int j = 0; STREAM_CONTEXTS > j; j++) {
+            const StreamContext* t = &ca->streams[j];
+            const GomCtx* h = &loadclassGom.c[j];
+            uint32_t apart = v->serial - h->batch0;
+            if (j == k || h->copy != LOADCLASS_LEADS || !t->opened || !loadclassAlive(ca, j) || (apart != 1u && apart != ~0u) ||
+                loadclassGom.frame - h->joinFrame > LOADCLASS_LEAD_FRAMES)
+                continue;
+            const Voice* w = &ca->voices[t->owner];
+            if (loadclassPair(t->name, s->name) && !t->seekPending && !s->seekPending && s->seekSeconds == 0.0 && !v->paused &&
+                !w->paused && !v->spatial && !w->spatial && v->pitch == w->pitch && t->sampleRate == s->decoder.sampleRate &&
+                loadclassSameStep(v, w))
+                lead = j;
+        }
+        g->batch0 = v->serial;
+        g->tries = g->logged = 0;
+        g->heardTick = 0;
+        if (lead < 0) {
+            g->snapStep = 0.0f; // no snapshot until the callback takes one
+            g->joinFrame = loadclassGom.frame;
+            g->copy = LOADCLASS_LEADS;
+            break;
+        }
+        g->sound = lead;
+        g->batch1 = loadclassGom.c[lead].batch0; // the leader's voice: a new song in its context is not it
+        g->target = 0;
+        g->residual = 0;
+        g->offset[0] = g->offset[1] = GOM_UNSET;
+        g->cueTick = loadclassGom.c[lead].heardTick ? loadclassGom.c[lead].heardTick : svcGetSystemTick();
+        g->phys = (int8_t) (p + 1);
+        g->phase = GOM_HELD;
+        g->joinFrame = loadclassGom.frame;
+        g->copy = LOADCLASS_JOINS;
+        loadclassGomPlan(ca, k, lead, GOM_MARGIN); // the seek before the decode thread fills a buffer; else the callback plans
+        __atomic_fetch_or(&loadclassGom.held, 1u << p, __ATOMIC_ACQ_REL);
+        paused = true;
+        break;
+    }
+    loadclassGomPaused(p, paused);
+}
+
+// A layer lets go: its channel gets the engine's pause state, where it is.
+LCPAIR_CODE static void loadclassLetGo(CtrAudioSystem* ca, GomCtx* g, const char* said) {
+    g->said = said;
+    g->heardTick = svcGetSystemTick();
+    loadclassGomUnhold(ca, g);
+    __atomic_store_n(&g->phase, (uint8_t) GOM_DONE, __ATOMIC_RELEASE);
+}
+
+// A layer that can't join leaves, as gomLeave has a copy leave: a plan of this code's, taken or not, gives way to a seek
+// to its first sample and it stays held until that is queued (GOM_LEAVING); held without a plan, it is at its first
+// sample already; a seek of the game's stays. Under its lock.
+LCPAIR_CODE static void loadclassLeave(CtrAudioSystem* ca, int k, uint32_t now) {
+    GomCtx* g = &loadclassGom.c[k];
+    StreamContext* s = &ca->streams[k];
+    if (g->phase != GOM_PLANNED || loadclassGomSeekedAway(s, g)) {
+        loadclassLetGo(ca, g, loadclassRanAlone);
+        return;
+    }
+    s->seekPending = true;
+    s->seekSeconds = 0.0;
+    g->phase = GOM_LEAVING;
+    g->joinFrame = now;
+    LightEvent_Signal(&ca->event);
+}
+
+// A layer's step in the frame callback, under its lock.
+LCPAIR_CODE static void loadclassFollow(CtrAudioSystem* ca, int k, uint32_t now) {
+    GomCtx* g = &loadclassGom.c[k];
+    StreamContext* s = &ca->streams[k];
+    int lead = g->sound;
+    if (g->phase == GOM_LEAVING) { // its first sample queued (or its wait over): plays from there
+        if (loadclassGomReady(s) || (int32_t) (now - g->joinFrame) > GOM_HOLD_FRAMES) loadclassLetGo(ca, g, loadclassRanAlone);
+        return;
+    }
+    if (lead < 0 || lead >= STREAM_CONTEXTS) {
+        loadclassLetGo(ca, g, loadclassRanAlone);
+        return;
+    }
+    StreamContext* t = &ca->streams[lead];
+    int p = loadclassGomPhys(s);
+    uint32_t lpos = 0;
+    bool have = false;
+    if (LightLock_TryLock(&t->lock) == 0) {
+        have = loadclassGomPos(t, loadclassGomPhys(t), &lpos);
+        LightLock_Unlock(&t->lock);
+    }
+    bool leads = loadclassGom.c[lead].copy == LOADCLASS_LEADS && loadclassGom.c[lead].batch0 == g->batch1 && loadclassAlive(ca, lead) &&
+                 !t->seekPending && !ca->voices[t->owner].paused && !ca->voices[s->owner].paused &&
+                 ca->voices[t->owner].pitch == ca->voices[s->owner].pitch;
+    if (g->phase == GOM_JOINED) {
+        uint32_t since = now - g->joinFrame;
+        if (g->offset[0] == GOM_UNSET && since >= GOM_LEAD + 3) loadclassGomOffset(ca, lead, s, p, &g->offset[0]);
+        else if (g->offset[0] != GOM_UNSET && g->offset[1] == GOM_UNSET && since >= GOM_MEASURE)
+            loadclassGomOffset(ca, lead, s, p, &g->offset[1]);
+        if (!leads || since > GOM_MEASURE + 20 || g->offset[1] != GOM_UNSET) __atomic_store_n(&g->phase, (uint8_t) GOM_DONE, __ATOMIC_RELEASE);
+        return;
+    }
+    if (loadclassGomSeekedAway(s, g)) {
+        loadclassLetGo(ca, g, loadclassRanAlone); // the game's seek: where the game put it
+    } else if (!leads || (int32_t) (now - g->joinFrame) > GOM_HOLD_FRAMES) {
+        loadclassLeave(ca, k, now);
+    } else if (g->phase == GOM_HELD) {
+        if (loadclassGomPlan(ca, k, lead, GOM_MARGIN)) LightEvent_Signal(&ca->event);
+    } else if (have && (int32_t) (now - g->joinFrame) >= 0) {
+        float step = loadclassGom.c[lead].snapStep;
+        int32_t half = (int32_t) (step * 0.5f);
+        int32_t residual = (int32_t) (g->target - (lpos + (uint32_t) ((float) GOM_LEAD * step + 0.5f)));
+        bool ready = loadclassGomReady(s) && s->bufs[0].startFrame == g->target;
+        g->residual = residual;
+        if (ready && residual <= half && residual >= -half) {
+            g->said = loadclassJoined;
+            g->phase = GOM_JOINED;
+            g->joinFrame = now;
+            g->heardTick = svcGetSystemTick();
+            loadclassGomUnhold(ca, g);
+        } else if (ready && residual > half) {
+            // the leader is behind its plan (held by a room load, say): wait for it
+        } else if (GOM_TRIES > g->tries) {
+            loadclassGomPlan(ca, k, lead, GOM_MARGIN << g->tries);
+            LightEvent_Signal(&ca->event);
+        } else {
+            loadclassLeave(ca, k, now);
+        }
+    }
+}
+
+// The DSP frame link before gomusic's (registered in its place by lmRegister): gomusic's chain first, then each leader's
+// sample is noted and each layer stepped, and a held layer's channel is kept paused after every other writer.
+LCPAIR_CODE static void loadclassDspCallback(void* data) {
+    loadclassGomDsp(data); // gomusic's chain first
+    CtrAudioSystem* ca = (CtrAudioSystem*) data;
+    bool frozen = ca->suspended || loadclassMenuHeld != 0;
+    uint32_t now = loadclassGom.frame;
+    for (int k = 0; STREAM_CONTEXTS > k; k++) {
+        GomCtx* g = &loadclassGom.c[k];
+        uint8_t copy = g->copy;
+        if ((copy != LOADCLASS_LEADS && copy != LOADCLASS_JOINS) || g->group != 0) continue;
+        StreamContext* s = &ca->streams[k];
+        if (!loadclassAlive(ca, k)) {
+            if (copy == LOADCLASS_JOINS) loadclassGomUnhold(ca, g); // stopped or gone: its channel is the engine's again
+            g->copy = 0;
+            continue;
+        }
+        if (frozen || (copy == LOADCLASS_JOINS && __atomic_load_n(&g->phase, __ATOMIC_ACQUIRE) == GOM_DONE)) continue;
+        if (LightLock_TryLock(&s->lock) != 0) continue;
+        if (copy == LOADCLASS_JOINS) {
+            loadclassFollow(ca, k, now);
+        } else {
+            int p = loadclassGomPhys(s);
+            uint32_t pos;
+            if (loadclassGomPos(s, p, &pos)) {
+                if (!g->heardTick && pos > 0) g->heardTick = svcGetSystemTick();
+                loadclassGom.seq++;
+                __atomic_thread_fence(__ATOMIC_RELEASE);
+                g->snapPos = pos;
+                g->snapFrame = now;
+                g->snapStep = 160.0f * CtrLoadmix_legacy.channels[p].rate / (float) NDSP_SAMPLE_RATE;
+                __atomic_thread_fence(__ATOMIC_RELEASE);
+                loadclassGom.seq++;
+            }
+            bool waited = false; // a layer still on its way keeps the leader noted
+            for (int j = 0; STREAM_CONTEXTS > j; j++) {
+                if (loadclassGom.c[j].copy == LOADCLASS_JOINS && loadclassGom.c[j].sound == k) waited = true;
+            }
+            if (!waited && now - g->joinFrame > LOADCLASS_LEAD_FRAMES) g->copy = 0;
+        }
+        LightLock_Unlock(&s->lock);
+    }
+    for (int k = 0; STREAM_CONTEXTS > k; k++) {
+        int p = loadclassGom.c[k].phys - 1;
+        if (loadclassGom.c[k].copy == LOADCLASS_JOINS && p >= 0) UTA_PHYS_PAUSED(p, true); // after every other writer
+    }
+}
+
+// lmRegister's registration: this link in gomusic's place (gomusic's is the one it calls first).
+void loadclassMissCallback(void* data); LCPAIR_CODE void loadclassSetCallback(ndspCallback callback, void* data) {
+    UTA_PHYS_CALLBACK(callback != NULL ? loadclassMissCallback : NULL, data); // loadclass 8's line first (below)
+}
+
+// The opener's note: one log line per layer done (its slot then goes back to gomusic's untouched state).
+LCPAIR_CODE static void loadclassPairLog(CtrAudioSystem* ca) {
+    for (int k = 0; STREAM_CONTEXTS > k; k++) {
+        GomCtx* g = &loadclassGom.c[k];
+        if (g->copy != LOADCLASS_JOINS || __atomic_load_n(&g->phase, __ATOMIC_ACQUIRE) != GOM_DONE) continue;
+        postMessage(ca, loadclassJoinFormat, ca->streams[k].name, 2u, g->said, g->heardTick > g->cueTick ? TICKS_TO_MS(g->heardTick - g->cueTick) : 0.0,
+                    (unsigned long) g->target, (long) g->residual, (long) g->offset[0], (long) g->offset[1], (unsigned) g->tries);
+        g->copy = 0;
+    }
+}
+
+// flowend's note link (FLOWHITCH_NOTE_NEXT; opener thread, at each note): a layer's join line, then loadclass's link.
+void CtrAudioSystem_chainNoteLater(const char* state); LCPAIR_CODE void CtrAudioSystem_chainNotePair(const char* state) {
+    CtrAudioSystem* ca = gShutdownTarget;
+    if (ca != NULL && ca->opener != NULL && threadGetCurrent() == ca->opener && strcmp(state, flowendWaiting) == 0) loadclassPairLog(ca);
+    CtrAudioSystem_chainNoteLater(state); // 4a/4b's link with 9 (below)
+}
+#endif
+
+// ===[ loadclass 8: one log line when the DSP reports frames the ndsp thread missed (a diagnostic: log only) ]===
+// (Respun after the S8b noon line: reviewed as loadclass 8 and R434g, in section .text_lclater with its template
+// in .rodata.lclater_in_text, both after loadclass 4c's; called from loadclassMissCallback, which 4c's
+// registration names: this line first, then 4c's callback, as before.)
+//
+// libctru's ndspSync adds the second u16 of the DSP's status block (ndspVars[5]) to ndspGetDroppedFrames: DSP frames
+// (160 samples, about 4.889 ms) that went by without the ndsp thread. A long session on an Old 3DS had it rise in
+// steps of 117 (572 ms), each with core 1's input worker silent: while it waits, the DSP plays on with only the
+// buffers it was given, so a song may stop for part of that time. At each such report this line gives the DSP's count
+// (its ms are those missed frames, not a measured silence) and the streams that look dry as the callback runs: an
+// unlocked look at the buffer states libctru's sync just read, not a record of the gap. It reads the word in the DSP
+// callback right after that sync (ndspVars, ndspBufferId: libctru globals, declared as its internal header does), so
+// it keeps no state. Counted: the streams playing, the dry ones with the first one's name, the ones the opener thread
+// is opening (core 1's work). Dry: one played, none playing (a channel paused anywhere keeps its buffer playing), and
+// one still queued or the file not at its end. No other libctru call, so nothing new is linked. Lossy: it takes a
+// message slot only when their lock is free (the ndsp thread never waits): a busy lock drops the line uncounted, a
+// full queue counts it in msgDropped. The game thread logs it: no printf here, '#' takes a number, '~' the dry name.
+#if defined(ENABLE_WAD16) && defined(CTRPORT_HAVE_TREMOR)
+#define LCLATER_CODE __attribute__((noinline, noipa, optimize("Os"), section(".text_lclater")))
+extern void* ndspVars[16][2];
+extern u16 ndspBufferId;
+static const char loadclassMissText[] __attribute__((section(".rodata.lclater_in_text"), aligned(4))) =
+    "Audio: DSP missed # frames (# ms); streams # playing, # ran dry ~; # opening\n";
+
+LCLATER_CODE static void loadclassDspMiss(CtrAudioSystem* ca) {
+    unsigned missed = ((const volatile u16*) ndspVars[5][ndspBufferId])[1];
+    if (missed == 0) return;
+    unsigned n[5] = {missed, (missed * 4889u + 500u) / 1000u, 0, 0, 0};
+    const char* dry = NULL;
+    for (int k = 0; STREAM_CONTEXTS > k; k++) {
+        StreamContext* s = &ca->streams[k];
+        StreamState state = s->state;
+        if (state == CTX_OPENING) n[4]++;
+        if (state != CTX_PLAYING || !s->opened || s->paused) continue;
+        n[2]++;
+        bool played = false, playing = false, queued = false;
+        for (int b = 0; STREAM_BUFFERS > b; b++) {
+            u8 status = s->bufs[b].wb.status;
+            played |= status == NDSP_WBUF_DONE;
+            playing |= status == NDSP_WBUF_PLAYING;
+            queued |= status == NDSP_WBUF_QUEUED;
+        }
+        if (played && !playing && (queued || !s->eof)) {
+            n[3]++;
+            if (dry == NULL) dry = s->name;
+        }
+    }
+    if (LightLock_TryLock(&ca->msgLock) != 0) return;
+    if (ca->msgCount >= MESSAGE_SLOTS) {
+        ca->msgDropped++;
+        LightLock_Unlock(&ca->msgLock);
+        return;
+    }
+    char* o = ca->messages[(ca->msgHead + ca->msgCount) % MESSAGE_SLOTS];
+    char* end = o + MESSAGE_LENGTH - 1;
+    int i = 0;
+    for (const char* t = loadclassMissText; *t != 0 && end > o; t++) {
+        if (*t == '#' && 5 > i) {
+            char d[10];
+            int m = 0;
+            unsigned v = n[i++];
+            do d[m++] = (char) ('0' + v % 10u); while ((v /= 10u) != 0 && 10 > m);
+            while (m > 0 && end > o) *o++ = d[--m];
+        } else if (*t == '~') {
+            if (dry == NULL) *o++ = '-';
+            for (int c = 0; dry != NULL && 47 > c && dry[c] != 0 && end > o; c++) *o++ = dry[c];
+        } else {
+            *o++ = *t;
+        }
+    }
+    *o = 0;
+    ca->msgCount++;
+    LightLock_Unlock(&ca->msgLock);
+}
+
+// 4c's frame-callback registration names this: the DSP's report first (it is this frame's), then 4c's callback.
+LCLATER_CODE void loadclassMissCallback(void* data) {
+    loadclassDspMiss((CtrAudioSystem*) data);
+    loadclassDspCallback(data);
+}
+#endif
+
+// ===[ loadclass 9: a sound a scene plays later, opened ahead when its scene starts (change loadclass, UNDERTALE) ]===
+// A song the game loads is only an index (no file is read) until its play opens it, and on maintainer's card an open
+// takes 150-560 ms. The opener opens one stream at a time, and a tile read of the game thread waits behind it on the
+// card (kit-1108b: Mettaton EX's burst opened in 478 ms and that frame drew in 488 ms). Five scenes play such a sound
+// long after a sound of their own has started, and that sound names it:
+// - Endogeny's battle song -> the song of its fourth pet (maintainer, 11-08: "huge lag ... when it switches song").
+// - Mettaton EX's and NEO's battle songs -> the burst of his hearts and his end (one play: later ones are cached).
+// - The punch of the fake SAVE that breaks after Asgore (played three times first) -> the same burst, its explosion
+//   (maintainer, 11-08: the sounds "when your save is breaking ... feel delayed"; 440 ms on his card).
+// - The song of Asgore's last scene -> the cymbal Flowey's face appears with (540 ms on his card; the laugh played on
+//   the same frame then waited behind it, about 1 s in all; it still opens at its play, after the cymbal, one spare).
+// PC plays each on the frame the game asks for it. The burst is a sound inside data.win: it opens as a section of it
+// (CtrDecoder_sectionPath, a WAV), as its play does; the others are files of their own (Ogg Vorbis).
+// Once a voice plays the first sound and the phase-song spare is free, the later one is asked for and opened into
+// the spare at once (logged "opened '...' ahead"), in the scene's first frames; its play takes it (flowendSongTake).
+// Asked once per play of the first sound, opened or not. An untaken spare goes once no table sound plays and the room
+// has changed since one last played (Mettaton EX frees every sound before his end's burst, in the same room). The
+// room change count is flowhitch rev 4's; it rises after the new room's Create events, so it is retaken at each wait
+// a table sound plays. A spare holding a section is only ever this link's (the others ask for files of their own).
+// Both words sit after the path's NUL, before 4b's. Census: loadclass 9b. Hashes as 4a's.
+// (Respun after the S8b noon line: reviewed as loadclass 9 and LC9-1, in section .text_lclater. 4a/4b's note link
+// is frozen there, so its copy below (CtrAudioSystem_chainNoteLater, which 4c's link calls) carries 9's two calls
+// and LC9-1's rule (loadclassAskShort); the frozen one stays where it was, no longer called.)
+#if defined(ENABLE_WAD16) && defined(CTRPORT_HAVE_TREMOR)
+#define LOADCLASS_DOGFIGHT 0x9F85B175u // Endogeny's battle song
+#define LOADCLASS_DOGSONG 0x8EC6202Cu // the song its fourth pet plays
+#define LOADCLASS_EXFIGHT 0xE38C099Du // Mettaton EX's battle song
+#define LOADCLASS_NEOFIGHT 0x2D44ACAEu // Mettaton NEO's battle song
+#define LOADCLASS_BURST 0x7E219FC4u // the heart burst of both, and the breaking SAVE's explosion (inside data.win)
+#define LOADCLASS_PUNCH 0x6A7AE213u // the punch the fake SAVE takes before it breaks (a cached sound effect)
+#define LOADCLASS_ASGOREEND 0xE44107E0u // the song of Asgore's last scene
+#define LOADCLASS_CYMBAL 0x991996E3u // the cymbal Flowey's face appears with
+#define LOADCLASS_SECTION 0x74636573u // a spare path's first four bytes when it names a section of a file
+#define LOADCLASS_ROOM (FLOWEND_AHEAD_PATH - 8) // the room change count when a table sound last played
+#define LOADCLASS_ASKED (FLOWEND_AHEAD_PATH - 12) // the later sound asked for while the first plays (0: none)
+
+// LC9-1: 4a's ask (loadclassAsk), its path short of 9's words as loadclassAskAny's sections are.
+LCLATER_CODE static bool loadclassAskShort(CtrAudioSystem* ca, uint32_t want) {
+    for (uint32_t i = 0; ca->base.audioGroups[0]->sond.count > i; i++) {
+        const Sound* sound = &ca->base.audioGroups[0]->sond.sounds[i];
+        if (sound->file == NULL || loadclassHash(sound->file) != want) continue;
+        char* path = resolveExternalPath(ca, sound);
+        bool ok = path != NULL && LOADCLASS_ASKED > strlen(path); // short of 9's words, as its sections (LC9-1)
+        if (ok) {
+            loadclassDrop();
+            strcpy(flowendSongPath, path);
+            flowendSongState = 1;
+        }
+        free(path);
+        return ok;
+    }
+    return false;
+}
+
+// The sound played later in the scene whose first sound is song (0: none).
+LCLATER_CODE static uint32_t loadclassLater(uint32_t song) {
+    if (song == LOADCLASS_DOGFIGHT) return LOADCLASS_DOGSONG;
+    if (song == LOADCLASS_ASGOREEND) return LOADCLASS_CYMBAL;
+    return song == LOADCLASS_EXFIGHT || song == LOADCLASS_NEOFIGHT || song == LOADCLASS_PUNCH ? LOADCLASS_BURST : 0;
+}
+
+// Opener thread: asks the spare for the sound whose file name hashes to want, by the path its play opens: a section
+// of data.win for a big sound inside it (none when it is in memory: it then plays from there), else its own file
+// (loadclassAskShort). Either path stays short of the words after it, or it is not asked for (true: asked).
+LCLATER_CODE static bool loadclassAskAny(CtrAudioSystem* ca, uint32_t want) {
+    for (uint32_t i = 0; ca->base.audioGroups[0]->sond.count > i; i++) {
+        const Sound* sound = &ca->base.audioGroups[0]->sond.sounds[i];
+        if (sound->file == NULL || loadclassHash(sound->file) != want) continue;
+        if (!soundIsInAudo(sound)) return loadclassAskShort(ca, want);
+        DataWin* group = NULL;
+        AudioEntry* entry = audoEntryFor(ca, sound, &group);
+        char* path = entry != NULL ? audoSectionPath(ca, sound, group, entry) : NULL;
+        bool ok = path != NULL && LOADCLASS_ASKED > strlen(path);
+        if (ok) {
+            loadclassDrop();
+            strcpy(flowendSongPath, path);
+            flowendSongState = 1;
+        }
+        free(path);
+        return ok;
+    }
+    return false;
+}
+
+// Opener thread: opens the asked-for path at once, as loadclassOpen does, but a WAV is kept too (a section of
+// data.win). See loadclassRewind for flowhitch's decode ahead.
+LCLATER_CODE static void loadclassOpenAny(CtrAudioSystem* ca) {
+    u64 t0 = svcGetSystemTick();
+    bool ok = __real_CtrDecoder_openFile(&flowendSong, flowendSongPath);
+    if (ok && flowendSong.kind != CTR_DECODER_VORBIS && flowendSong.kind != CTR_DECODER_WAV) {
+        CtrDecoder_close(&flowendSong);
+        ok = false;
+    }
+    flowendSongState = ok ? 2 : 0;
+    flowendLastOpen = svcGetSystemTick(); // the other spares wait for a quiet second of their own
+    if (ok) postMessage(ca, flowendAheadLog, flowendSongPath, TICKS_TO_MS(flowendLastOpen - t0));
+}
+
+// Opener thread, at a wait with no play waiting (CtrAudioSystem_chainNoteLoadclass): true when it opened a sound. The
+// game thread owns the voices: each field is read once, and a stale read only delays a request or a drop.
+LCLATER_CODE static bool loadclassAhead(CtrAudioSystem* ca) {
+    uint32_t seq = __atomic_load_n(&flowhitchRoomSeq, __ATOMIC_ACQUIRE);
+    uint32_t room = 0, asked = 0, want = 0, head;
+    // The words sit after a path short of them only (LC9-1): a longer one (another spare's, held or taken) keeps every
+    // byte, and nothing is asked for or remembered while it is in the buffer (a play then opens cold, as before 9).
+    bool words = LOADCLASS_ASKED > strnlen(flowendSongPath, FLOWEND_AHEAD_PATH);
+    if (words) memcpy(&room, flowendSongPath + LOADCLASS_ROOM, sizeof(room));
+    if (words) memcpy(&asked, flowendSongPath + LOADCLASS_ASKED, sizeof(asked));
+    uint32_t count = ca->base.audioGroups[0]->sond.count;
+    for (int i = 0; VOICE_COUNT > i && want == 0; i++) {
+        const volatile Voice* v = &ca->voices[i];
+        VoiceKind kind = v->kind;
+        int32_t index = v->soundIndex;
+        if (kind == VOICE_FREE || index < 0 || count <= (uint32_t) index) continue;
+        const char* file = ca->base.audioGroups[0]->sond.sounds[index].file;
+        if (file != NULL) want = loadclassLater(loadclassHash(file));
+    }
+    if (want != 0) {
+        room = seq;
+    } else {
+        uint32_t held = flowendSongState != 0 ? loadclassHash(flowendSongPath) : 0;
+        memcpy(&head, flowendSongPath, sizeof(head));
+        bool mine = held == LOADCLASS_DOGSONG || held == LOADCLASS_BURST || held == LOADCLASS_CYMBAL || head == LOADCLASS_SECTION;
+        if (room != seq && flowendSongState != 0 && mine) loadclassDrop();
+        asked = 0;
+    }
+    bool open = want != 0 && want != asked && flowendSongState == 0 && words;
+    if (open) {
+        asked = want; // tried once, opened or not
+        open = loadclassAskAny(ca, want);
+    }
+    words = LOADCLASS_ASKED > strnlen(flowendSongPath, FLOWEND_AHEAD_PATH); // (the asked-for path, if one was)
+    if (words) memcpy(flowendSongPath + LOADCLASS_ROOM, &room, sizeof(room));
+    if (words) memcpy(flowendSongPath + LOADCLASS_ASKED, &asked, sizeof(asked));
+    if (open) loadclassOpenAny(ca);
+    return open;
+}
+
+// Opener thread, right after flowhitch's link in each wait: that link decodes a held spare's first frames ahead and
+// sets it back to frame 0 by its position count alone, since its copy serves a Vorbis stream only (keyed by the
+// Vorbis state). A WAV spare's section is left past them, and its play would skip them. So it goes back to its first
+// frame here, in the same wait (a seek, no read; the copy is never read for it). One that cannot is dropped.
+LCLATER_CODE static void loadclassRewind(void) {
+    CtrDecoder* d = &flowendSong;
+    if (flowendSongState != 2 || d->kind != CTR_DECODER_WAV || !d->sectioned || d->positionFrames != 0 || d->secPos == d->wavDataStart) return;
+    if (!CtrDecoder_seek(d, 0)) loadclassDrop();
+}
+
+// 4a/4b's note link (CtrAudioSystem_chainNoteLoadclass, above) with 9's two calls and LC9-1's ask; 4c's link calls it.
+LCLATER_CODE void CtrAudioSystem_chainNoteLater(const char* state) {
+    CtrAudioSystem* ca = gShutdownTarget;
+    bool mine = ca != NULL && ca->opener != NULL && threadGetCurrent() == ca->opener && strcmp(state, flowendWaiting) == 0;
+    // A spare of this link's nobody took goes first, so flowhitch's link (rev 4) finds the spare free in the same wait.
+    if (mine && flowendAheadOwner == ca && flowendSongState != 0) {
+        uint32_t held = loadclassHash(flowendSongPath);
+        uint32_t last = flowendLastPath[0] != 0 ? loadclassHash(flowendLastPath) : 0;
+        uint32_t stash;
+        memcpy(&stash, flowendSongPath + LOADCLASS_STASH, sizeof(stash));
+        if ((held == LOADCLASS_STORY && (last != 0 || __atomic_load_n(&flowhitchRoomIs, __ATOMIC_RELAXED))) || (held == LOADCLASS_NOISE && last != LOADCLASS_STORY) ||
+            (held == LOADCLASS_BATTLE && (last != stash || __atomic_load_n(&flowhitchRoomIs, __ATOMIC_RELAXED))))
+            loadclassDrop();
+    }
+    CtrAudioSystem_chainNoteFlowhitch(state); if (mine) loadclassRewind(); // (9) a WAV spare it read ahead, back to its start
+    if (!mine || flowendAheadOwner != ca || ca->openerQuit) return;
+    for (int i = 0; STREAM_CONTEXTS > i; i++) {
+        if (ca->streams[i].state == CTX_OPEN_REQUESTED) return; // a play waits: never ahead of it
+    }
+    if (flowendLastPath[0] == 0) {
+        // The boot: no file opened yet and the spare never asked for. Opened now, not at a quiet second: the boot's
+        // tile loads leave none before the intro's play.
+        if (flowendSongState != 0 || flowendSongPath[0] != 0) return;
+        if (!loadclassAskShort(ca, LOADCLASS_STORY)) {
+            flowendSongPath[0] = '-'; // no such file: asked once (a name no hash matches; no constant)
+            flowendSongPath[1] = 0;
+            return;
+        }
+        loadclassOpen(ca);
+        return;
+    }
+    uint32_t last = loadclassHash(flowendLastPath); if (loadclassAhead(ca)) return; // (9) a later song, below
+    // (3) The battle song: asked for once per pause (the path stays its request until the paused song resumes or goes).
+    int battle = loadclassBattle(ca);
+    bool asked = flowendSongPath[0] != 0 && loadclassHash(flowendSongPath) == LOADCLASS_BATTLE;
+    if (asked && battle == 0) {
+        loadclassDrop();
+        flowendSongPath[0] = 0;
+        return;
+    }
+    if (battle == 2 && !asked && flowendSongState == 0 && !__atomic_load_n(&flowhitchRoomIs, __ATOMIC_RELAXED)) {
+        if (loadclassAskShort(ca, LOADCLASS_BATTLE) && LOADCLASS_STASH > strlen(flowendSongPath)) {
+            memcpy(flowendSongPath + LOADCLASS_STASH, &last, sizeof(last));
+            loadclassOpen(ca);
+        } else {
+            loadclassDrop();
+        }
+        return;
+    }
+    uint32_t want = last == LOADCLASS_STORY ? LOADCLASS_NOISE : last == LOADCLASS_LEAVE ? LOADCLASS_CAST1 : 0;
+    if (want == 0 || (flowendSongPath[0] != 0 && loadclassHash(flowendSongPath) == want)) return; // asked once
+    loadclassAskShort(ca, want);
+}
+#endif
+
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS) && defined(CTRPORT_HAVE_TREMOR)
+// ===[ hplcopy: a short looping stream played fast reads a copy decoded on the app core (UNDERTALE Old) ]===
+//
+// The True Lab's cooler and fan rooms (258, 260) loop a 6.36 s song at pitch 3: the lab fog object's caster_loop at
+// the room's start, and the Amalgamate dog event's in room 260, mid-room, beside the room's song. A stream is decoded
+// from Ogg Vorbis at the file's rate, so pitch 3 decodes 3 s of sound a second: about 80% of the Old models' share of
+// core 1 for the loop alone and ~107% beside the song, and the streams ran dry 2.1-2.6 s after they started, at or
+// after the first seam (ethanlog5 row 8, change musicloop's report). Now a looping stream played at pitch 2 or more whose
+// decoded samples fit HPL_MAX_BYTES is decoded once more, whole, by a thread on the app core (core 0) at the lowest
+// priority, below the game thread's, so it runs only while the game thread waits (for the vblank, mostly). Its memory
+// comes from the heap, only while the heap keeps the tile reader's reserve beside it. Once the copy is whole, the
+// stream's decoder reads come from it, from the decoder's own position, and core 1 only queues buffers. Exact: the
+// copy is the same decoder's output for the same file from frame 0 (a Vorbis decoder's output doesn't depend on how
+// its reads are cut), so frame n of the copy is frame n of the stream; utaDecRead's seam, the loop seek and the
+// queueing are unchanged, as with audofix's drone feed (this read goes first, then audofix's: flowhitch's read link's
+// last call). Until the copy is whole, and when the heap had no room, no thread could start or the open failed, the
+// stream decodes as before. The update looks at the voices after each step (the game thread): a looping stream voice
+// at pitch 2 or more whose sound has no copy asks for one; once no stream voice plays that sound (caster_free's stop at
+// the room's end, a stop of everything, a stolen voice), the copy is freed, or a thread still decoding is told to stop
+// and free it. (The game pitches the sound itself, caster_loop's audio_sound_pitch, and never frees a stream: its
+// caster_load returns a sound's index.) A decoder the copy fed stands where the feed began;
+// when the feed stops in the middle (the copy freed), it is sought to the stream's position first, so the stream goes
+// on exactly.
+// Reach (change musicloop's census of UNDERTALE 1.08's pitch calls): the looping streams set to pitch 2 or more are
+// that loop (rooms 258 and 260) and a 1.26 s loop at 2.5 (Papyrus's tile puzzle). Nothing else starts the
+// thread.
+#include <malloc.h>
+#define HPL_CODE __attribute__((noinline, noipa, used, optimize("Os"), section(".text_hplcopy")))
+#define HPL_RO __attribute__((section(".rodata.hplcopy_in_text")))
+#define HPL_JOBS 2
+#define HPL_MIN_PITCH 2.0f
+#define HPL_MAX_BYTES (1536u * 1024u) // decoded PCM16
+#define HPL_STACK (64u * 1024u) // the loader thread's, which runs the same decoder
+#define HPL_PRIORITY 0x3F // the lowest; the game thread runs at 0x30
+#define HPL_PIECE 4096u // frames a read; the stop is looked for between reads
+#define HPL_STOP_MS 2000 // the shutdown's wait for the workers, at most (usstop's for the SFX worker is the same)
+enum { HPL_RUNNING = 1, HPL_READY, HPL_FAILED, HPL_CANCELLED };
+
+typedef struct {
+    int32_t sound; // the sound its voice plays (game thread)
+    int32_t state; // RUNNING, then READY or FAILED (the thread) or CANCELLED (the game thread), by compare-and-swap
+    char* path; // the stream's file (its own copy of the path)
+    char name[sizeof(((StreamContext*) 0)->name)]; // the stream contexts' name for it (voiceName: the base name)
+    int16_t* pcm; // the copy, whole once READY
+    uint32_t frames, rate, channels, bytes;
+    u64 start, done; // ticks: asked for; whole or given up
+    uint8_t why; // when FAILED: 1 + an index into hplWhy
+    bool told; // reader: the outcome is in the log
+} HplJob;
+// The state, on the heap: allocated once, zeroed, by the registration (hplRegister, at boot), never freed. Its pointer
+// sits in usw's alignment hole (before workTicks), so hplcopy keeps no late data (RULES 11-08); usw outlives the audio
+// system, as the exit's hplAptExit needs. No state (no heap room at boot): hplcopy is off, every stream as before.
+struct HplState {
+    HplJob* volatile jobs[HPL_JOBS]; // the game thread's; a reader marks the one it looks at in feeding
+    HplJob* volatile feeding[STREAM_CONTEXTS];
+    uint32_t fedEnd[STREAM_CONTEXTS]; // reader: where its last copy left the decoder
+    // The workers (game thread), joined: one stays here from its start until it has ended and is joined, whether its
+    // job is still in jobs or was let go, so at most HPL_JOBS run or wind down at once.
+    Thread threads[HPL_JOBS];
+    void (*loaderTo)(void); // the loader's return address, as the registration (at boot) saw it
+};
+typedef struct HplState HplState;
+#define HPL_STATE() __atomic_load_n(&usw.hplState, __ATOMIC_ACQUIRE)
+_Static_assert(__builtin_offsetof(__typeof__(usw), workTicks) ==
+               (__builtin_offsetof(__typeof__(usw), failed) + 4 + _Alignof(u64) - 1) / _Alignof(u64) * _Alignof(u64),
+               "usw's hplState must sit in the hole before workTicks (usw keeps its size)");
+static const char hplStartLog[] HPL_RO = "Audio: stream '%s' loops at pitch %.2f: decoding a copy on the app core\n";
+static const char hplFeedLog[] HPL_RO = "Audio: stream '%s' reads its decoded copy from frame %lu (%lu KB, whole after %lu ms)\n";
+static const char hplFailLog[] HPL_RO = "Audio: stream '%s' decodes as before (its copy: %s after %lu ms)\n";
+static const char hplWhy[][16] HPL_RO = {"no file", "too long", "no heap room", "short read", "no thread"};
+
+#ifdef CTRPORT_EXITTRAIL
+// The provoke test (exit trail builds only; hplprovoke.txt in the game folder, for Azahar, which gives a .3dsx no
+// loader address): at the registration a loader's return address is faked (hplFakeLoader, which notes that it was
+// called and with how many workers alive, then returns: libctru's svcExitProcess follows), and a copy's worker sleeps
+// 20 s before its third read, so hplStop's wait runs out with it alive. 1: hplAptExit as built. 2: the control arm,
+// hplAptExit returns after the real aptExit (the exit before c26rev3's re-check). Notes: usstop's (Azahar's log).
+static int hplTest;
+static const char hplTestFile[] USSTOP_TRO = "sdmc:/3ds/undertale-3ds/hplprovoke.txt";
+static const char hplTestOn[] USSTOP_TRO = "hplprovoke: mode %d, loader address faked\n";
+static const char hplTestHeld[] USSTOP_TRO = "hplprovoke: the worker sleeps 20 s before its third read\n";
+static const char hplTestApt[] USSTOP_TRO = "hplprovoke: aptExit: arm %d, workers alive %d, loader record %lu, return address %lx\n";
+static const char hplTestLoader[] USSTOP_TRO = "hplprovoke: RETURNED INTO THE LOADER with %d workers alive\n";
+USSTOP_TTEXT static int hplAlive(void) {
+    HplState* s = HPL_STATE();
+    int n = 0;
+    for (int t = 0; s != NULL && t < HPL_JOBS; t++) n += __atomic_load_n(&s->threads[t], __ATOMIC_ACQUIRE) != NULL;
+    return n;
+}
+USSTOP_TTEXT static void hplFakeLoader(void) {
+    usNote(hplTestLoader, hplAlive());
+}
+USSTOP_TTEXT static void hplTestStart(void) {
+    FILE* f = fopen(hplTestFile, usProvokeFileMode);
+    if (f == NULL) return;
+    int c = fgetc(f);
+    fclose(f);
+    if (c != '1' && c != '2') return;
+    hplTest = c - '0';
+    __system_retAddr = hplFakeLoader;
+    usNote(hplTestOn, hplTest);
+}
+USSTOP_TTEXT static void hplTestRead(uint32_t got) {
+    if (hplTest != 0 && got >= 2 * HPL_PIECE) { // a read may return fewer frames than asked
+        usNote(hplTestHeld);
+        svcSleepThread(20000000000LL);
+    }
+}
+#endif
+
+// The file's own functions, by their assembler names (no new call-graph edge).
+void hplUpdateNext(AudioSystem* audio, float deltaTime) __asm__("gomUpdate");
+void hplPost(CtrAudioSystem* ca, const char* fmt, ...) __asm__("postMessage");
+int32_t hplReadNext(CtrDecoder* dec, int16_t* out, uint32_t maxFrames) __asm__("audofixFeedRead");
+void hplRegisterNext(ndspCallback callback, void* data) __asm__("mlRegister");
+void hplStopNext(void) __asm__("CtrAudioSystem_chainStopFlowhitch");
+uint32_t CtrTileReader_heapReserve(void);
+extern u32 __ctru_heap_size;
+
+// The thread (app core, lowest priority). Opens the file afresh, takes the copy's memory when the heap keeps its
+// reserve beside it, decodes to the end and hands the outcome over by one compare-and-swap. When the game thread has
+// let the job go meanwhile (CANCELLED), it opens nothing and takes no memory from then on, stops at the next read and
+// frees everything itself. Nothing of the audio system is touched here (the log lines are the reader's).
+HPL_CODE static void hplWork(void* arg) {
+    HplJob* job = (HplJob*) arg;
+    CtrMemory_allowRelief(false); // a failed allocation is NULL: no reliever, no linear memory
+    bool go = __atomic_load_n(&job->state, __ATOMIC_ACQUIRE) == HPL_RUNNING;
+    CtrDecoder* dec = go ? (CtrDecoder*) malloc(sizeof(CtrDecoder)) : NULL;
+    int16_t* pcm = NULL;
+    uint32_t got = 0, frames = 0, ch = 0;
+    uint8_t why = 1;
+    if (dec != NULL && __real_CtrDecoder_openFile(dec, job->path)) {
+        uint64_t total = dec->totalFrames;
+        ch = dec->channels;
+        job->rate = dec->sampleRate;
+        why = 2;
+        if (dec->kind == CTR_DECODER_VORBIS && total > 0 && ch - 1 <= 1 && total * ch * sizeof(int16_t) <= HPL_MAX_BYTES) {
+            frames = (uint32_t) total;
+            job->bytes = frames * ch * (uint32_t) sizeof(int16_t);
+            why = 3;
+            struct mallinfo mi = mallinfo();
+            if ((uint64_t) __ctru_heap_size >= (uint64_t) (uint32_t) mi.uordblks + CtrTileReader_heapReserve() + job->bytes &&
+                __atomic_load_n(&job->state, __ATOMIC_ACQUIRE) == HPL_RUNNING)
+                pcm = (int16_t*) malloc(job->bytes);
+        }
+        if (pcm != NULL) why = 4;
+        while (pcm != NULL && frames > got && __atomic_load_n(&job->state, __ATOMIC_ACQUIRE) == HPL_RUNNING) {
+            uint32_t want = frames - got;
+            if (want > HPL_PIECE) want = HPL_PIECE;
+#ifdef CTRPORT_EXITTRAIL
+            hplTestRead(got);
+#endif
+            int32_t n = __real_CtrDecoder_read(dec, pcm + got * ch, want);
+            if (n <= 0) break;
+            got += (uint32_t) n;
+        }
+        int16_t past[2];
+        if (pcm != NULL && got == frames && __real_CtrDecoder_read(dec, past, 1) != 0) got = 0; // it must end there too
+        CtrDecoder_close(dec);
+    }
+    free(dec);
+    bool whole = pcm != NULL && got == frames;
+    if (!whole) {
+        free(pcm);
+        pcm = NULL;
+    }
+    job->pcm = pcm;
+    job->frames = frames;
+    job->channels = ch;
+    job->why = why;
+    job->done = svcGetSystemTick();
+    int32_t running = HPL_RUNNING;
+    if (!__atomic_compare_exchange_n(&job->state, &running, whole ? HPL_READY : HPL_FAILED, false, __ATOMIC_ACQ_REL,
+                                     __ATOMIC_ACQUIRE)) { // let go meanwhile: no one else holds it now
+        free(pcm);
+        free(job->path);
+        free(job);
+    }
+}
+
+// Lets job j go (game thread). No reader can take it once it is out of jobs, and one reading it now is waited for (a
+// Dekker pair, full barriers on both sides). A job still decoding is told to stop and frees itself; else it is freed
+// here.
+HPL_CODE static void hplRelease(HplState* s, int j) {
+    HplJob* job = s->jobs[j];
+    s->jobs[j] = NULL;
+    __sync_synchronize();
+    for (int k = 0; k < STREAM_CONTEXTS; k++) {
+        while (s->feeding[k] == job) svcSleepThread(0);
+    }
+    int32_t running = HPL_RUNNING;
+    if (!__atomic_compare_exchange_n(&job->state, &running, HPL_CANCELLED, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        free(job->pcm);
+        free(job->path);
+        free(job);
+    }
+}
+
+// Joins the workers that have ended (game thread; a look, no wait). True when none is left.
+HPL_CODE static bool hplReap(HplState* s) {
+    bool none = true;
+    for (int t = 0; t < HPL_JOBS; t++) {
+        if (s->threads[t] == NULL) continue;
+        if (threadJoin(s->threads[t], 0) == 0) { // its timeout, 0x09401BFE, is not negative
+            threadFree(s->threads[t]);
+            s->threads[t] = NULL;
+        } else {
+            none = false;
+        }
+    }
+    return none;
+}
+
+// Asks for voice vi's copy in slot j, its worker in thread slot t (game thread): the path and name of its stream
+// context, read under the context's lock while the voice owns it. A job that can't start stays in its slot as FAILED,
+// so it isn't asked for again while the sound plays.
+HPL_CODE static void hplStart(HplState* st, CtrAudioSystem* ca, int vi, int j, int t) {
+    const Voice* v = &ca->voices[vi];
+    StreamContext* s = &ca->streams[v->ctx];
+    HplJob* job = (HplJob*) calloc(1, sizeof(HplJob));
+    if (job == NULL) return;
+    job->sound = v->soundIndex;
+    job->state = HPL_RUNNING;
+    job->start = svcGetSystemTick();
+    LightLock_Lock(&s->lock);
+    if (s->owner == vi && s->path != NULL) job->path = strdup(s->path);
+    snprintf(job->name, sizeof(job->name), "%s", s->name);
+    LightLock_Unlock(&s->lock);
+    if (job->path == NULL || (st->threads[t] = threadCreate(hplWork, job, HPL_STACK, HPL_PRIORITY, 0, false)) == NULL) {
+        job->why = job->path == NULL ? 1 : 5; // no file (or not this voice's any more), or no thread
+        free(job->path);
+        job->path = NULL;
+        job->done = job->start;
+        job->state = HPL_FAILED;
+        __atomic_store_n(&st->jobs[j], job, __ATOMIC_RELEASE);
+        return;
+    }
+    __atomic_store_n(&st->jobs[j], job, __ATOMIC_RELEASE);
+    hplPost(ca, hplStartLog, job->name, (double) v->pitch);
+}
+
+// The vtable's update (game thread): the file's own (gomUpdate), then the copies follow the voices. A copy whose sound
+// no stream voice plays any more is let go; a looping stream voice at pitch 2 or more whose sound has none asks for
+// one (one job a sound, two at once at most, and a worker of a job let go still counts until it has ended). A worker
+// that has ended is joined at the next update. With no such voice, no copy and no worker, this is a look at 24 voices.
+// No state: the file's own alone.
+HPL_CODE static void hplUpdate(AudioSystem* audio, float deltaTime) {
+    hplUpdateNext(audio, deltaTime);
+    HplState* s = HPL_STATE();
+    if (s == NULL) return;
+    hplReap(s);
+    CtrAudioSystem* ca = (CtrAudioSystem*) audio;
+    for (int j = 0; j < HPL_JOBS; j++) {
+        if (s->jobs[j] == NULL) continue;
+        bool live = false;
+        for (int i = 0; i < VOICE_COUNT; i++) {
+            const Voice* v = &ca->voices[i];
+            if ((v->kind == VOICE_STREAM || v->kind == VOICE_PENDING) && v->soundIndex == s->jobs[j]->sound) live = true;
+        }
+        if (!live) hplRelease(s, j);
+    }
+    for (int i = 0; i < VOICE_COUNT; i++) {
+        const Voice* v = &ca->voices[i];
+        if (v->kind != VOICE_STREAM || !v->loop || !(v->pitch >= HPL_MIN_PITCH) || v->ctx < 0 || v->ctx >= STREAM_CONTEXTS)
+            continue;
+        int spare = -1, worker = -1;
+        bool have = false;
+        for (int j = 0; j < HPL_JOBS; j++) {
+            if (s->jobs[j] == NULL) spare = j;
+            else if (s->jobs[j]->sound == v->soundIndex) have = true;
+        }
+        if (have || spare < 0) continue;
+        for (int t = 0; t < HPL_JOBS; t++) if (s->threads[t] == NULL) worker = t;
+        if (worker >= 0) hplStart(s, ca, i, spare, worker);
+    }
+}
+
+// flowhitch's read link's last call, in front of audofix's (decode thread, and the opener's first reads; only the
+// stream contexts' decoders are fed): a stream whose copy is whole reads it from its decoder's position. No state:
+// audofix's read alone.
+HPL_CODE int32_t hplFeedRead(CtrDecoder* dec, int16_t* out, uint32_t maxFrames) {
+    CtrAudioSystem* ca = *ctrPcmWaitUta.target;
+    HplState* s = HPL_STATE();
+    uintptr_t off = (uintptr_t) dec - (uintptr_t) &ca->streams[0].decoder;
+    uint32_t k = off / sizeof(StreamContext);
+    if (s != NULL && ca != NULL && dec->kind == CTR_DECODER_VORBIS && off % sizeof(StreamContext) == 0 && STREAM_CONTEXTS > k) {
+        uint32_t at = (uint32_t) dec->positionFrames;
+        for (int j = 0; j < HPL_JOBS; j++) {
+            HplJob* job = s->jobs[j];
+            if (job == NULL) continue;
+            s->feeding[k] = job;
+            __sync_synchronize();
+            int32_t n = -1;
+            if (s->jobs[j] == job && strncmp(job->name, ca->streams[k].name, sizeof(job->name)) == 0) {
+                int32_t state = __atomic_load_n(&job->state, __ATOMIC_ACQUIRE);
+                unsigned long ms = (unsigned long) ((job->done - job->start) / CPU_TICKS_PER_MSEC);
+                if (state == HPL_READY && dec->channels == job->channels && dec->sampleRate == job->rate &&
+                    dec->totalFrames == job->frames && job->frames >= at) {
+                    n = (int32_t) (job->frames - at);
+                    if ((uint32_t) n > maxFrames) n = (int32_t) maxFrames;
+                    memcpy(out, job->pcm + at * job->channels, (uint32_t) n * job->channels * sizeof(int16_t));
+                    if (!job->told) hplPost(ca, hplFeedLog, job->name, (unsigned long) at, (unsigned long) (job->bytes / 1024u), ms);
+                    job->told = true;
+                } else if (state == HPL_FAILED && !job->told) {
+                    hplPost(ca, hplFailLog, job->name, hplWhy[(job->why - 1u) % 5u], ms);
+                    job->told = true;
+                }
+            }
+            __sync_synchronize();
+            s->feeding[k] = NULL;
+            if (n >= 0) {
+                dec->positionFrames = at + (uint32_t) n;
+                s->fedEnd[k] = at + (uint32_t) n;
+                return n;
+            }
+        }
+        if (s->fedEnd[k] == at && at != 0) (CtrDecoder_seek)(dec, at);
+        s->fedEnd[k] = 0;
+    }
+    return hplReadNext(dec, out, maxFrames);
+}
+
+// Lets every job go (game thread): a reader still in one is waited for, a worker still decoding is told to stop.
+HPL_CODE static void hplCancel(HplState* s) {
+    for (int j = 0; j < HPL_JOBS; j++) {
+        if (s->jobs[j] != NULL) hplRelease(s, j);
+    }
+}
+
+// The audio system's shutdown (game thread): every job is let go, then the workers are joined, HPL_STOP_MS at most. A
+// worker that hasn't ended by then (a read stuck on the card) is left running with its memory, and the exit keeps the
+// heap: usWant, as usstop asks for the SFX worker, and, when the loader gave a return address, hplAptExit (below).
+HPL_CODE static void hplStop(HplState* s) {
+    hplCancel(s);
+    for (int ms = 0; !hplReap(s); ms++) {
+        if (ms >= HPL_STOP_MS) {
+            __atomic_store_n(&usWant, true, __ATOMIC_RELEASE);
+            return;
+        }
+        svcSleepThread(1000000LL);
+    }
+}
+
+// shutdownAudio's CtrReadAhead_shutdown (through usstop's wrap; flowhitch's stop link): after the decode thread and
+// the opener are joined, before the audio system is freed. The workers stop, then flowhitch's stop. This is the one
+// teardown: shutdownAudio is the only caller of the unregistration (utaSetCallback(NULL), which calls lmRegister
+// directly, not through hplRegister), and it always comes here after it. No worker exists without the registration
+// (nor without the state).
+HPL_CODE void hplShutdown(void) {
+    HplState* s = HPL_STATE();
+    if (s != NULL) hplStop(s);
+    hplStopNext();
+}
+
+// utaSetCallback's registration (ML_REGISTER, once, at boot): the state is allocated, then the vtable's update becomes
+// hplUpdate where it is still the file's own (both tables, as mlRegister does; before usw and the pause menu copy it),
+// then mlRegister. No heap room for the state: the tables stay as they are, and hplcopy is off.
+HPL_CODE void hplRegister(ndspCallback callback, void* data) {
+    CtrAudioSystem* ca = utaCa;
+#ifdef CTRPORT_EXITTRAIL
+    if (callback != NULL && hplTest == 0) hplTestStart();
+#endif
+    HplState* s = HPL_STATE();
+    if (callback != NULL && s == NULL && (s = (HplState*) calloc(1, sizeof(HplState))) != NULL) {
+        s->loaderTo = __system_retAddr; // no aptExit has run yet: the loader's own address or NULL
+        __atomic_store_n(&usw.hplState, s, __ATOMIC_RELEASE);
+    }
+    for (int k = 0; callback != NULL && s != NULL && k < 2; k++) {
+        AudioSystemVtable* t = k == 0 ? &ctrAudioSystemVtable : ca != NULL ? (AudioSystemVtable*) ca->base.vtable : NULL;
+        if (t != NULL && t->update == hplUpdateNext) t->update = hplUpdate;
+    }
+    hplRegisterNext(callback, data);
+}
+
+// The exit's aptExit: usstop's call to the real one comes here on Old Tremor (the stop link's #define). usstop keeps
+// the heap only when the loader gave no return address. With one, libctru's __libctru_exit unmaps the linear heap and
+// the heap (a worker's stack, decoder and copy), then returns into the loader, or ends the process when aptExit
+// cleared the address (hb:ldr's chainload). A worker not joined by now (its read outlasted hplStop's wait) must not
+// have that happen under it (c26rev3's re-check). So on the exit's owner the exit keeps the heap as usstop's own keep
+// does (usVeto: no more heap frees) and ends the process at svcExitProcess; the kernel frees its memory with it. The
+// loader's own address is dropped, so nothing returns into it; an address aptExit set itself (aptExitProcess, on a
+// close the system ordered) goes aside for svcExitProcess's wrap, as in usstop's keep. Every worker joined (the
+// ordinary exit), no loader address (usstop decides from usWant) or another thread: nothing changes.
+#undef __real_aptExit
+void __real_aptExit(void);
+HPL_CODE void hplAptExit(void) {
+    __real_aptExit();
+    HplState* s = HPL_STATE();
+    bool live = false;
+    for (int t = 0; s != NULL && t < HPL_JOBS; t++) live |= __atomic_load_n(&s->threads[t], __ATOMIC_ACQUIRE) != NULL;
+#ifdef CTRPORT_EXITTRAIL
+    if (hplTest != 0) usNote(hplTestApt, hplTest, hplAlive(), (unsigned long) usLoader,
+            (unsigned long) (uintptr_t) __system_retAddr);
+    if (hplTest == 2) return;
+#endif
+    if (!live || __atomic_load_n(&usLoader, __ATOMIC_ACQUIRE) != 2u || !CtrLeavekeep_ownerKeep(true)) return;
+    __atomic_store_n(&usVeto, true, __ATOMIC_RELEASE);
+    void (*to)(void) = __system_retAddr;
+    __system_retAddr = NULL;
+    if (to != NULL && to != s->loaderTo) __atomic_store_n(&usExitTo, to, __ATOMIC_RELEASE);
+}
+#endif
+
+// ===[ seamlocal (change musicloop, row 23; UNDERTALE): a loop seam is measured against the steps around it ]===
+// PC loops a file whole, end straight into start, so a file whose end doesn't meet its start clicks there on PC too.
+// utaudio smooths a seam whose step is at least 4x the file's largest step anywhere (and musicloop's F2 then smooths
+// both channels). A quiet seam in a file with one loud moment elsewhere was kept, clicks and all. The rule here: a
+// seam is smoothed when its step is at least 4x the largest step within 441 frames (10 ms at 44.1 kHz) either side of
+// it, and at least 512 (-36 dBFS), so a quiet seam stays exactly as PC has it. Over UNDERTALE 1.08's 212 music files
+// that smooths 8 more (6 of them played by the game) and keeps the 6 smoothed before; 3 of its 231 embedded sounds
+// change, none of them looped by the game (tools/audio/seamlocal_ut108.tsv, from tools/audio/seamlocal_model.py).
+// - Streams: utaDecRead's decoder read (UTA_PHYS_READ) goes through slRead, which during the measured first pass (from
+//   frame 0, not seeked) keeps the largest of the first 441 steps and, in a ring on the heap, the last 441. At the
+//   pass's end it gives utaDecRead's seam test max(local, 128) as the file's largest step: 4x that is "4x the local
+//   steps and at least 512", and the splice's test, its log line and F2 are unchanged. No ring (no heap room, or a
+//   read out of order): 32767, so the seam is kept as on PC.
+// - Its state (SlState: the rings' pointers and the channels' marks) is on the heap, allocated once by the registration
+//   at boot; its pointer is in the audio system's alignment hole after shutDown, so seamlocal keeps no late data (RULES
+//   11-08). No state (no heap room at boot): seamlocal is off, and every seam follows the file-wide rule as before.
+// - Cached loops: right after a play (playSound) and after each update (where pending voices start), a looping PCM16
+//   channel whose seam piece isn't built yet gets its triggers from the same rule on its copy (the first and last 441
+//   steps, outside utaLock), both channels once either qualifies, as F2 does for streams. The ADPCM pack's sounds keep
+//   the pack's own rule (none of them is looped by the game with a different verdict).
+// utaSetCallback's registration (ML_REGISTER, one changed external call target) goes through slRegister, which points
+// the vtable's update and play entries at slUpdate and slPlaySound and then runs the rest of the chain.
+#if defined(ENABLE_WAD16)
+#define SL_CODE __attribute__((noinline, noipa, used, optimize("Os"), section(".text_seamlocal")))
+#define SL_W 441u // frames: 10 ms at 44.1 kHz
+#define SL_FLOOR 128 // 4x it is 512: a smaller step is left as it is
+#define SL_STR2(x) #x
+#define SL_STR(x) SL_STR2(x)
+#if defined(CTRPORT_TARGET_O3DS) && defined(CTRPORT_HAVE_TREMOR)
+#define SL_REGISTER_NEXT "hplRegister" // hplcopy's registration, then musicloop's
+#define SL_UPDATE_NEXT "hplUpdate" // hplcopy's update, which then runs the file's own
+#else
+#define SL_REGISTER_NEXT "mlRegister"
+#define SL_UPDATE_NEXT SL_STR(CTR_UPDATE_ENTRY)
+#endif
+
+typedef struct {
+    uint32_t next; // the frame the next read should start at
+    uint32_t k; // the ring slot of frame next's step
+    int16_t last[2]; // frame next - 1
+    uint16_t head[2]; // the largest of steps 1..SL_W (step i: frame i - 1 to frame i)
+    uint16_t ring[2][SL_W]; // the last SL_W steps
+} SlRing;
+
+struct SlState {
+    SlRing* volatile ring[STREAM_CONTEXTS]; // a stream context's measured pass (decode thread)
+    // The segment (seq) each channel's triggers were last set for (game thread). It counts only while the channel's
+    // slSet is 1: a reset (utaChnReset's memset) clears slSet and restarts the channel's seq at 1, so the play after it
+    // is measured again even if no update saw the channel idle in between (c26rev3's re-check).
+    uint16_t fixed[UTA_CHANNELS];
+};
+typedef struct SlState SlState;
+#define SL_STATE(ca) __atomic_load_n(&(ca)->slState, __ATOMIC_ACQUIRE)
+_Static_assert(__builtin_offsetof(CtrAudioSystem, voices) ==
+               (__builtin_offsetof(CtrAudioSystem, shutDown) + 1 + _Alignof(Voice) - 1) / _Alignof(Voice) * _Alignof(Voice),
+               "the audio system's slState must sit in the hole after shutDown (the struct keeps its layout)");
+
+int32_t slReadNext(CtrDecoder* dec, int16_t* out, uint32_t maxFrames) __asm__("mlRead");
+UtaSeam* slSeamFor(CtrDecoder* dec, int* index) __asm__("utaSeamFor");
+void slRegisterNext(ndspCallback callback, void* data) __asm__(SL_REGISTER_NEXT);
+void slUpdateFile(AudioSystem* audio, float deltaTime) __asm__(SL_STR(CTR_UPDATE_ENTRY));
+void slUpdateNext(AudioSystem* audio, float deltaTime) __asm__(SL_UPDATE_NEXT);
+int32_t slPlayNext(AudioSystem* audio, int32_t soundIndex, int32_t priority, bool loop) __asm__(SL_STR(CTR_PLAY_ENTRY));
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+bool slPacked(const void* data) __asm__("adSfxPacked");
+#endif
+
+SL_CODE static void slDrop(SlState* st, int idx) {
+    SlRing* r = st->ring[idx];
+    st->ring[idx] = NULL;
+    free(r);
+}
+
+// The local rule's largest step for channel c of a stream's measured pass.
+SL_CODE static int32_t slLocal(const SlRing* r, uint32_t c) {
+    int32_t m = r->head[c];
+    for (uint32_t i = 0; i < SL_W; i++) if (r->ring[c][i] > m) m = r->ring[c][i];
+    return m < SL_FLOOR ? SL_FLOOR : m;
+}
+
+// utaDecRead's read: the stream's own, measured on the way through. Core 1 (the decode thread). No state: the read
+// alone, so utaDecRead's own file-wide measure stands.
+SL_CODE int32_t slRead(CtrDecoder* dec, int16_t* out, uint32_t maxFrames) {
+    uint64_t at = dec->positionFrames;
+    int32_t got = slReadNext(dec, out, maxFrames);
+    CtrAudioSystem* ca = utaCa;
+    SlState* st = ca != NULL ? SL_STATE(ca) : NULL;
+    if (st == NULL) return got;
+    int idx = 0;
+    UtaSeam* s = slSeamFor(dec, &idx);
+    if (s == NULL) return got;
+    uint32_t ch = dec->channels;
+    if (!s->fromZero || s->measured || !ca->streams[idx].loop || ch < 1 || ch > 2 || got < 0) {
+        if (st->ring[idx] != NULL) slDrop(st, idx);
+        return got;
+    }
+    SlRing* r = st->ring[idx];
+    if (at == 0) { // a pass from frame 0 starts: measure it from the beginning
+        if (r == NULL) r = st->ring[idx] = (SlRing*) malloc(sizeof(SlRing));
+        if (r != NULL) memset(r, 0, sizeof(*r));
+    } else if (r != NULL && at != r->next) {
+        slDrop(st, idx); // a read out of order: no local measure for this pass
+        r = NULL;
+    }
+    if (got == 0) { // the pass's end: utaDecRead marks it measured, and maxStep is its seam test's from here on
+        for (uint32_t c = 0; c < ch; c++) s->maxStep[c] = r != NULL ? slLocal(r, c) : 32767;
+        if (r != NULL) slDrop(st, idx);
+        return got;
+    }
+    if (r == NULL) return got;
+    uint32_t n = (uint32_t) got, k = r->k;
+    for (uint32_t j = 0; j < n; j++) {
+        uint32_t i = r->next + j;
+        for (uint32_t c = 0; c < ch; c++) {
+            int32_t x = out[j * ch + c];
+            if (i > 0) {
+                int32_t d = x - r->last[c];
+                if (d < 0) d = -d;
+                if (i <= SL_W && d > r->head[c]) r->head[c] = (uint16_t) d;
+                r->ring[c][k] = (uint16_t) d;
+            }
+            r->last[c] = (int16_t) x;
+        }
+        if (i > 0 && ++k == SL_W) k = 0;
+    }
+    r->k = k;
+    r->next += n;
+    return got;
+}
+
+// The local rule on a whole copy: trig[c] for channels 0 and 1 (both once either qualifies, a nonzero step each);
+// step and max (the local largest, at least SL_FLOOR) for the log line.
+SL_CODE static void slTrigger(const int16_t* x, uint32_t frames, uint32_t ch, int8_t trig[2], int32_t step[2], int32_t max[2]) {
+    bool any = false;
+    step[0] = step[1] = max[0] = max[1] = 0;
+    for (uint32_t c = 0; c < ch; c++) {
+        int32_t m = 0;
+        for (uint32_t i = 1; i < frames; i++) {
+            if (i == SL_W + 1 && frames > 2 * SL_W + 1) i = frames - SL_W; // the first SL_W steps, then the last SL_W
+            int32_t d = x[i * ch + c] - x[(i - 1) * ch + c];
+            if (d < 0) d = -d;
+            if (d > m) m = d;
+        }
+        max[c] = m < SL_FLOOR ? SL_FLOOR : m;
+        step[c] = abs((int32_t) x[c] - (int32_t) x[(frames - 1) * ch + c]);
+        if (step[c] >= UTA_SEAM_RATIO * max[c]) any = true;
+    }
+    for (uint32_t c = 0; c < 2; c++) trig[c] = (int8_t) (c < ch && any && step[c] > 0);
+}
+
+// The name of the cached sound whose copy holds data, for the log line (game thread, which owns the voices).
+SL_CODE static const char* slSoundName(const uint8_t* data) {
+    CtrAudioSystem* ca = utaCa;
+    for (int id = 0; id < VOICE_COUNT; id++) {
+        const Voice* v = &ca->voices[id];
+        const CachedSfx* f = v->kind == VOICE_SFX ? v->sfx : NULL;
+        if (f != NULL && f->pcm != NULL && data >= f->pcm && data < f->pcm + f->bytes && v->soundIndex >= 0 &&
+            (uint32_t) v->soundIndex < ca->soundCount)
+            return ca->base.audioGroups[0]->sond.sounds[v->soundIndex].name;
+    }
+    return utaNone;
+}
+
+// Game thread: each looping PCM16 channel whose seam piece isn't built gets the local rule's triggers, once per
+// segment. One pass under utaLock finds the next such channel; its copy is read outside the lock (the frame callback
+// waits on it), and the triggers are written back only if the channel is still on that segment. No state: nothing.
+SL_CODE static void slCachedFix(void) {
+    SlState* st = utaActive && utaCa != NULL ? SL_STATE(utaCa) : NULL;
+    if (st == NULL) return;
+    for (int p = 0; p < UTA_CHANNELS;) {
+        UtaChan* c = NULL;
+        const UtaSeg* g = NULL;
+        const int16_t* x = NULL;
+        LightLock_Lock(&utaLock);
+        for (; p < UTA_CHANNELS && x == NULL; p++) {
+            c = &utaChan[p];
+            if (c->state != UTA_FEED) {
+                st->fixed[p] = 0;
+                continue;
+            }
+            g = NULL;
+            for (int k = 0; k < c->segs && k < 2; k++) if (c->seg[k].looping) g = &c->seg[k];
+            if (c->seamBuilt || g == NULL || (c->slSet && g->seq == st->fixed[p])) continue;
+            if (g->frames < 4 * UTA_TAIL_MAX || c->chans < 1 || c->chans > 2 || c->bytes != 2 * c->chans) {
+                st->fixed[p] = g->seq;
+                c->slSet = 1;
+                continue;
+            }
+#if defined(CTRPORT_ADPCM_SFX) || defined(CTRPORT_ADPCM_MUSIC) || defined(CTRPORT_ADPCM_SFXPACK)
+            if (slPacked(g->data)) { // the pack's own rule
+                st->fixed[p] = g->seq;
+                c->slSet = 1;
+                continue;
+            }
+#endif
+            x = (const int16_t*) g->data;
+        }
+        uint32_t frames = x != NULL ? g->frames : 0, ch = x != NULL ? c->chans : 0;
+        uint16_t seq = x != NULL ? g->seq : 0;
+        LightLock_Unlock(&utaLock);
+        if (x == NULL) return;
+        int8_t trig[2];
+        int32_t step[2], max[2];
+        slTrigger(x, frames, ch, trig, step, max);
+        LightLock_Lock(&utaLock);
+        bool changed = false;
+        if (c->state == UTA_FEED && !c->seamBuilt && g->seq == seq && g->data == (const uint8_t*) x) {
+            changed = c->trigger[0] != trig[0] || c->trigger[1] != trig[1];
+            c->trigger[0] = trig[0];
+            c->trigger[1] = trig[1];
+            st->fixed[p - 1] = seq;
+            c->slSet = 1;
+        }
+        LightLock_Unlock(&utaLock);
+        if (changed && utaPost != NULL)
+            utaPost(utaCa, utaSeamFormat, slSoundName((const uint8_t*) x), utaCached, (long) step[0], (long) max[0],
+                    (long) step[1], (long) max[1], trig[0] | trig[1] ? utaSmoothed : utaKept);
+    }
+}
+
+SL_CODE static int32_t slPlaySound(AudioSystem* audio, int32_t soundIndex, int32_t priority, bool loop) {
+    int32_t id = slPlayNext(audio, soundIndex, priority, loop);
+    if (loop) slCachedFix();
+    return id;
+}
+
+SL_CODE static void slUpdate(AudioSystem* audio, float deltaTime) {
+    slUpdateNext(audio, deltaTime);
+    slCachedFix();
+}
+
+// Both tables, where they still hold the file's own entries, before the rest of the chain runs (it and later layers
+// copy them: the load clock keeps the play entry it finds, usw and the pause menu copy the table). On UNDERTALE Old
+// with Tremor, slUpdate runs hplUpdate, so hplRegister then finds the update already taken and leaves it. The state is
+// allocated first (once, at boot); with no heap room for it the tables stay as they are, and seamlocal is off.
+SL_CODE void slRegister(ndspCallback callback, void* data) {
+    CtrAudioSystem* ca = utaCa;
+    SlState* st = ca != NULL ? SL_STATE(ca) : NULL;
+    if (callback != NULL && ca != NULL && st == NULL && (st = (SlState*) calloc(1, sizeof(SlState))) != NULL)
+        __atomic_store_n(&ca->slState, st, __ATOMIC_RELEASE);
+    for (int k = 0; callback != NULL && st != NULL && k < 2; k++) {
+        AudioSystemVtable* t = k == 0 ? &ctrAudioSystemVtable : ca != NULL ? (AudioSystemVtable*) ca->base.vtable : NULL;
+        if (t == NULL) continue;
+        if (t->update == slUpdateFile) t->update = slUpdate;
+        if (t->playSound == slPlayNext) t->playSound = slPlaySound;
+    }
+    slRegisterNext(callback, data);
+}
+#endif
+
+#if defined(ENABLE_WAD16)
+// lcstop (change loadclass, 11-09; UNDERTALE): PC UNDERTALE keeps a stopped sound in its asset's membership for a short
+// while. After a stop (by asset, by instance or of everything), asking whether the ASSET plays still answers true in
+// the step of the stop and the next step; the stopped INSTANCE answers false at once, a second stop inside the window
+// does not lengthen it, and a sound played again at once is a new live instance (pcref loadclass-sem-2/3 and
+// loadclass-semb-1). The port retired the asset at once, so a music controller that checks its song in the step that
+// stopped everything (a room change from an object's destruction) started the song again where PC stays silent
+// (aheadtp r75). Instance queries and every sound's physical stop are unchanged: the window only adds an answer when
+// the live-voice query (audparIsPlaying) says no.
+// The window is the stop's step and the next one for every sound (c26rev2 LCSEM-2). PC answers that way in every run,
+// for stops the bench issued and for the chase room's natural stop (aheadtp r75) alike. A sound streamed from its own
+// file answered one step more for the bench's stops (issued at a step's start), but not for the chase room's natural
+// one (nat-real-2: PC's window is wall time); there the port keeps its old answer, false, rather than guess.
+// The window's END counts game steps (the runner's frame count, which Runner_step advances once per step on the game
+// thread, and which stands still while the options menu holds the game). Whether a stop OPENS a window does depend on
+// the sound's backend state at the stop, as the live-voice query already does (c26rev2 LCSEM-3): a sound whose last
+// buffer the DSP has finished, or whose stream is done, is no longer live, so stopping it notes nothing.
+// One note per asset (its last step; 0 = none), so no stop is ever dropped however many assets stop at once
+// (c26rev2 LCSEM-1). The notes come from the heap at the first stop that needs one (4 B per asset, kept for the audio
+// system's life), so lcstop keeps no late data (RULES 11-08); their pointer sits in the audio system's alignment hole
+// before streams. With no heap room the window is off and the old answers stay. When the notes are allocated, the
+// audio system's own vtable (the one the engine calls through) gets lcstopDestroy as its destroy, which frees them with
+// the audio system (c26rev2 LCSEM-4). The static vtable keeps naming ctrDestroy, so nothing before this block moves.
+// A note's step is the stop's step + 1, which is never 0 while the frame count stays in its (signed) range.
+#define LCSTOP_CODE __attribute__((noinline, optimize("Os"), section(".text_lcstop")))
+_Static_assert(__builtin_offsetof(CtrAudioSystem, streams) ==
+                   (__builtin_offsetof(CtrAudioSystem, streamEntries) + sizeof(((CtrAudioSystem*) 0)->streamEntries) +
+                    _Alignof(StreamContext) - 1) / _Alignof(StreamContext) * _Alignof(StreamContext),
+               "the audio system's lcStop must sit in the hole before streams (the struct keeps its layout)");
+Runner* CtrHeldslow_liveRunner(void);
+bool audparIsPlaying(AudioSystem* audio, int32_t soundOrInstance);
+// The file's own functions, by their assembler names (no new call-graph edge, so the file's order stays).
+bool lcstopVoiceLive(CtrAudioSystem* ca, int vi) __asm__("voiceLive");
+void lcstopVoiceStop(CtrAudioSystem* ca, int vi) __asm__("stopVoice");
+void lcstopStopAllFile(AudioSystem* audio) __asm__("ctrStopAll");
+void lcstopDestroyFile(AudioSystem* audio) __asm__("ctrDestroy");
+// The vtable no longer names these two; the pointers keep them, unchanged, where they are.
+__attribute__((used, section(".rodata_lcstop_in_text"))) static void (*const lcstopKeepStop)(AudioSystem*, int32_t) =
+    sndcutStopSound;
+__attribute__((used, section(".rodata_lcstop_in_text"))) static void (*const lcstopKeepAll)(AudioSystem*) = ctrStopAll;
+
+LCSTOP_CODE static int32_t lcstopStep(void) {
+    Runner* runner = CtrHeldslow_liveRunner();
+    return runner != NULL ? (int32_t) runner->frameCount : 0;
+}
+
+// voiceFinished's test, copied without voiceLive's retirement, so stopAll still stops (and ramps out) what it did.
+// Branches, not a switch: a jump table would be a constant in the main read-only data and move what follows it.
+__attribute__((noinline, optimize("Os", "no-jump-tables", "no-tree-switch-conversion"), section(".text_lcstop"))) static bool
+lcstopFinished(CtrAudioSystem* ca, const Voice* v) {
+    if (v->kind == VOICE_SFX) return !v->loop && (v->wbCount == 0 || v->wb[v->wbCount - 1].status == NDSP_WBUF_DONE);
+    if (v->kind == VOICE_STREAM) return ca->streams[v->ctx].state == CTX_DONE;
+    if (v->kind == VOICE_VIRTUAL) return !v->loop && v->virtualSeconds >= v->virtualLength;
+    return v->kind != VOICE_PENDING;
+}
+
+// ctrDestroy, then the notes (ctrDestroy frees the audio system, so the pointer is read first).
+LCSTOP_CODE static void lcstopDestroy(AudioSystem* audio) {
+    int32_t* notes = ((CtrAudioSystem*) audio)->lcStop;
+    lcstopDestroyFile(audio);
+    free(notes);
+}
+
+LCSTOP_CODE static void lcstopNote(CtrAudioSystem* ca, const Voice* v, int32_t step) {
+    int32_t sound = v->soundIndex;
+    if (sound < 0 || (uint32_t) sound >= ca->soundCount) return; // created streams keep the old answer
+    if (ca->lcStop == NULL) {
+        if ((ca->lcStop = (int32_t*) calloc(ca->soundCount, sizeof(int32_t))) == NULL) return; // no room: no window
+        ca->base.vtable->destroy = lcstopDestroy;
+    }
+    ca->lcStop[sound] = (int32_t) ((uint32_t) step + 1u);
+}
+
+// sndcutStopSound's loop, noting each sound it stops.
+LCSTOP_CODE static void lcstopStopSound(AudioSystem* audio, int32_t soundOrInstance) {
+    CtrAudioSystem* ca = (CtrAudioSystem*) audio;
+    bool instance = soundOrInstance >= SOUND_INSTANCE_ID_BASE && soundOrInstance < AUDIO_STREAM_INDEX_BASE;
+    int32_t step = lcstopStep();
+    for (int i = 0; i < VOICE_COUNT; i++) {
+        const Voice* v = &ca->voices[i];
+        if (v->kind == VOICE_FREE || !lcstopVoiceLive(ca, i)) continue;
+        if ((instance ? v->instanceId : v->soundIndex) != soundOrInstance) continue;
+        lcstopNote(ca, v, step);
+        lcstopVoiceStop(ca, i);
+    }
+}
+
+// Notes every live sound, then ctrStopAll as before. The runner's reset (a game restart, which leaves no room
+// current) stops everything with no window and forgets earlier stops, as PC does (pcref loadclass-semc-1).
+LCSTOP_CODE static void lcstopStopAll(AudioSystem* audio) {
+    CtrAudioSystem* ca = (CtrAudioSystem*) audio;
+    Runner* runner = CtrHeldslow_liveRunner();
+    if (runner == NULL || runner->currentRoomIndex < 0) {
+        if (ca->lcStop != NULL) memset(ca->lcStop, 0, ca->soundCount * sizeof(int32_t));
+        lcstopStopAllFile(audio);
+        return;
+    }
+    int32_t step = (int32_t) runner->frameCount;
+    for (int i = 0; i < VOICE_COUNT; i++) {
+        const Voice* v = &ca->voices[i];
+        if (v->kind != VOICE_FREE && !lcstopFinished(ca, v)) lcstopNote(ca, v, step);
+    }
+    lcstopStopAllFile(audio);
+}
+
+// ctrIsPlaying's target: the live voices first (audparIsPlaying, paused ones included), then an asset's window.
+LCSTOP_CODE bool lcstopIsPlaying(AudioSystem* audio, int32_t soundOrInstance) {
+    if (audparIsPlaying(audio, soundOrInstance)) return true;
+    CtrAudioSystem* ca = (CtrAudioSystem*) audio; // instances and created streams: no window
+    if (ca->lcStop == NULL || soundOrInstance < 0 || (uint32_t) soundOrInstance >= ca->soundCount) return false;
+    int32_t until = ca->lcStop[soundOrInstance];
+    return until != 0 && (int32_t) ((uint32_t) until - (uint32_t) lcstopStep()) >= 0;
+}
+#endif
+
+// bootahead (first update, changes bootmask and bootahead2): the menu song named to the spare, at the end so nothing above
+// moves; its note link starts flowend's chain (FLOWHITCH_NOTE_NEXT).
+// Compile this unit separately: original audio bodies keep their optimizer inputs and slots.
+#ifdef CTRPORT_SFXLATE_UNIT
+#include "ctr_sfxlate_cooler.inc"
+#endif
+#line 11682
+#include "ctr_bootahead.inc"

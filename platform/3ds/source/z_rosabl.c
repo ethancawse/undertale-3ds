@@ -237,3 +237,9 @@ ROSABL_CODE void CtrRosabl_simMenu(u32 simMs) {
             (int) __atomic_load_n(&rosablHold, __ATOMIC_RELAXED), (int) CtrScreens_bottomDark());
 }
 #endif
+
+// Dimlight observes the existing hold without duplicating combo or grace
+// logic. New code belongs to its own appended section, not this change's slot.
+__attribute__((noinline, section(".text.late.dimlight"))) bool CtrDimlight_rosalinaHeld(void) {
+    return __atomic_load_n(&rosablHold, __ATOMIC_ACQUIRE);
+}

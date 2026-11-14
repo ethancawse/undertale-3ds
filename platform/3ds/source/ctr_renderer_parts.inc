@@ -92,7 +92,7 @@ static void UTPART_LATE partEmit(CtrRenderer* r, CtrPage* page, float sx0, float
 
 #endif
 
-// drawcut is UNDERTALE only (ENABLE_WAD16; ruling, 10-31): DELTARUNE keeps the stock cull and finite test below,
+// drawcut is UNDERTALE only (ENABLE_WAD16; review decision, 10-31): DELTARUNE keeps the stock cull and finite test below,
 // byte for byte, until its own placement and draw timings are measured (park-drawcut-dr).
 #if !defined(CTRPORT_RENDER_TIMING) && defined(ENABLE_WAD16)
 #define UTPART_DRAWCUT 1

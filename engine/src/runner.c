@@ -4240,12 +4240,12 @@ static void dispatchCollisionEvents(Runner* runner) {
 
                     // Compute bboxes
                     if (selfDirty) {
-                        bboxSelf = Collision_computeBBox(runner, self);
+                        bboxSelf = Collision_hitBBox(runner, self);
                         sprSelf = Collision_getSprite(dataWin, self);
                         selfDirty = false;
                     }
                     if (other != boxOwner || boxEpoch != hitEpoch) {
-                        boxOfOwner = Collision_computeBBox(runner, other);
+                        boxOfOwner = Collision_hitBBox(runner, other);
                         boxOwner = other;
                         boxEpoch = hitEpoch;
                     }
@@ -4281,7 +4281,7 @@ static void dispatchCollisionEvents(Runner* runner) {
                     bool needsPrecise = (sprSelf != nullptr && sprSelf->sepMasks == 1) || (sprOther != nullptr && sprOther->sepMasks == 1) || Collision_obbNeedsSAT(sprSelf, self) || Collision_obbNeedsSAT(sprOther, other);
 
                     if (needsPrecise) {
-                        bool preciseHit = Collision_instancesOverlapPrecise(runner, self, other, bboxSelf, bboxOther);
+                        bool preciseHit = Collision_hitPair(runner, self, other, bboxSelf, bboxOther);
 #ifdef ENABLE_VM_TRACING
                         if (traceThisPair) logInfo("  precise=%s (selfSepMasks=%d otherSepMasks=%d)\n", preciseHit ? "hit" : "miss", sprSelf ? (int32_t)sprSelf->sepMasks : -1, sprOther ? (int32_t)sprOther->sepMasks : -1);
 #endif
@@ -4348,8 +4348,8 @@ static void dispatchCollisionEvents(Runner* runner) {
                         // When we are in collision compatibility mode, we need to recheck if the player is STILL colliding after we have moved them
                         // If they are, we revert the collision
                         if (runner->collisionCompatibilityMode) {
-                            InstanceBBox bboxSelf2 = Collision_computeBBox(runner, self);
-                            InstanceBBox bboxOther2 = Collision_computeBBox(runner, other);
+                            InstanceBBox bboxSelf2 = Collision_hitBBox(runner, self);
+                            InstanceBBox bboxOther2 = Collision_hitBBox(runner, other);
                             if (bboxSelf2.valid && bboxOther2.valid) {
                                 bool aabbMiss2 = bboxSelf2.left >= bboxOther2.right || bboxOther2.left >= bboxSelf2.right || bboxSelf2.top >= bboxOther2.bottom || bboxOther2.top >= bboxSelf2.bottom;
                                 bool stillColliding = false;
@@ -4358,7 +4358,7 @@ static void dispatchCollisionEvents(Runner* runner) {
                                     Sprite* sprOther2 = Collision_getSprite(dataWin, other);
                                     bool needsPrecise2 = (sprSelf2 != nullptr && sprSelf2->sepMasks == 1) || (sprOther2 != nullptr && sprOther2->sepMasks == 1) || Collision_obbNeedsSAT(sprSelf2, self) || Collision_obbNeedsSAT(sprOther2, other);
                                     if (needsPrecise2) {
-                                        stillColliding = Collision_instancesOverlapPrecise(runner, self, other, bboxSelf2, bboxOther2);
+                                        stillColliding = Collision_hitPair(runner, self, other, bboxSelf2, bboxOther2);
                                     } else {
                                         stillColliding = true;
                                     }
@@ -4566,7 +4566,7 @@ static void dispatchOutsideViewEvents(Runner* runner, int32_t viewIndex) {
             if (!inst->active) continue;
 
             bool outside;
-            InstanceBBox bbox = Collision_computeBBox(runner, inst);
+            InstanceBBox bbox = Collision_readBBox(runner, inst);
 
             if (bbox.valid) {
                 outside = (viewLeft > bbox.right || bbox.left > viewRight || 0 > bbox.bottom || bbox.top > viewBottom);
@@ -5937,7 +5937,13 @@ void Runner_free(Runner* runner) {
     RunnerMouse_free(runner->mouse);
     if (runner->windowTitle)
         free(runner->windowTitle);
+#if defined(ENABLE_WAD16) && !defined(__3DS__)
+    Hitcheck_freeRunner(runner);
+#else
+    // The 3DS adapter redirects this terminal free, preserving the C graph.
     free(runner);
+#endif
+#line 5849
 }
 
 // Mutation bookkeeping is appended to preserve existing diagnostic source lines.
@@ -6572,7 +6578,7 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkRebuildIf
     rebuildDrawableCacheIfDirty(runner);
 }
 
-// asrfight (D, ruling 2026-10-30): on UNDERTALE Old, utkDrawRoom leaves out the draws that the builder's key
+// change asrfight (D, review decision 2026-10-30): on UNDERTALE Old, utkDrawRoom leaves out the draws that the builder's key
 // (tools/aot/dskip.py, private build input) proves hidden: a star burst's new ring stars, drawn upright in their first
 // frame under the opaque core of the big star drawn after them. The key (object, depth) is two words in utkDskipTail,
 // so this code is the same whatever the key; the no-key words (-1, 0) match no instance.
@@ -6580,7 +6586,7 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkRebuildIf
 #define DSKIP_ON 1
 extern const int32_t utkDskipKey[2] __asm__("utkDskipKey");
 #endif
-extern bool utkPcLater; static int32_t utkPcResume(Runner* runner, int32_t i, const DrawKey* last); // pcorder, this file's end
+extern bool utkPcLater; static int32_t utkPcResume(Runner* runner, int32_t i, const DrawKey* last); static int32_t drawbirthResume(Runner* runner, int32_t i, const DrawKey* last); // pcorder, this file's end
 static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawRoom(Runner* runner) {
     if (DataWin_isVersionAtLeast(runner->dataWin, 2, 0, 0, 0) || arrlen(runner->runtimeLayers) != 0) {
         drawRoom(runner);
@@ -6613,7 +6619,7 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawRoom(
                 // way (pcorder, utkPcResume at this file's end): a new instance goes in at its creation depth and is
                 // drawn this pass only if that is ahead of the cursor; a depth change moves nothing until Draw End is
                 // over. Past the end: nothing is left to draw.
-                i = utkPcResume(runner, i, &lastProcessedDrawKey);
+                i = drawbirthResume(runner, i, &lastProcessedDrawKey);
             }
             //
             //
@@ -6715,7 +6721,7 @@ __attribute__((naked, used, section(".text.late.utkill"))) static void utkDskipT
     __asm__("utkDskipKey: .word " DSKIP_STR(DSKIP_OBJECT) ", " DSKIP_STR(DSKIP_DEPTH) "\n " DSKIP_PAD);
 }
 #endif
-// utflames (tilerun): utkDrawRoom's tile branch is a call to drawLegacyTileRun now, 64 B shorter; these zero bytes
+// change utflames (tilerun): utkDrawRoom's tile branch is a call to drawLegacyTileRun now, 64 B shorter; these zero bytes
 // after it in .text.late.utkill keep the late code after it where it was. Never executed or referenced. The same on Old
 // and New (GCC 16.1.0 Release).
 #if defined(__GNUC__)
@@ -6879,7 +6885,7 @@ static TILERUN_LATE int32_t drawLegacyTileRun(Runner* runner, Room* room, int32_
     return i;
 }
 
-// ===[ Turned runs (utflowey) ]===
+// ===[ Turned runs (change utflowey) ]===
 // Mettaton's opera (room_fire_operatest) holds hundreds of obj_cherrypetal instances in a row of the draw list (one
 // made each frame, none destroyed): one object with no Draw event, the same sprite, scale, blend and alpha, but each
 // with its own image_angle, so utkSameDraw never armed a run and every petal went the whole way: drawInstanceNormally's
@@ -6970,7 +6976,7 @@ int32_t utflTurnBatch(Runner* runner, Instance* inst, UtkPlainRun* run, int32_t 
 }
 #endif
 
-// ===[ Draw passes with no instance, or one, that can answer (freewins) ]===
+// ===[ Draw passes with no instance, or one, that can answer (change freewins) ]===
 // fireDrawSubtype runs a Draw subtype's event on the draw list's instances, in the list's order, whose object (itself
 // or a parent) has that event. Every instance in runner->instances is in instancesByExactObject under its current
 // object index from its creation (or its room's load, its return as a persistent, instance_change, the dust swarm's
@@ -7034,7 +7040,7 @@ static FREEWINS_LATE uint64_t drawPassFirst(Runner* runner, int32_t slot, const 
     DPRANK_PAD; // dprank (runner.h): keeps this function's size, so nothing after it in this section moves
     return drawPassFind(only, drawables, n);
 }
-// dprank (uthunt, GO 2026-10-31; runner.h): the draw pass's one responder entry for drawPassFirst. The scan
+// dprank (change uthunt, GO 2026-10-31; runner.h): the draw pass's one responder entry for drawPassFirst. The scan
 // walked the list from the start (28 B an entry, a room's tiles first: 1,078 in snowpuzz) for every Draw Begin/End,
 // GUI, Pre and Post pass with exactly one responder instance, every frame. Each instance is in the list once, so the
 // entry at the instance's draw rank, when it holds the instance, is the entry the scan finds. A stale or unset rank
@@ -7086,7 +7092,7 @@ static FREEWINS_LATE int32_t drawPassSkipClass(Runner* runner, const Instance* i
 // and place with the draw skip class in drawPassSkipClass and the scan's bounds from drawPassFirst and drawPassMore,
 // so that nothing after it moves (proven by tools/analysis/check_freewins_layout.py).
 
-// Saved room states on first use (freewins, win 4). Runner_reset allocated a SavedRoomState (1,976 B) for every
+// Saved room states on first use (change freewins, win 4). Runner_reset allocated a SavedRoomState (1,976 B) for every
 // room (UNDERTALE 336 rooms = 649 KB of heap, DELTARUNE chapter 5 487 KB), though only a persistent room ever keeps
 // anything in one. runner->savedRoomStates now holds one state pointer a room (nullptr until used), then one
 // "initialized" flag byte a room, and a state is allocated (zeroed, as Runner_reset's calloc left it) the first time
@@ -7154,7 +7160,7 @@ __asm__(".pushsection .text.initRoom,\"ax\",%progbits\n.subsection 1\n.space 20\
         ".pushsection .text.Runner_handlePendingRoomChange,\"ax\",%progbits\n.subsection 1\n.space 4\n.popsection\n");
 #endif
 #if defined(UTORDER_ON) && defined(UTK_PLAIN_RUNS)
-// utorder (credfix, ruling 2026-10-27; UNDERTALE on the 3DS): the draw list's structure brought up to date
+// utorder (change credfix, review decision 2026-10-27; UNDERTALE on the 3DS): the draw list's structure brought up to date
 // with each instance entry's order its draw order key (UTORDER_KEY, platform/3ds/source/z_utorder.c). The keep
 // (Utk_keepDrawList) already orders by key; when it fails, rebuildDrawableCache's full rebuild (which orders instances
 // by id) runs here, then each instance entry takes its key, the list is sorted again (entries never tie) and the draw
@@ -7192,7 +7198,7 @@ InstanceBBox Colexact_sharedBBox(Runner* runner, Instance* inst) {
 }
 #endif
 
-// ===[ uttc: the tile pre-filter (uthunt T1, GO 2026-10-31; UNDERTALE 3DS only) ]===
+// ===[ uttc: the tile pre-filter (change uthunt T1, GO 2026-10-31; UNDERTALE 3DS only) ]===
 // drawLegacyTileRun tests every tile of a run against the view rectangle: 600 to 1,894 tiles a frame in the big
 // rooms, of which the 320x240 view shows a fifth. Here each depth's tiles have bitmaps by 128 px column and row band
 // of the room (without the layer offset), built once per room, and a run visits only the tiles of the bands the view
@@ -7702,5 +7708,84 @@ static SavedRoomState* ParityRestore_entry(Runner* runner, int32_t roomIndex) {
         list[at] = inst;
     }
     return state;
+}
+#endif
+
+
+// R397b: qualified normal-Draw birth admission, appended after frozen S7.
+// The original helper and its slot stay unchanged; its caller redirects here.
+// Keep the old helper for unsupported list mutations, before any insertion.
+#if defined(UTK_PLAIN_RUNS)
+#define DRAWBIRTH_TEXT __attribute__((noinline, optimize("Os"), section(".text.late.drawbirth")))
+static DRAWBIRTH_TEXT int32_t drawbirthResume(Runner* runner, int32_t i, const DrawKey* last) {
+    Room* room = runner->currentRoom;
+    Drawable* list = runner->cachedDrawables;
+    int32_t n = (int32_t) arrlen(list);
+    if (runner->drawableListStructureDirty) {
+        // As many tiles and drawn particle systems as the list holds, else the old way. With the same counts every tile
+        // entry's index is in range, and the particle system draw checks its system itself.
+        if (room == nullptr) goto old;
+        uint32_t tiles = 0;
+        ParticleSystem* pool = runner->particleSystemPool;
+        int32_t poolCount = (int32_t) arrlen(pool), parts = 0;
+        repeat(n, j) {
+            if (list[j].type == DRAWABLE_TILE) tiles++;
+            else if (list[j].type == DRAWABLE_PARTICLE_SYSTEM) parts++;
+        }
+        if (tiles != room->tileCount) goto old;
+        bool savedSuccessor = tiles == 0 && parts == 0; repeat(poolCount, p) if (pool[p].used && pool[p].automaticDraw) parts--;
+        if (parts != 0) goto old;
+
+        // The new instances, each in front of its creation depth's instances, in the order they were made (a later one
+        // in front of an earlier one at the same depth). The place is found with a key before every other: the
+        // instance's own key may be newer than a later birth's, after a depth write that came back (GameMaker 1.4
+        // put it in at its birth and moves it after the pass; c26rev R156c F1).
+        Instance** live = runner->instances;
+        int32_t liveCount = (int32_t) arrlen(live), births = 0;
+        repeat(liveCount, k) {
+            if (live[k] == nullptr) goto old;
+            if (live[k]->drawRank == -1) births++;
+        }
+        // All batch sizes use the same admission rule; a rebuild would lose the saved successor.
+        if (births != 0) {
+            arrsetlen(runner->cachedDrawables, n + births);
+            list = runner->cachedDrawables;
+            repeat(liveCount, k) {
+                Instance* inst = live[k];
+                if (inst->drawRank != -1) continue;
+                Drawable b;
+                memset(&b, 0, sizeof b);
+                b.type = DRAWABLE_INSTANCE;
+                b.depth = runner->dataWin->objt.objects[inst->objectIndex].depth;
+                b.instance = inst;
+                b.order = INT32_MIN;
+                b.objectIndex = inst->objectIndex;
+                int32_t at = 0;
+                while (n > at && 0 > utkCompareDrawables(&list[at], &b)) at++;
+                b.order = UTORDER_KEY(inst);
+                memmove(&list[at + 1], &list[at], (size_t) (n - at) * sizeof(Drawable));
+                list[at] = b;
+                n++;
+                inst->drawRank = at; // in the list now (a stale rank, as any after an insert: the checks of a rank hold)
+                if (i > at || (savedSuccessor && i == at)) i++;
+            }
+        }
+#if defined(UTSW_ON)
+        // The dust swarm's spans, merged again (new pixels in front of their depth's entries, by their keys); the
+        // cursor stays after the same entry (the last one taken is never a span: a span draws no code).
+        int32_t kept = 0;
+        repeat(i, j) if (!UTSW_IS_SPAN(&list[j])) kept++;
+        Utsw_merge(runner);
+        list = runner->cachedDrawables;
+        for (i = 0; kept > 0; i++) if (!UTSW_IS_SPAN(&list[i])) kept--;
+#endif
+    }
+    runner->drawableListSortDirty = false;
+    runner->drawableListStructureDirty = false;
+    utkPcLater = true;
+    return i;
+
+old:
+    return utkPcResume(runner, i, last);
 }
 #endif

@@ -1,4 +1,4 @@
-// evguard (asgore30): an event whose code starts with a test of a global that jumps to the code's end when false
+// evguard (change asgore30): an event whose code starts with a test of a global that jumps to the code's end when false
 // does nothing at all while the test is false, so the runner's event runs skip its events then.
 //
 // Many of UNDERTALE's bullets end every frame with an End Step that removes the bullet once a global turn counter

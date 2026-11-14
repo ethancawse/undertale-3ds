@@ -1,5 +1,6 @@
 """Fail closed on decoder input drift and preserve assembly section boundaries."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -115,6 +116,7 @@ def test_unselected_padding_delegates_decoder_unchanged(monkeypatch, flags):
     assert calls == [['cache', *command]]
 
 
+@pytest.mark.parametrize('routed', [False, True])
 @pytest.mark.parametrize('config,tremor,padding', [
     ('Release', 'found', True), ('RelWithDebInfo', 'found', True),
     ('release', 'found', True), ('RELEASE', 'found', True),
@@ -124,11 +126,20 @@ def test_unselected_padding_delegates_decoder_unchanged(monkeypatch, flags):
     ('RelWithDebInfo', 'missing', False),
     ('Profile', 'found', None), ('', 'disabled', None),
 ])
-def test_cmake_selects_padding_after_decoder_discovery(tmp_path, config, tremor, padding):
+def test_cmake_selects_padding_after_decoder_discovery(tmp_path, config, tremor, padding, routed):
     cmake = shutil.which('cmake')
     if not cmake:
         pytest.skip('CMake is required for the decoder-mode configuration check')
     root = Path(__file__).resolve().parents[2]
+    # Configure the real module with an empty or synthetic nonempty route list.
+    module = tmp_path / 'platform/3ds/aacout.cmake'
+    module.parent.mkdir(parents=True)
+    shutil.copyfile(root / 'platform/3ds/aacout.cmake', module)
+    shutil.copyfile(root / 'platform/3ds/aacslot-native.json', module.with_name('aacslot-native.json'))
+    manifest = tmp_path / 'tools/aot/aacslot.json'
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps(dict(version=1, functions=[
+        dict(id='fixture', phase=dict(o3ds=0, n3ds=0))] if routed else [])), encoding='utf-8')
     sdk = tmp_path / 'sdk'
     (sdk / 'bin').mkdir(parents=True)
     (sdk / 'arm-none-eabi/lib').mkdir(parents=True)
@@ -140,16 +151,20 @@ def test_cmake_selects_padding_after_decoder_discovery(tmp_path, config, tremor,
         'set(CTRPORT_DKA_BIN "' + (sdk / 'bin').as_posix() + '")\n'
         'set(CTRPORT_SPECS_NEW "-T 3dsx.ld%s")\n'
         'set(CTRPORT_PYTHON_EXECUTABLE python)\n'
+        'set(CTRPORT_TARGET o3ds)\n'
+        'set(CTRPORT_AOT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/aot_fixture.c")\n'
         'set(PLATFORM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/source/ctr_audio_decoder.c")\n'
         'set(ENGINE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../../engine/src/overlay_file_system.c")\n'
-        'include("' + (root / 'platform/3ds/aacout.cmake').as_posix() + '")\n'
+        'include("' + module.as_posix() + '")\n'
         # Set discovery results only after inclusion, as in the actual project.
         'set(CTRPORT_USE_TREMOR ' + ('OFF' if tremor == 'disabled' else 'ON') + ')\n'
         'set(TREMOR_INCLUDE_DIR headers)\nset(TREMOR_LIBRARY tremor)\n'
         'set(OGG_LIBRARY ' + ('OGG_LIBRARY-NOTFOUND' if tremor == 'missing' else 'ogg') + ')\n'
         'aacout_configure_decoder()\n'
         'get_target_property(launcher ctrport C_COMPILER_LAUNCHER)\n'
-        'file(WRITE "${CMAKE_BINARY_DIR}/launcher.txt" "${launcher}")\n', encoding='utf-8')
+        'get_source_file_property(deps "${CTRPORT_AOT_SOURCES}" OBJECT_DEPENDS)\n'
+        'file(WRITE "${CMAKE_BINARY_DIR}/launcher.txt" "${launcher}")\n'
+        'file(WRITE "${CMAKE_BINARY_DIR}/deps.txt" "${deps}")\n', encoding='utf-8')
     build = tmp_path / 'build'
     result = subprocess.run([cmake, '-S', str(tmp_path), '-B', str(build), '-DCMAKE_BUILD_TYPE=' + config],
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
@@ -161,7 +176,12 @@ def test_cmake_selects_padding_after_decoder_discovery(tmp_path, config, tremor,
     assert result.returncode == 0, result.stdout + result.stderr
     launcher = (build / 'launcher.txt').read_text(encoding='utf-8').split(';')
     assert ('--aacout-pad' in launcher) == padding
-    assert launcher[-2:] == ['cache', '--aacout-compiler']
+    tail = ['cache', '--aacslot-compiler', '--aacout-compiler'] if routed else ['cache', '--aacout-compiler']
+    assert launcher[-len(tail):] == tail
+    assert launcher.count('--aacslot-compiler') == int(routed)
+    assert any(item.endswith('/aacslot_compile.py') for item in launcher) == routed
+    assert ('aacslot_compile.py' in (build / 'deps.txt').read_text(encoding='utf-8')) == routed
+    assert launcher.count('--aacout-compiler') == 1
     script = build / 'aacout.ld'
     text = script.read_text(encoding='utf-8')
     assert 'KEEP(*/ctr_audio_decoder.o(.text.*))' in text
@@ -272,6 +292,7 @@ def test_build_sh_full_strategy_overrides_short_environment_at_link(tmp_path):
         'target_link_options(ctrport PRIVATE -nostdlib -Wl,-e,_start)\n'
         'set(CTRPORT_DKA_BIN "' + compiler.parent.as_posix() + '")\n'
         'set(CTRPORT_PYTHON_EXECUTABLE "' + Path(sys.executable).as_posix() + '")\n'
+        'set(CTRPORT_TARGET o3ds)\n'
         'include("' + (root / 'platform/3ds/aacout.cmake').as_posix() + '")\n', encoding='utf-8')
     env = dict(os.environ, CMAKE_INTERMEDIATE_DIR_STRATEGY='SHORT')
     build = tmp_path / 'build'

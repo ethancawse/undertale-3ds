@@ -24,7 +24,7 @@ typedef struct {
 } SdlatModel;
 
 // Observed elapsed-time fits, not isolated service times. See results/sdlat.md.
-// Old: a Neutral playthrough; Old 2DS: utstall10; New: median of four flowergpu5 fits.
+// Old: maintainer Neutral; Old 2DS: utstall10; New: median of four flowergpu5 fits.
 static const SdlatModel sdlatModels[] RO = {
     { "o3ds", 62010, 8361, 138 },
     { "o2ds", 71550, 21579, 19 },

@@ -57,9 +57,15 @@ import fontverdict  # noqa: E402
 # letter's or Papyrus' E's bottom bar does by one source pixel, has that overshoot folded onto the cap top or baseline
 # row (fold_overshoot), so it lines up with its neighbours instead of gaining a target row of its own.
 DEFAULT_PARAMS = dict(unbold=False, merge='cover', cover=0.5, colmap='glyph', pixel=0, rowfit='fill', colfit='fit',
-                      holes=True, boldthin=False, overshoot=False, gap=False, distinct=True, patches=False)
+                      holes=True, boldthin=False, overshoot=False, gap=False, distinct=True, patches=False,
+                      caprows=False)
+# caprows (crispread, maintainer 11-08: Mettaton's "NO" read "ND" and "BL" looked bad): capitals and digits take their own
+# row map (cap_row_map), the one that keeps the most of their own gaps, where the font's shared map is chosen mostly for
+# lowercase (letter frequencies) and put fnt_plain's middle bars (B, E, H, R, 8 ...) on the third of seven cap rows,
+# which left B's and 8's upper bowls one row tall. The two maps share the cap top's and the descender's rows, so cap
+# height, baseline and every other glyph are unchanged.
 FONT_PARAMS = {
-    'fnt_plain': dict(unbold=True),
+    'fnt_plain': dict(unbold=True, caprows=True),
     # Round 3 (the O and W of the fill derivation looked odd): the drawn size by even 2:1 rows and
     # columns, counters kept closed.
     # patches (10-31): its '!' correction (PATCHES) is on by default.
@@ -68,16 +74,16 @@ FONT_PARAMS = {
     'fnt_small': dict(unbold=True),
     # UNDERTALE's battle HUD (name, LV, HP numbers): a 4x5 pixel font stored at 3x, so one font pixel is 1.5 native px.
     'fnt_curs': dict(unbold=False, colmap='font', pixel=3),
-    # fnt_main (sansfont, playtest 10-26: the game-over refusal line sits at an odd 640 x, where Smooth blurs it): a font
+    # fnt_main (sansfont, maintainer 10-26: the game-over refusal line sits at an odd 640 x, where Smooth blurs it): a font
     # stored at 2x, so its even texels are the font itself, one native pixel each; PC's exact glyphs, no corrections.
     'fnt_main': dict(unbold=False, colmap='font', pixel=2),
-    # Sans (smoothux, playtest 10-24: the 'fill' remake "looks really tall ... compared to the pc text"): PC's height
+    # Sans (smoothux, maintainer 10-24: the 'fill' remake "looks really tall ... compared to the pc text"): PC's height
     # (rowfit 'pc': caps and ascenders 5 native rows, x-height 4, as PC's 10 and 7 px at half size), with the
     # corrections in PATCHES_PC applied by default, since the plain 2:1 split can't keep e's eye or a, s, n apart.
     'fnt_comicsans': dict(unbold=True, rowfit='pc', patches=True),
-    # The ending credits' text (sansfont, playtest 10-26): PC's height like Sans, with PATCHES_MAINTEXT by default.
+    # The ending credits' text (sansfont, maintainer 10-26): PC's height like Sans, with PATCHES_MAINTEXT by default.
     'fnt_maintext': dict(rowfit='pc', patches=True),
-    # DELTARUNE's enemy bubbles (sansfont round 3, approved 10-26: "all new fonts approved for crisp mode"): DotumChe,
+    # DELTARUNE's enemy bubbles (sansfont round 3, maintainer 10-26: "all new fonts approved for crisp mode"): DotumChe,
     # whose ink is UNDERTALE's fnt_plain's, with fnt_plain's parameters and corrections.
     'fnt_dotumche': dict(unbold=True),
 }
@@ -176,7 +182,7 @@ PATCHES_SANS = {
           (0, 8, 0, 1), (1, 8, 1, 0)],
 }
 
-# fnt_maintext at PC height (sansfont, playtest 10-26: the ending credits' small text is hard to read Smooth): caps
+# fnt_maintext at PC height (sansfont, maintainer 10-26: the ending credits' small text is hard to read Smooth): caps
 # and digits 3x5 native px (rows 2-6), x-height 4 rows (3-6), one descender row (7), as PC's 9, 7 and 3 px at half
 # size. The even 2:1 split fills counters and drops the gaps a 2-px pixel font draws (c reads as o, e and s as
 # blots, m as "rr", 0 as 8), so these corrections redraw our own small letters in the derived glyph's box, positions
@@ -885,6 +891,78 @@ def row_map(cells, t, n_rows, place_weight=0.02, pixel=0, scale=0.0, uniform=0, 
     return groups
 
 
+CAPS = frozenset(ord(c) for c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+
+
+def bar_row(a, share=0.6):
+    """Where a glyph's crossbar sits, as a share of its ink box's height (0 top, 1 bottom): the middle of the rows
+    inside the box (not its top or bottom ink row) that are one unbroken run of ink filling share or more of the box's
+    width (B E F H A P R ...; not the joins of M W X); None when no row is."""
+    ys, xs = rows_with_ink(a), cols_with_ink(a)
+    if len(ys) < 3:
+        return None
+    w = xs[-1] + 1 - xs[0]
+    bar = [y for y in range(ys[0] + 1, ys[-1]) if runs(a[y]) == 1 and sum(1 for v in a[y] if v) >= share * w]
+    if not bar:
+        return None
+    return ((bar[0] + bar[-1] + 1) / 2.0 - ys[0]) / (ys[-1] + 1 - ys[0])
+
+def bar_nearer(T, T0, a):
+    """caprows: True when T (the caps map's glyph) puts its crossbar (bar_row) nearer the PC glyph a's than T0 (the
+    shared map's) does, by 3% of the box or more, with the same ink pieces and counters as T0. Not for glyphs with
+    three strokes across a row (M N W: their joins are diagonals, which the shared map keeps)."""
+    if max(runs(row) for row in a) > 2:
+        return False
+    pc, m = bar_row(a), bar_row(T)
+    if pc is None or m is None or ink_topology(T) != ink_topology(T0):
+        return False
+    m0 = bar_row(T0)
+    return m0 is None or abs(m - pc) < abs(m0 - pc) - 0.03
+
+
+def cap_row_map(cells, rows, n_rows, place_weight=0.02):
+    """The row map of the capitals and digits (params caprows). cells: {ch: bitmap with n_rows rows}, the font's
+    source glyphs (CAPS among them); rows: the font's shared map. Between the end of the shared map's group holding
+    the cap top (H's first ink row) and the start of its group holding the baseline (the row under H's ink), the
+    split that loses the least weight of the capitals' and digits' gaps (best_cuts' measure, as row_map weighs it);
+    the groups outside keep the shared map's, so the cap top, the baseline and the descender rows stay where every
+    other glyph has them. None when the font has no H."""
+    h = cells.get(ord('H'))
+    if h is None or not any_ink(h):
+        return None
+    hr = rows_with_ink(h)
+    top, base = hr[0], hr[-1] + 1
+    cuts = [j for _, j in rows[:-1]]
+    head = [c for c in cuts if c <= top]
+    head.append(next(c for c in cuts if c > top))
+    tail = [c for c in cuts if c >= base]
+    gaps = []
+    for ch in sorted(cells):
+        if ch not in CAPS:
+            continue
+        w = char_weight(ch)
+        for col in transpose(cells[ch]):
+            for g0, g1 in interior_gaps(col):
+                gaps.append((g0, g1, w))
+    total = sum(w for _, _, w in gaps) or 1.0
+    g = [(a, b + 1, w / total * 100.0) for a, b, w in gaps]
+    lo, hi = head[-1], tail[0] if tail else n_rows
+    k = len(rows) - 1 - len(head) - len(tail)
+    if k < 0 or hi - lo - 1 < k:
+        return None
+    ideal = [n_rows * i / len(rows) for i in range(1, len(rows))]
+    best = None
+    for inner in itertools.combinations(range(lo + 1, hi), k):
+        cuts = tuple(head) + inner + tuple(tail)
+        pos = (0,) + cuts + (n_rows,)
+        lost = float(pairwise_sum([w for a, b, w in g if bisect_right(pos, b) - bisect_left(pos, a) < 2])) if g else 0.0
+        key = lost + place_weight * sum((c - i) ** 2 for c, i in zip(cuts, ideal))
+        if best is None or key < best[0]:
+            best = (key, cuts)
+    pos = (0,) + best[1] + (n_rows,)
+    return [(pos[i], pos[i + 1]) for i in range(len(rows))]
+
+
 def pixel_cuts(arrays, axis, k):
     """Font-pixel boundaries of a pixel font stored at integer scale k: the phase (0..k-1) at which every ink run
     along `axis` starts, and every k-th position from it."""
@@ -1182,11 +1260,15 @@ def derive(dw, name, target_adv, target_rows, ink_limit_px, like=None, **overrid
                     gaps.append((g0, g1, char_weight(ch)))
         forced = pixel_cuts([a for a, _ in src.values()], 1, params['pixel']) if params['pixel'] else []
         shared_cols = best_cuts(cell_w, max(1, int(round(cell_w * sx))), gaps, 0.02, forced)
+    crows = None
+    if params['caprows'] and shared_cols is None:
+        crows = cap_row_map({ch: a for ch, (a, _) in src.items()}, rows, cell_h)
     out = {}
     meta = {}
     total_error = 0.0
     for ch, (a, left) in src.items():
-        r = apply_rows(a, rows)
+        rg = rows
+        r = apply_rows(a, rg)
         if width(r) == 0 or not any_ink(a):
             out[ch] = (zeros(target_rows, 0), 0)
             continue
@@ -1208,12 +1290,12 @@ def derive(dw, name, target_adv, target_rows, ink_limit_px, like=None, **overrid
                 cuts = [c for c in range(phase, aw, k) if 0 < c < aw]
                 pos = [0] + cuts + [aw]
                 cg = [(pos[i], pos[i + 1]) for i in range(len(pos) - 1)]
-                T = finish(a, bold_src[ch], rows, cg, params)
-                e = block_error(T, bold_src[ch], rows, cg) + stub_columns(T)
+                T = finish(a, bold_src[ch], rg, cg, params)
+                e = block_error(T, bold_src[ch], rg, cg) + stub_columns(T)
                 if best is None or e < best[0] - 1e-9:
                     best = (e, T, cg)
             out[ch] = (best[1], int(round(left * sx)))
-            meta[ch] = (bold_src[ch], rows, best[2])
+            meta[ch] = (bold_src[ch], rg, best[2])
             total_error += best[0]
             continue
         if params['colfit'] == 'uniform':
@@ -1221,13 +1303,21 @@ def derive(dw, name, target_adv, target_rows, ink_limit_px, like=None, **overrid
             cg = uniform_cuts(width(r), k, cgaps)
         else:
             cg = col_map(r, w)
-        T = finish(a, bold_src.get(ch) if boldthin else None, rows, cg, params)
+        T = finish(a, bold_src.get(ch) if boldthin else None, rg, cg, params)
+        if crows is not None and ch in CAPS and params['colfit'] != 'uniform':
+            # caprows: the caps map's glyph, kept only where it puts the middle bar nearer PC's (B E F H ...)
+            r2 = apply_rows(a, crows)
+            need2 = max(2 * runs(row) - 1 for row in r2)
+            cg2 = col_map(r2, max(1, min(max(want, min(need2, limit)), limit, width(r2))))
+            T2 = finish(a, bold_src.get(ch) if boldthin else None, crows, cg2, params)
+            if bar_nearer(T2, T, a):
+                rg, cg, T = crows, cg2, T2
         out[ch] = (T, int(round(left * sx)))
-        meta[ch] = (bold_src[ch] if boldthin else a, rows, cg)
+        meta[ch] = (bold_src[ch] if boldthin else a, rg, cg)
     redone = distinct_pass(out, meta, src) if params['distinct'] else {}
     patched = apply_patches(pname, out, PATCHES_PC if params['rowfit'] == 'pc' else None) if params['patches'] else []
-    return dict(font=font, rows=rows, cell_h=cell_h, glyphs=out, adv=adv, src=src, params=params, patched=patched,
-                redone=redone, error=total_error if boldthin and params['colfit'] == 'uniform' else None)
+    return dict(font=font, rows=rows, caprows=crows, cell_h=cell_h, glyphs=out, adv=adv, src=src, params=params,
+                patched=patched, redone=redone, error=total_error if boldthin and params['colfit'] == 'uniform' else None)
 
 
 # ---- carry (smalltext_carry.py: the parts the pack writes) ----

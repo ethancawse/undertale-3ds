@@ -62,7 +62,7 @@ RValue UtFlames_emberStep(VMContext* ctx, uint32_t k, AotFn generated, const int
 void UtKill_registerAll(VMContext* ctx);                   // z_utkill_waver.c
 void UtFlames_registerCircle(VMContext* ctx) UTF_LAST;  // VM_create, through COLFLIP_REGISTER_ALL (vm_builtins.h)
 
-#if defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS)
+#if !defined(CTRPORT_AOT) || defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS)
 // Tracing and stress builds test the generated code itself: every body is just it.
 RValue UtFlames_sineStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }
 RValue UtFlames_helixStep(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }
@@ -106,7 +106,7 @@ static bool utfRect(VMContext* ctx, int32_t B, Instance* inst, BuiltinFunc rect,
 static bool utfRect(VMContext* ctx, int32_t B, Instance* inst, BuiltinFunc rect, int32_t operand, uint32_t ipConv) {
     Runner* runner = ctx->runner;
     RValue* S = &ctx->stack.slots[B];
-    InstanceBBox box = Collision_computeBBox(runner, inst);
+    InstanceBBox box = Collision_readBBox(runner, inst);
     if (box.valid) {
         AOT_SET_REAL(&S[0], box.left, GML_TYPE_VARIABLE);
         AOT_SET_REAL(&S[1], box.top, GML_TYPE_VARIABLE);
@@ -490,7 +490,7 @@ static inline uint64_t utfBitsReal(GMLReal r) {
 // copy in this file's plain .text, which the early utflames line takes, moving what follows (docs/3ds-hardware.md).
 static InstanceBBox utfBox(Runner* runner, Instance* inst) UTF_LAST __attribute__((flatten));
 static InstanceBBox utfBox(Runner* runner, Instance* inst) {
-    return Collision_computeBBox(runner, inst);
+    return Collision_readBBox(runner, inst);
 }
 
 // ===[ collision_circle's no-hit answer (the snow floor, room_tundra_snowpuzz) ]===
@@ -783,7 +783,7 @@ RValue UtFlames_helixStep(VMContext* ctx, uint32_t k, AotFn generated, const int
     return aotx_scriptFallthroughReturnValue(ctx);
 }
 
-// ===[ pacer: the helix's rectangle test, skipped for a bullet nowhere near the soul (2026-10-28) ]===
+// ===[ change pacer: the helix's rectangle test, skipped for a bullet nowhere near the soul (2026-10-28) ]===
 //
 // Turn 2's helix keeps some 256 bullets on screen, and each Step's rectangle test (utfRectFast) first works out the
 // bullet's whole box (utfBox: Collision_computeBBox with four banker's roundings) before the soul's cached box says no.
@@ -846,7 +846,7 @@ bool UtFlames_rectPre(VMContext* ctx, int32_t B, Instance* inst, BuiltinFunc rec
 #line 786
 #endif
 
-// ===[ utgapfix: string_char_at's walk to the position, 16 plain ASCII bytes at a time ]===
+// ===[ change utgapfix: string_char_at's walk to the position, 16 plain ASCII bytes at a time ]===
 //
 // builtin_string_char_at (vm_builtins.c) walks from the string's start on every call. Code that reads a long string
 // one character at a time pays for every character before the one it reads: the vaporize object's Alarm 0 reads its
@@ -918,3 +918,11 @@ void Utgap_registerAll(VMContext* ctx) {
 }
 
 #endif // ENABLE_WAD16
+
+// Event guards use this lookup even when native AOT bodies are absent.
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_AOT)
+RValue* UtFlames_slot(Instance* inst, int32_t varID) UTF_LATE;
+RValue* UtFlames_slot(Instance* inst, int32_t varID) {
+    return IntRValueHashMap_findSlot(&inst->selfVars, varID);
+}
+#endif

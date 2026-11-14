@@ -1,17 +1,17 @@
-// What is left of the SD folder move, and DELTARUNE's chapter check line (hashfix, 2026-10-27).
+// What is left of the SD folder move, and DELTARUNE's chapter check line (change hashfix, 2026-10-27).
 //
 // Builds before 2026-10-25 kept each game in a subfolder of the pre-10-25 shared folder. This file used to move that
 // folder to CTRPORT_GAME_DIR (sdmc:/3ds/<game>-3ds) at a player's first launch, and in lab mode it read the old folder
-// in place ("borrowing", through a swapped sdmc device table and a wrap of fsMakePath). It was decided on 2026-10-27 that
+// in place ("borrowing", through a swapped sdmc device table and a wrap of fsMakePath). maintainer ruled on 2026-10-27 that
 // both old game paths are dead and only the new ones are used. The old folder is no longer
 // read, moved or named: no build given outside the lab ever used it, and the lab consoles' cards were moved by
-// a script. Borrowing also hid every data.win receipt from the version check (libctru's
+// a lab script. Borrowing also hid every data.win receipt from the version check (libctru's
 // archive_getmtime builds its own path, past both rewrites), so every lab boot hashed every data.win
 // (docs/3ds-hardware.md, "Lab mode's old folder hid every data.win receipt").
 //
 // main() and the loading screen (z_loadscreen.c) still call CtrSdMigrate_run(ctrSdLegacyDir, 0777): it moves nothing.
 // main's call, right after the consoles are set up and before the log's first line, is where the boot's log starts
-// printing unseen unless Other screen is Stats and log (main.c's CtrBootlog_hide, freebytes 10-29); the loading
+// printing unseen unless Other screen is Stats and log (main.c's CtrBootlog_hide, change freebytes 10-29); the loading
 // screen's, before the consoles, does nothing.
 // Its constants and buffers are gone; their late bss is kept as a placeholder (smSpare), so the late bss doesn't move.
 //
@@ -56,7 +56,24 @@ static struct {
     void (*tick)(void);    // the caller's progress call
     bool made;             // the cache folder is made (or tried) for this check
 } hf __attribute__((used, section(".bss.late.sdmigrate")));
-static unsigned char smSpare[SM_BSS_BYTES - sizeof(hf)] __attribute__((used, section(".bss.sdmigrate_spare")));
+// The tenants carved from the placeholder (late_reserve.ld, between hf and smSpare), each under its compile condition.
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_HALF_CENSUS) && !defined(CTRPORT_ASG_PROBE)
+#define SM_CARVE_BONEGATE 8 // bonegate's state (z_bonegate.c, .bss.bonegate_late)
+#else
+#define SM_CARVE_BONEGATE 0
+#endif
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+#define SM_CARVE_BOXCACHE 4 // paintchg's box cache root (z_boxcache.c bxRoot, .bss.late.paintchg; UT Old only)
+#else
+#define SM_CARVE_BOXCACHE 0
+#endif
+#if defined(ENABLE_WAD16)
+#define SM_CARVE_BOTTOMPAINT 4 // paintchg's bottom painter root (z_bottompaint.c bpRoot, .bss.late.paintchg_idle)
+#else
+#define SM_CARVE_BOTTOMPAINT 0
+#endif
+#define SM_CARVE_BYTES (SM_CARVE_BONEGATE + SM_CARVE_BOXCACHE + SM_CARVE_BOTTOMPAINT)
+static unsigned char smSpare[SM_BSS_BYTES - sizeof(hf) - SM_CARVE_BYTES] __attribute__((used, section(".bss.sdmigrate_spare")));
 
 #ifdef ENABLE_WAD17
 #include "ctr_data_version.h"

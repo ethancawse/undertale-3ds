@@ -1,4 +1,4 @@
-// Collision_computeBBox's rounding on the 3DS (simplefix, 2026-10-28).
+// Collision_computeBBox's rounding on the 3DS (change simplefix, 2026-10-28).
 //
 // In collision compatibility mode (DELTARUNE sets the option; UNDERTALE is older than GameMaker 2022.1, so it always
 // runs it) every bounding box rounds its four edges with GMLReal_bankersRound: a call to newlib's floor and four or

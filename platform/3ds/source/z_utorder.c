@@ -1,9 +1,9 @@
-// utorder (credfix, ruling 2026-10-27; UNDERTALE only): GameMaker 1.4's draw order between instances of the
+// utorder (change credfix, review decision 2026-10-27; UNDERTALE only): GameMaker 1.4's draw order between instances of the
 // same depth.
 //
 // Why: GameMaker 1.4 keeps one list per depth and draws it front to back. An instance goes in at the front when it is
 // made, and again when its depth changes to another value (a write of the depth it already has leaves it where it
-// is). So at equal depth the newest instance draws first and the oldest ends on top. pcref showed it (credfix's
+// is). So at equal depth the newest instance draws first and the oldest ends on top. pcref showed it (change credfix's
 // results, section 10: runs credfix-order6, order9 and order11). The engine drew equal depths by ascending instance
 // id, the reverse, and never moved an instance whose depth changed. In UNDERTALE that drew Undyne's battle buttons
 // dim (her fight's darkened copies on top of them), stacked Mettaton's smoke the other way, and changed the order of

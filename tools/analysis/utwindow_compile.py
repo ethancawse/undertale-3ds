@@ -4,6 +4,7 @@ The helper has the original blitter's ABI and memory effects; it never retains t
 Scope and exact call count fail closed. The independent ELF verifier checks every other allocated byte.
 """
 from pathlib import Path
+import importlib.util
 import json
 import re
 import subprocess
@@ -42,8 +43,100 @@ def route_solid(text):
     return text[:scope.start()]+body+text[scope.end():]
 
 
+def route_dialogue(text, diagnostic=False):
+    # dlgflash: the sole screens wrapper call; leave the helper's original call alone.
+    symbol = '__wrap_CtrRenderer_yieldBottomScreen'
+    scopes = list(re.finditer(r'(?ms)^' + symbol + r':\r?\n.*?^\s*\.size\s+' + symbol + r',\s*\.-' + symbol + r'\s*$', text))
+    assert len(scopes) == 1, ('dlgflash yield scope', len(scopes))
+    scope = scopes[0]
+    routed, calls = re.subn(r'(?m)^([ \t]+bl[ \t]+)CtrScreens_yieldHook(\(PLT\))?([ \t]*(?:@[^\n]*)?)$',
+                           lambda m: m[1] + 'CtrDlgflash_yield' + (m[2] or '') + m[3], scope[0])
+    assert calls == 1, ('dlgflash yield calls', calls)
+    text = text[:scope.start()] + routed + text[scope.end():]
+    if not diagnostic:
+        return text
+    # Optional test per-box diagnostic. Each wrapper delegates unchanged to the
+    # original; scope/count checks forbid intercepting glyphs or helper calls.
+    for symbol, old, new in (
+        ('emitQuad', 'recordingSurface', 'CtrDlgflash_recordingSurface'),
+        ('ctrDestroy', 'CtrDialogue_free', 'CtrDlgflash_free'),
+    ):
+        scopes = list(re.finditer(r'(?ms)^' + re.escape(symbol) + r':\r?\n.*?^\s*\.size\s+' +
+                                 re.escape(symbol) + r',\s*\.-' + re.escape(symbol) + r'\s*$', text))
+        assert len(scopes) == 1, ('dlgflash log scope', symbol, len(scopes))
+        scope = scopes[0]
+        call_pattern=r'(?m)^([ \t]+bl[ \t]+)' + re.escape(old) + r'(\(PLT\))?([ \t]*(?:@[^\n]*)?)$'
+        calls=list(re.finditer(call_pattern,scope[0]))
+        if symbol == 'emitQuad':
+            # GCC splits textured and white quads. Only the white branch,
+            # after its no-op test, observes a box rectangle actually issued.
+            solids=list(re.finditer(r'(?m)^\s+bl\s+CtrDlgwhite_solidDrawIsNoop(?:\(PLT\))?\s*$',scope[0]))
+            assert len(calls)==2 and len(solids)==1,('dlgflash white branch',len(calls),len(solids))
+            assert calls[0].start()<solids[0].start()<calls[1].start(), 'dlgflash white query order'
+            call=calls[1]
+        else:
+            assert len(calls)==1,('dlgflash log call',symbol,len(calls))
+            call=calls[0]
+        routed=scope[0][:call.start()]+call[1]+new+(call[2] or '')+call[3]+scope[0][call.end():]
+        text = text[:scope.start()] + routed + text[scope.end():]
+    return text
+
+
+def route_top_dialogue(text, development=False):
+    name = 'ctrDestroy'
+    scopes = list(re.finditer(r'(?ms)^' + name + r':\r?\n.*?^\s*\.size\s+' + name + r',\s*\.-' + name + r'\s*$', text))
+    assert len(scopes) == 1, ('S4 teardown scope', len(scopes))
+    scope = scopes[0]
+    body, calls = re.subn(r'(?m)^([ \t]+bl[ \t]+)CtrRenderer_releaseVideo(\(PLT\))?([ \t]*(?:@[^\n]*)?)$',
+                         lambda m: m[1] + 'CtrDlgtop_destroy' + (m[2] or '') + m[3], scope[0])
+    assert calls == 1, ('S4 teardown calls', calls)
+    text = text[:scope.start()] + body + text[scope.end():]
+    # A pre-Draw seam, after Step and before any game Draw, retains the
+    # original viewport arguments/body and changes only this one call.
+    name = 'ctrBeginFrame'
+    scopes = list(re.finditer(r'(?ms)^' + name + r':\r?\n.*?^\s*\.size\s+' + name + r',\s*\.-' + name + r'\s*$', text))
+    assert len(scopes) == 1, ('S4 pre-Draw scope', len(scopes))
+    scope = scopes[0]
+    body, calls = re.subn(r'(?m)^([ \t]+bl[ \t]+)setViewport(\(PLT\))?([ \t]*(?:@[^\n]*)?)$',
+                         lambda m: m[1] + 'CtrDlgtop_viewport' + (m[2] or '') + m[3], scope[0])
+    assert calls == 1, ('S4 pre-Draw viewport calls', calls)
+    text = text[:scope.start()] + body + text[scope.end():]
+    # Only final presentation calls, never presentBottom's own body or replay.
+    name = 'present' if re.search(r'^present:$', text, re.M) else 'CtrRenderer_endFrame.part.0'
+    if not re.search(r'^' + re.escape(name) + ':$', text, re.M): name = 'CtrRenderer_endFrame'
+    scopes = list(re.finditer(r'(?ms)^' + re.escape(name) + r':\r?\n.*?^\s*\.size\s+' +
+                             re.escape(name) + r',\s*\.-' + re.escape(name) + r'\s*$', text))
+    assert len(scopes) == 1, ('S4 final frame scope', name, len(scopes))
+    scope = scopes[0]
+    body, calls = re.subn(r'(?m)^([ \t]+b(?:l)?[ \t]+)presentBottom(\(PLT\))?([ \t]*(?:@[^\n]*)?)$',
+                         lambda m: m[1] + 'CtrDlgtop_present' + (m[2] or '') + m[3], scope[0])
+    assert calls in (1, 2), ('S4 presentation calls', calls)
+    text = text[:scope.start()] + body + text[scope.end():]
+    name = '__wrap_CtrRenderer_setDisplay'
+    scopes = list(re.finditer(r'(?ms)^' + name + r':\r?\n.*?^\s*\.size\s+' + name + r',\s*\.-' + name + r'\s*$', text))
+    assert len(scopes) == 1, ('S4 display scope', len(scopes))
+    scope = scopes[0]
+    body, calls = re.subn(r'(?m)^([ \t]+bl[ \t]+)CtrDimlight_setDisplay(\(PLT\))?([ \t]*(?:@[^\n]*)?)$',
+                         lambda m: m[1] + 'CtrDlgtop_display' + (m[2] or '') + m[3], scope[0])
+    # Release GCC duplicates this one source call across the below-game,
+    # shared-backlight and ordinary-screen paths. Development/size builds
+    # retain one common call. Every clone must enter the same adapter.
+    expected = 1 if development else 3
+    assert calls == expected, ('S4 display calls', calls, expected)
+    return text[:scope.start()] + body + text[scope.end():]
+
+
 def run(command):
     return subprocess.run(command, stdin=subprocess.DEVNULL, timeout=1800).returncode
+
+
+def route_lcd(text):
+    """Apply dimlight only after this adapter's existing picture-call edits."""
+    path = Path(__file__).resolve().parents[1] / 'buildcache/dimlight_compile.py'
+    spec = importlib.util.spec_from_file_location('dimlight_compile', path)
+    adapter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(adapter)
+    return adapter.route(text, 'ctr_renderer.c')
 
 
 def main(args):
@@ -68,7 +161,9 @@ def main(args):
     development = '-DCTRPORT_FREEWINS' in command or not any(a in ('-O2', '-O3') for a in command)
     text, count = route(original_file.read_text(encoding='utf-8'), development=development,
                         size_optimized=any(flag in command for flag in ('-Os', '-Oz')))
+    text = route_top_dialogue(text, development=development)
     text = route_solid(text)
+    text = route_dialogue(text, diagnostic="-DCTRPORT_DLGFLASH_LOG" in command)
     # Helper-only pass retains no ordinary body or data, preserving GCC's
     # pre-existing compiler-local tables and all original slot identities.
     helper_file = output.with_name('dlgwhite2.s')
@@ -79,11 +174,14 @@ def main(args):
             at = helper.index(option)
             del helper[at:at+2]
     helper = [a for a in helper if a not in ('-MD', '-MMD', '-MP')]
-    helper += ['-DCTRPORT_DLGWHITE_HELPER', '-fno-section-anchors']
+    helper += ['-DCTRPORT_DLGWHITE_HELPER', '-DCTRPORT_DLGFLASH_HELPER', '-fno-section-anchors']
     rc = run(helper)
     if rc: return rc
     extra, sections = vine_extract.late_sections(helper_file.read_text(encoding='utf-8'), 'dlgwhite')
-    text += '\n'+extra
+    flash, flash_sections = vine_extract.late_sections(helper_file.read_text(encoding='utf-8'), 'dlgflash')
+    top, top_sections = vine_extract.late_sections(helper_file.read_text(encoding='utf-8'), 'dlgtop4')
+    text += '\n'+extra+'\n'+flash+'\n'+top
+    text, lcd_receipt = route_lcd(text)
     with open(routed_file, 'w', encoding='utf-8', newline='\n') as handle:  # write_text(newline=) needs Python 3.10
         handle.write(text)
     assemble, i = [command[0]], 1
@@ -98,6 +196,8 @@ def main(args):
     rc = run(assemble + ['-x', 'assembler', '-c', str(routed_file), '-o', str(output)])
     output.with_name('utwindow.json').write_text(json.dumps(dict(
         caller='CtrRenderer_endFrame.part.0', old='blitApp', new='CtrUtWindow_blitApp',
-        count=count, exit=rc, original=str(original_file), routed=str(routed_file)), indent=2) + '\n', encoding='utf-8')
+        count=count, exit=rc, original=str(original_file), routed=str(routed_file),
+        lcd=lcd_receipt), indent=2) + '\n', encoding='utf-8')
     print(f'Window motion: {count} final picture call operands routed; warm instructions retained', flush=True)
+    print('dimlight LCD call operands: ' + json.dumps(lcd_receipt), flush=True)
     return rc

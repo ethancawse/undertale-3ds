@@ -33,7 +33,7 @@
 
 void UtKill_registerAll(VMContext* ctx) UTK_LATE_W;   // VM_create, through COLFLIP_REGISTER_ALL (vm_builtins.h)
 
-#if defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS)
+#if !defined(CTRPORT_AOT) || defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS)
 // Tracing and stress builds test the interpreter and the generated code: the script stays the game's.
 void UtKill_registerAll(VMContext* ctx) { UtFlames_registerAll(ctx); }
 #else

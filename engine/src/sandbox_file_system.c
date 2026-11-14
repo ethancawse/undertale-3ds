@@ -509,3 +509,12 @@ __asm__(
     ".popsection\n"
 );
 #endif
+
+#ifdef CTRPORT_DIMLIGHT_DIAG
+// Test-only actual-state query. The ordinary getter remains discarded, so
+// enabling the diagnostic cannot insert that getter into warm text.
+__attribute__((noinline, section(".text.late.dimlight")))
+bool CtrDimdiag_sandboxEnabled(FileSystem* fs) {
+    return ((SandboxFileSystem*) fs)->enabled;
+}
+#endif

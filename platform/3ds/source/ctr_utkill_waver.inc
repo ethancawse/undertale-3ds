@@ -1,4 +1,4 @@
-// UNDERTALE's waving sprite rows, drawn in one call (utkill; included at the end of ctr_renderer.c, UNDERTALE
+// UNDERTALE's waving sprite rows, drawn in one call (change utkill; included at the end of ctr_renderer.c, UNDERTALE
 // only). engine/src/z_utkill_waver.c works out every row of one waving-rows script call (top, x, y) and hands them here.
 // Each row is drawn as draw_sprite_part_ext would draw it: Renderer_drawSpritePartExt's clip, e5xDrawSpritePart's test,
 // then ctrDrawSpritePartColor's work for an unturned sprite on a surface's page. What is the same for every row of the

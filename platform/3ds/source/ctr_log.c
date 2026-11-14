@@ -1194,3 +1194,13 @@ __asm__(
     "CtrExit_filesLinkState:\n.word linkThread,reportFileDecision,linkSocUp\n"
     ".size CtrExit_filesLinkState,.-CtrExit_filesLinkState\n.popsection\n"
 );
+
+#if defined(ENABLE_WAD16)
+// Addresses only: no change to GCC's private anchor ordering.
+__asm__(
+    ".pushsection .rodata.paintchg_idle_late,\"a\",%progbits\n.balign 4\n"
+    ".global CtrBottomPaint_logState\n.type CtrBottomPaint_logState,%object\n"
+    "CtrBottomPaint_logState:\n.word consoleEnabled,consoleQueued,consoleLock,consoleHeld,printedFramebuffer\n"
+    ".size CtrBottomPaint_logState,.-CtrBottomPaint_logState\n.popsection\n"
+);
+#endif

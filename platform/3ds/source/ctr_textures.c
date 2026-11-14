@@ -1158,7 +1158,7 @@ typedef struct {
     uint64_t convertNanos;
 } ImageLoad;
 
-static bool loadImageRow(void* user, const CtrPageLayout* layout, int32_t ty, const uint8_t* rows) {
+static bool CTRPORT_FIGHTPIX_KEEP loadImageRow(void* user, const CtrPageLayout* layout, int32_t ty, const uint8_t* rows) {
     ImageLoad* load = user;
     CtrPage* page = load->page;
     if (!sameGrid(page, layout)) {
@@ -1185,7 +1185,7 @@ static bool loadImageRow(void* user, const CtrPageLayout* layout, int32_t ty, co
                 return false;
             }
         }
-        CtrPack_convertTileRedpix(tile->tex.data, layout, tx, ty, rows);
+        CtrPack_convertTileFightpix(tile->tex.data, layout, tx, ty, rows);
         C3D_TexFlush(&tile->tex);
         if (load->cache->probeHashes) tile->probeHash = CtrTextures_hashTexels(&tile->tex);
         // Tiles nobody asked for are the first to go.
@@ -1196,6 +1196,12 @@ static bool loadImageRow(void* user, const CtrPageLayout* layout, int32_t ty, co
     return true;
 }
 
+#ifdef CTRPORT_FIGHTPIX_PACK
+static bool fightpixLoadImageRow(void* user, const CtrPageLayout* layout, int32_t ty, const uint8_t* rows)
+    __attribute__((noinline, section(".text.fightpix_late")));
+#define loadImageRow fightpixLoadImageRow
+#endif
+#line 1188
 static LoadResult loadFromImage(CtrTextureCache* cache, uint32_t pageId, CtrPage* page, uint32_t* loaded, double* outConvertMs) {
     size_t size = 0;
     uint8_t* external = nullptr;
@@ -3501,7 +3507,7 @@ __attribute__((noinline, section(".text.btlentry_late"))) void CtrTextures_btlen
 // restart, with no room load, and those tiles would otherwise reopen the file in play (SAVE-sequence restarts: 35 ms
 // an open on Azahar, 8-13 ms on the Old models). In late text; a 12 B pad after it and its log NULs keep the phase.
 #include "roomplan_format.h"
-void CtrRoomload_prefetchRoom(CtrTextureCache* cache, Runner* runner);
+void CtrRoomload_prefetchRoom(CtrTextureCache* cache, Runner* runner); void CtrTextures_closehandFile(FILE* f);
 const uint8_t* RoomPlan_utstallPlan(const CtrTextureCache* cache);
 static const char ofClosedLog[] __attribute__((aligned(4), section(".rodata.omegaflowey_in_text"))) =
     "Files: %u kept-open texture files closed after the room load (%u kept for planned tiles)\n\0\0\0\0"; // NULs after: a phase pad
@@ -3534,7 +3540,7 @@ __attribute__((noinline, optimize("Os"), section(".text.omegaflowey_late"))) voi
         }
         kept += planned;
         if (needed || planned) continue;
-        CTR_TRACE_CLOSE(cache->files[i], CTR_SITE_GAME, cache->filePages[i]);
+        CtrTextures_closehandFile(cache->files[i]); // closehand (this file's end): the tile reader closes it
         cache->files[i] = nullptr;
         closed++;
     }
@@ -3804,5 +3810,24 @@ void CtrEntryload_roomLoadFinish(CtrTextureCache* cache, uint64_t deadline, uint
 #if defined(CTRPORT_ENTRYLOAD_TILES)
     elKeepTiles(cache, deadline);
 #endif
+}
+#endif
+
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+// closehand (change loadclass 12a, 11-08; UNDERTALE Old): CtrTextures_roomLoadedOld's close of a kept-open texture file
+// goes to the game cache's tile reader (ctr_tile_reader.c's end), which closes it once no read is queued, or here at
+// once if the reader can't take it. One argument, as fclose, so the call in the frozen body changes only its target.
+__attribute__((noinline, section(".text_closehand"))) void CtrTextures_closehandFile(FILE* f) {
+    CtrTileReader_closeOrHand(readerGameCache != nullptr ? readerGameCache->reader : nullptr, f);
+}
+#endif
+
+#ifdef CTRPORT_FIGHTPIX_PACK
+#undef loadImageRow
+static bool fightpixLoadImageRow(void* user, const CtrPageLayout* layout, int32_t ty, const uint8_t* rows)
+    __attribute__((noinline, section(".text.fightpix_late")));
+static bool fightpixLoadImageRow(void* user, const CtrPageLayout* layout, int32_t ty, const uint8_t* rows) {
+    CtrPack_promoteMeterRow((CtrPageLayout*) layout, ty, rows);
+    return loadImageRow(user, layout, ty, rows);
 }
 #endif

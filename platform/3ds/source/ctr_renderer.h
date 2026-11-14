@@ -294,7 +294,49 @@ void CtrRenderer_leaveForExit(Renderer* renderer);
     static void e5xDrawSpriteTiled(Renderer* renderer, int32_t tpagIndex, float originX, float originY, float x, float y, float xscale,              \
                                    float yscale, bool tileX, bool tileY, float roomW, float roomH, uint32_t color, float alpha); \
     BONEPULSE_DECLARE                                                                                                                                \
-    KGL_DECLARE
+    KGL_DECLARE                                                                                                                                      \
+    ABQ_DECLARE
+// UNDERTALE's draw alpha byte (change gpuburst C(i); the stubs are at the end of ctr_renderer.c). PC's runner takes the
+// byte trunc(float(alpha) * 255) where makeColor rounds, 1 LSB high on about half of all alphas. ABQ(fn) is a stub that
+// hands fn the same arguments with alpha replaced by (k + 0.25) / 255 for that byte k (alpha <= 0, >= 1 or NaN as it
+// came; under 0.55 it stays under 0.55), so makeColor and every other rounding gives k, and each threshold UNDERTALE
+// tests an alpha against (0, 0.55, 1) decides as before. It stands where fn's address was taken (ctrVtable,
+// SKIP_WRAPPERS, bonegate's table, z_smalltext's identity table, the e5x and bonepulse draws), on the same lines, so
+// nothing in ctr_renderer.c moves. ABQ_TEXT_REPLAY is skipDrawOp's SR_TEXT: ctrDrawText as inlined there, with
+// drawTextImpl's stub in place of drawTextImpl (the same one call). DELTARUNE: fn itself, and ctrDrawText.
+#if !defined(ENABLE_WAD17)
+#define ABQ_NAME_(fn) abq_##fn
+#define ABQ(fn) ABQ_NAME_(fn)
+#define ABQ_DECL_(fn, like) extern __typeof__(like) abq_##fn;
+#define ABQ_DECL(fn, like) ABQ_DECL_(fn, like)
+#define ABQ_DECLARE                                                                                                    \
+    ABQ_DECL(UTK_DRAW_SPRITE, ctrDrawSprite) ABQ_DECL(skipDrawSprite, skipDrawSprite)                                  \
+    ABQ_DECL(partDrawSprite, ctrDrawSpritePart) ABQ_DECL(skipDrawSpritePart, skipDrawSpritePart)                       \
+    ABQ_DECL(ctrDrawSpritePartColor, ctrDrawSpritePartColor) ABQ_DECL(skipDrawSpritePartColor, skipDrawSpritePartColor) \
+    ABQ_DECL(ctrDrawSpritePos, ctrDrawSpritePos) ABQ_DECL(skipDrawSpritePos, skipDrawSpritePos)                        \
+    ABQ_DECL(ctrDrawSpriteTiled, ctrDrawSpriteTiled) ABQ_DECL(skipDrawSpriteTiled, skipDrawSpriteTiled)                \
+    ABQ_DECL(ctrDrawRectangle, ctrDrawRectangle) ABQ_DECL(skipDrawRectangle, skipDrawRectangle)                        \
+    ABQ_DECL(ctrDrawRectangleColor, ctrDrawRectangleColor) ABQ_DECL(skipDrawRectangleColor, skipDrawRectangleColor)    \
+    ABQ_DECL(ctrDrawLine, ctrDrawLine) ABQ_DECL(skipDrawLine, skipDrawLine)                                            \
+    ABQ_DECL(ctrDrawLineColor, ctrDrawLineColor) ABQ_DECL(skipDrawLineColor, skipDrawLineColor)                        \
+    ABQ_DECL(ctrDrawTextColor, ctrDrawTextColor) ABQ_DECL(skipDrawTextColor, skipDrawTextColor)                        \
+    ABQ_DECL(ctrDrawSurface, ctrDrawSurface) ABQ_DECL(skipDrawSurface, skipDrawSurface)                                \
+    ABQ_DECL(ctrDrawSurfaceColor, ctrDrawSurfaceColor) ABQ_DECL(skipDrawSurfaceColor, skipDrawSurfaceColor)            \
+    ABQ_DECL(ctrDrawTriangle, ctrDrawTriangle) ABQ_DECL(skipDrawTriangle, skipDrawTriangle)                            \
+    ABQ_DECL(ctrDrawSurfaceTiled, ctrDrawSurfaceTiled) ABQ_DECL(skipDrawSurfaceTiled, skipDrawSurfaceTiled)            \
+    ABQ_DECL(fanQuads, ctrDrawTriangleFan) ABQ_DECL(ctrDrawTriangleFan, ctrDrawTriangleFan)                            \
+    ABQ_DECL(skipDrawTriangleFan, skipDrawTriangleFan)                                                                 \
+    ABQ_DECL(ctrDrawLines, ctrDrawLines) ABQ_DECL(skipDrawLines, skipDrawLines)                                        \
+    ABQ_DECL(ctrDrawVertex, ctrDrawVertex)                                                                             \
+    ABQ_DECL(ctrDrawText, ctrDrawText) ABQ_DECL(skipDrawText, skipDrawText)
+#define ABQ_TEXT_REPLAY(rr, text, x, y, xs, ys, ang, sep)                                                              \
+    ({ extern __typeof__(drawTextImpl) abq_drawTextImpl; int32_t abqC_ = (int32_t) (rr)->drawColor;                    \
+       abq_drawTextImpl((CtrRenderer*) (rr), text, x, y, xs, ys, ang, abqC_, abqC_, abqC_, abqC_, (rr)->drawAlpha, sep); })
+#else
+#define ABQ(fn) fn
+#define ABQ_DECLARE
+#define ABQ_TEXT_REPLAY ctrDrawText
+#endif
 // Bones in one piece (change bonepulse, the end of ctr_renderer.c): the vtable's normal and frame-skip sprite, sprite-part,
 // rectangle and line entries, which move a listed object's pieces as one.
 // UNDERTALE only (ENABLE_WAD16). DELTARUNE declares none of them and its vtable keeps the draws it had (BP_*).

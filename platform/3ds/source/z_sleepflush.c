@@ -43,6 +43,10 @@
 #define SLEEPFLUSH_BSS __attribute__((section(".bss.sleepflush_late")))
 #define SLEEPFLUSH_RO __attribute__((section(".rodata_sleepflush")))
 #define SLEEPFLUSH_BUDGET_MS 1000
+#ifdef ENABLE_WAD16
+void CtrHomesave_onApt(APT_HookType hook, void* param);
+#endif
+#line 47
 
 FileSystem* __real_CtrFileSystem_create(const char* bundlePath, const char* savePath);
 void __real_CtrFileSystem_destroy(FileSystem* fs);
@@ -67,7 +71,7 @@ SLEEPFLUSH_R2_CODE static void sleepflushBounded(APT_HookType hook) {
         logInfo(sleepflushLateText, left, SLEEPFLUSH_BUDGET_MS, hook == APTHOOK_ONSLEEP ? sleepflushSleep : sleepflushHome);
 }
 
-SLEEPFLUSH_CODE static void sleepflushOnApt(APT_HookType hook, void* param) {
+SLEEPFLUSH_CODE __attribute__((used)) static void sleepflushOnApt(APT_HookType hook, void* param) {
     (void) param;
     if ((hook == APTHOOK_ONSLEEP || hook == APTHOOK_ONSUSPEND) && sleepflushSaves != NULL) {
         sleepflushBounded(hook);
@@ -79,7 +83,12 @@ SLEEPFLUSH_CODE FileSystem* __wrap_CtrFileSystem_create(const char* bundlePath, 
     sleepflushSaves = fs;
     if (!sleepflushHooked) {
         sleepflushHooked = true;
+#ifdef ENABLE_WAD16
+        aptHook(&sleepflushCookie, CtrHomesave_onApt, NULL);
+#else
         aptHook(&sleepflushCookie, sleepflushOnApt, NULL);
+#endif
+#line 83
     }
     return fs;
 }
@@ -88,3 +97,47 @@ SLEEPFLUSH_CODE void __wrap_CtrFileSystem_destroy(FileSystem* fs) {
     if (sleepflushSaves == fs) sleepflushSaves = NULL;
     __real_CtrFileSystem_destroy(fs);
 }
+
+#ifdef ENABLE_WAD16
+// homesave B (review sonrev10 delta): try the whole queue for at most 10 s, then
+// hand off even if the card is hung. Outstanding saves retain the staged rules.
+// The old callback and constants retain their slots for layout and DELTARUNE.
+#include "ctr_safe_save.h"
+void CtrHomesave_pause(void);
+void CtrHomesave_logPending(FileSystem* fs, const char* format);
+#define HOMESAVE_BUDGET_MS 10000
+#ifdef CTRPORT_LABGUARD
+void CtrHomesave_pauseLab(void);
+#endif
+// An assembler alias keeps the compiler's existing static-anchor ordering intact.
+extern FileSystem* homesaveSaves __asm__("sleepflushSaves");
+// Outside .text.* / .rodata.*: this object's old catch-all would take them early.
+static const char homesaveFailed[] __attribute__((section(".homesave_const"))) =
+    "Files: save failed before suspend/close; progress may be lost\n";
+static const char homesaveQueued[] __attribute__((section(".homesave_const"))) =
+    "Files: still queued: %s\n";
+static const char homesaveClose[] __attribute__((section(".homesave_const"))) = "Close";
+
+__attribute__((noinline, noclone, optimize("Os"), section(".homesave_code")))
+void CtrHomesave_onApt(APT_HookType hook, void* param) {
+    (void) param;
+    if (hook != APTHOOK_ONSUSPEND && hook != APTHOOK_ONSLEEP && hook != APTHOOK_ONEXIT) return;
+    // Hooks run newest first: our drain precedes the watchdog's ordinary pause.
+    // Its existing restore/wakeup handler increments progress and unpauses it.
+    // Close stays paused through the normal exit flush and watchdog stop.
+    CtrHomesave_pause();
+#ifdef CTRPORT_LABGUARD
+    CtrHomesave_pauseLab();
+#endif
+    FileSystem* fs = homesaveSaves;
+    if (fs == NULL) return;
+    int left = CtrFileSystem_flushBy(fs, svcGetSystemTick() + (uint64_t) SYSCLOCK_ARM11 * HOMESAVE_BUDGET_MS / 1000);
+    if (left > 0) {
+        logInfo(sleepflushLateText, left, HOMESAVE_BUDGET_MS,
+                hook == APTHOOK_ONSLEEP ? sleepflushSleep : hook == APTHOOK_ONEXIT ? homesaveClose : sleepflushHome);
+        CtrHomesave_logPending(fs, homesaveQueued);
+    }
+    // A failed job is removed after eight tries: queue empty is not success.
+    if (__atomic_load_n(&CtrSave_failed, __ATOMIC_ACQUIRE)) logError(homesaveFailed);
+}
+#endif

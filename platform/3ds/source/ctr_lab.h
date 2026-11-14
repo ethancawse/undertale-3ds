@@ -69,4 +69,16 @@ void CtrLab_crashTest(const char* kind);
 // stack has been unmapped meanwhile (libctru's exit frees the heap before the process ends).
 void CtrLab_guardSleep(long long ns);
 
+// labguard (source/z_labguard.c; UNDERTALE lab builds only, never public ones): main.c's lab config names these in
+// place of the watchdog's and the log's own (CTR_LABGUARD_PICK), for the startup guard and the bounded leave.
+#ifdef CTRPORT_LABGUARD
+bool CtrLabguard_watching(void);
+const char* CtrLabguard_phase(void);
+void CtrLabguard_trail(const char* text);
+void CtrLabguard_emergencyLog(const char* text, int waitMs);
+#define CTR_LABGUARD_PICK(labguard, base) labguard
+#else
+#define CTR_LABGUARD_PICK(labguard, base) base
+#endif
+
 #endif

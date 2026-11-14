@@ -1,9 +1,9 @@
 """Write romfs/offkill.bin: UNDERTALE's bullets that the 3DS destroys once they have left the view for good.
 
-platform/3ds/source/z_offkill.c reads it. Each listed object's PC code was read (in the offdraw
-analysis): once one of its instances moves away from the view along the entry's axis and is past the entry's
+platform/3ds/source/z_offkill.c reads it. Each listed object's PC code was read (in
+change offdraw): once one of its instances moves away from the view along the entry's axis and is past the entry's
 reach beyond that edge of view 0, nothing in the game brings it back, reads it or counts it, so destroying it there
-(without its Destroy event) changes nothing the player can see or that the game state carries (the gameplay-state rule, "Early
+(without its Destroy event) changes nothing the player can see or that the game state carries (RULES.md, "Early
 destroy"). The objects are named here by the first 16 hex digits of the SHA-256 of their names (as halfart's list),
 matched against the player's own data.win at build time, so this file names no game identifiers; --hash NAME prints
 the entry for a name.
@@ -16,7 +16,7 @@ data and leaves out an entry whose sprite would reach farther (or whose object i
 Output: 8 bytes per entry, little-endian: int16 object index, int8 axis (0 x, 1 y), int8 direction (+1 right/down,
 -1 left/up), uint8 reach in pixels, 3 zero bytes. No entries (DELTARUNE, no data): no file.
 
-It also writes romfs/offdoom.bin, the bullets inactive for good (omegaflowey, GO 11-02,
+It also writes romfs/offdoom.bin, the bullets inactive for good (change omegaflowey, GO 11-02;
 "Omega Flowey after the 2nd SOUL"). Some bullets save their state and load it back
 later. One that went inactive (its own active variable 0, and invisible) after its last save, or that was saved while
 inactive, can never be active again: the next save copies the 0, the next load restores the 0 or destroys it, and

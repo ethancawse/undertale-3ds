@@ -4,7 +4,9 @@
 
 Every sized symbol (arm-none-eabi-nm -S) is matched by name and nm type, repeated local names in order. A symbol
 that exists in the base must keep its address and size in the candidate; a symbol only the candidate has must lie in
-a late section (.late.text, .late.rodata, .late.data, .late.bss: platform/3ds/late_reserve.ld). Every
+a late section (.late.text, .late.rodata, .late.data, .late.bss: platform/3ds/late_reserve.ld), or entirely
+inside an AAC slot's newly occupied suffix. AAC slot extents must stay fixed and occupancy cannot shrink; this
+rule accepts additions only and never waives a pre-existing symbol's placement or identity. Every
 allocated section of the base other than those must keep its address and size too, the frozen late sections
 (.fatalflush, .vidfix, .heapfrag, .heapfrag_rodata) included. --allow NAME accepts any change to that symbol (a
 function deliberately moved to late code, say). Pre-existing ELF OBJECT symbols have an independent qualified
@@ -50,6 +52,10 @@ DEVKITARM_BIN = Path('C:/devkitPro/devkitARM/bin')
 FROZEN = ('.fatalflush', '.vidfix', '.heapfrag', '.heapfrag_rodata')
 LANE_LATE = ('.late.text', '.late.rodata', '.late.data', '.late.bss')
 RESERVES = ('text', 'rodata', 'data')
+AAC_CAPACITIES = {'text': 43396, 'rodata': 23532}
+# The capacities a slot may have: UNDERTALE New keeps 43,396 B of AAC text, UNDERTALE Old has 80,260 B since the
+# Old 1.0 envelope (relready-resize.md, dv8q). A layout pair must still have the same extent on both sides.
+AAC_CAPACITY_SETS = {'text': (43396, 80260), 'rodata': (23532,)}
 PAGE = 0x1000
 
 
@@ -167,6 +173,30 @@ def is_reserve(section: Section) -> bool:
     return section.name.startswith('.late.') and section.name.endswith('.reserve')
 
 
+def aac_append_regions(base: Layout, cand: Layout) -> list[tuple[int, int]]:
+    """Qualified new occupancy only; absent markers confer no permission."""
+    regions = []
+    for kind, capacity in AAC_CAPACITIES.items():
+        names = [f'__aacout_{kind}_{part}' for part in ('start', 'used_end', 'end')]
+        if not any(name in layout.plain for layout in (base, cand) for name in names):
+            continue
+        if not all(name in layout.plain for layout in (base, cand) for name in names):
+            raise ValueError(f'AAC {kind}: incomplete slot markers')
+        start, used, end = (base.plain[name] for name in names)
+        cstart, cused, cend = (cand.plain[name] for name in names)
+        if (start, end) != (cstart, cend) or end - start not in AAC_CAPACITY_SETS[kind]:
+            raise ValueError(f'AAC {kind}: slot extent changed')
+        capacity = end - start
+        if not start <= used <= cused <= end:
+            raise ValueError(f'AAC {kind}: invalid or shrinking occupancy')
+        sections = [layout.section_at(start, capacity) for layout in (base, cand)]
+        if any(section is None or section.name != '.' + kind or 'W' in section.flags
+               or ('X' in section.flags) != (kind == 'text') for section in sections):
+            raise ValueError(f'AAC {kind}: slot is not inside its read-only output section')
+        regions.append((used, cused))
+    return regions
+
+
 class Report:
     def __init__(self, full: bool):
         self.full = full
@@ -211,6 +241,11 @@ def compare(base: Layout, cand: Layout, allow: frozenset[str] = frozenset(), exp
             full: bool = False, object_waivers=(), allow_inventory=False, aot_objects=None,
             allow_cswtch_renames=False) -> Report:
     report = Report(full)
+    try:
+        aac_regions = aac_append_regions(base, cand)
+    except ValueError as error:
+        report.fail(str(error))
+        aac_regions = []
     if allow_cswtch_renames and base.objects is not None and cand.objects is not None:
         base_names = {name for name, _ in base.symbols} | base.plain.keys() | {o.name for o in base.objects}
         cand_names = {name for name, _ in cand.symbols} | cand.plain.keys() | {o.name for o in cand.objects}
@@ -279,6 +314,11 @@ def compare(base: Layout, cand: Layout, allow: frozenset[str] = frozenset(), exp
                        f'candidate={[(hex(a), s) for a, s in new]}')
             continue
         if not old:
+            if all(size > 0 and any(lo <= addr and addr + size <= hi for lo, hi in aac_regions)
+                   for addr, size in new):
+                for addr, size in new:
+                    report.say(f'AAC {label}: 0x{addr:08x}, {size} B in newly occupied slot suffix')
+                continue
             if all(is_lane_late(cand.section_at(a, s)) for a, s in new):
                 late_added += len(new)
                 for addr, size in new:

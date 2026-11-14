@@ -22,7 +22,7 @@
 // smoothing=0, or the file's smoothing = 0 in a bench launch, still works for a test run, and the row then shows Off
 // until a press turns smoothing back on). DELTARUNE keeps Smart / Off.
 // Stats and log (other_screen 2: frame rate, timing, memory and the log on the screen without the game) is the Debug
-// page's first row (10-26, layout C); the main page's Debug row reads "Log on" while it is on. The setting's
+// page's first row (maintainer 10-26, layout C); the main page's Debug row reads "Log on" while it is on. The setting's
 // values and meaning are unchanged (only its row moved), so settings.ini needs no new settings_version.
 //
 // Opening takes no extra frames: the menu opens on the frame SELECT is
@@ -384,7 +384,7 @@ uint8_t CtrOptmenu_onTop OPT_BSS;
 // the frame's yield; the top screen is lit when the menu takes it.
 OPT_STATIC void optLive(void) {
     bool top = g.menuIsOpen && CtrScreens_game == 1 && CtrScreens_gameBelow() && !__atomic_load_n(&CtrSave_failed, __ATOMIC_ACQUIRE);
-    if (top && !CtrOptmenu_onTop && CtrScreens_topBacklightOff && R_SUCCEEDED(gspLcdInit())) {
+    if (top && !CtrOptmenu_onTop && CtrScreens_topBacklightOff && R_SUCCEEDED(CtrDimlight_topOnInit())) {
         GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
         gspLcdExit();
         CtrScreens_topBacklightOff = false;
@@ -928,6 +928,11 @@ static void fpsboxMenuFlush(CtrMenu* menu); static void quitblackFlush(CtrMenu*)
 // (ctr_audio_system.c's CtrAudio_menuSound), so they sound while the game's sounds are held. A press has its sound only
 // if it changed something (optKeysHeard).
 void CtrAudio_menuSound(AudioSystem* audio, int32_t id);
+#ifdef CTR_FPSGHOST_DIAG
+static void fpsghostOpen(CtrMenu* menu, PrintConsole* console, const CtrDisplaySettings* settings, CtrDisplayCaps caps);
+static void fpsghostClose(CtrMenu* menu);
+#endif
+#line 910
 OPT_STATIC void optSound(bool selectSound);
 
 OPT_CODE void __wrap_CtrArgui_menuOpen(CtrMenu* menu, PrintConsole* console, const CtrDisplaySettings* settings, CtrDisplayCaps caps) {
@@ -959,7 +964,7 @@ OPT_CODE void __wrap_CtrArgui_menuOpen(CtrMenu* menu, PrintConsole* console, con
     opt.dirty = true;
     optLive();
     fpsboxMenuFlush(menu);
-    if (opt.placed && opt.scr == GFX_BOTTOM && settings->bottomMode != BOTTOM_MODE_CONSOLE && R_SUCCEEDED(gspLcdInit())) {
+    if (opt.placed && opt.scr == GFX_BOTTOM && settings->bottomMode != BOTTOM_MODE_CONSOLE && R_SUCCEEDED(CtrDimlight_bottomOnInit())) {
         GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
         gspLcdExit();
     }
@@ -967,7 +972,7 @@ OPT_CODE void __wrap_CtrArgui_menuOpen(CtrMenu* menu, PrintConsole* console, con
     shownAt = svcGetSystemTick();
 #endif
     }
-    CTR_MENUOPEN_AFTER_OPTMENU(menu, console, settings, caps);
+    CTR_FPSDIAG_OPEN(menu, console, settings, caps);
     *(uint8_t*) &menu->edited = gHintSeen ^ 1u;
     gHintSeen = g.menuIsOpen = 1;
     opt.page = OPT_PAGE_MAIN;
@@ -1002,7 +1007,7 @@ OPT_STATIC void optLeaveTop(const CtrMenu* menu) {
     gfxSetDoubleBuffering(GFX_TOP, false);
     CtrLog_endConsole();
     bool off = menu->settings.bottomMode != BOTTOM_MODE_CONSOLE && !CtrScreens_sharedBacklight && menu->caps.wide;
-    if (off && !CtrScreens_topBacklightOff && R_SUCCEEDED(gspLcdInit())) {
+    if (off && !CtrScreens_topBacklightOff && R_SUCCEEDED(CtrDimlight_topOffInit())) {
         GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP); // the screens' wrap keeps it lit for the hint or the counter
         gspLcdExit();
         CtrScreens_topBacklightOff = true;
@@ -1026,7 +1031,7 @@ OPT_CODE void __wrap_CtrArgui_menuClose(CtrMenu* menu) {
 #ifdef CTRPORT_PLAYER_SHOTS
     opt.sinceClose = 1;
 #endif
-    CTR_MENUCLOSE_AFTER_OPTMENU(menu);
+    CTR_FPSDIAG_CLOSE(menu);
 }
 
 OPT_STATIC void optSound(bool selectSound) {
@@ -1133,7 +1138,7 @@ OPT_STATIC CtrMenuAction optActivate(CtrMenu* menu, uint32_t i, int32_t dir) {
     menu->edited = true;
     return MENU_ACTION_CHANGED;
 }
-void CtrMenuquiet_beforeKeys(CtrMenu* menu, u32 down) __asm__("CtrMenuquiet_press");
+static CtrMenuAction fpsghostActivate(CtrMenu*, uint32_t, int32_t); void CtrMenuquiet_beforeKeys(CtrMenu* menu, u32 down) __asm__("CtrMenuquiet_press");
 OPT_STATIC CtrMenuAction optKeys(CtrMenu* menu, u32 down) {
     u32 folded = CTR_MENU_FOLD(down);
     CtrMenuquiet_beforeKeys(menu, down); __asm__ volatile(".rept 6\n nop\n .endr"); // spend the retained sound-call slot
@@ -1166,7 +1171,7 @@ OPT_STATIC CtrMenuAction optKeys(CtrMenu* menu, u32 down) {
     if (folded & (KEY_DUP | KEY_DDOWN)) return MENU_ACTION_NONE;
     int32_t dir = (folded & KEY_DRIGHT) ? 1 : ((folded & KEY_DLEFT) ? -1 : 0);
     if (dir == 0 && !(down & KEY_A)) return MENU_ACTION_NONE;
-    CtrMenuAction action = optActivate(menu, i, dir);
+    CtrMenuAction action = fpsghostActivate(menu, i, dir);
     if (page != OPT_PAGE_MAIN && opt.page == OPT_PAGE_MAIN) opt.cur[OPT_PAGE_MAIN] = optParent[page];
     return action;
 }
@@ -1595,7 +1600,7 @@ void fpsboxFlushConsoles(void);
 __attribute__((noinline, noipa, optimize("Os"), section(".text.fpsbox_late")))
 void fpsboxFlushConsoles(void) {
     __real_CtrScreens_flushConsoles();
-    if (gFpsScreen != 0) CtrFpsbox_update(g.fpsBuf);
+    if (gFpsScreen != 0) CTR_FPSBOX_UPDATE(g.fpsBuf);
 }
 
 // A counter is composed to its final pixels before writing the live buffer.
@@ -1890,5 +1895,198 @@ QUITBLACK_CODE static void quitblackFlush(CtrMenu* menu) {
         }
     }
     fpsboxMenuFlush(menu);
+}
+#endif
+
+#if defined(ENABLE_WAD16)
+// menutime (change scanout, ethanlog5 row 13, 11-08; UNDERTALE only): whether this press closes the menu with Resume, as
+// optKeysHeard, optKeys and ctr_ctrlui.c decide it: SELECT on the Options or Controls page, B on the Options page's
+// main list, or A alone on its Resume row (with no Legal or Credits page shown). z_menutime.c asks before main.c's update, and then skips
+// the page's redraw for that press: optKeys marks the page changed at every press, so the press that closed the menu
+// drew the page again (and waited for two vblanks) just before the close cleared it. Reads only; its own section,
+// appended last (late_reserve.ld), so no other code moves.
+#if defined(__3DS__) && defined(__GNUC__)
+#define MENUTIME_OPT_CODE __attribute__((noinline, noipa, optimize("Os"), section(".text_menutime_opt")))
+#else
+#define MENUTIME_OPT_CODE
+#endif
+bool CtrOptmenu_pressResumes(const CtrMenu* menu, u32 down);
+MENUTIME_OPT_CODE bool CtrOptmenu_pressResumes(const CtrMenu* menu, u32 down) {
+#ifdef CTRPORT_PLAYER_SHOTS
+    down |= opt.pendingKeys; // the test probe's keys, merged at the update's start
+#endif
+    if (down == 0 || !menu->open || CtrLegal_shown()) return false;
+    if (down & KEY_SELECT) return true; // both pages (CtrCtrlui_update's first test on the Controls page)
+    if (menu->page != MENU_PAGE_OPTIONS) return false;
+    if (opt.page != OPT_PAGE_MAIN) return false;
+    if (down & KEY_B) return true;
+    return (down & KEY_A) != 0 && (CTR_MENU_FOLD(down) & 0xF0u) == 0 && opt.cur[OPT_PAGE_MAIN] == OPT_MAIN_RESUME;
+}
+
+// z_menutime.c's recovery when that guess was wrong (the press did not close the menu): the update's flush alone, as
+// __wrap_CtrArgui_menuUpdate ends, with no keys and no held-key or Credits tick, so the frame's page is drawn once.
+void CtrOptmenu_flushPage(CtrMenu* menu);
+MENUTIME_OPT_CODE void CtrOptmenu_flushPage(CtrMenu* menu) {
+    quitblackFlush(menu);
+}
+#endif
+
+#if defined(ENABLE_WAD16) && defined(__3DS__)
+// battletouch's main-page rows (z_battletouch.c, "Options, Battle layout and Battle stylus"): reached through
+// builderx_compile.py's routing, they read this file's OptRow and the first fields of OptState at these offsets, and
+// place their rows among these indices. Checks only, at the file's end: no code or line number before them changes.
+_Static_assert(__builtin_offsetof(OptRow, dis) == 12 && __builtin_offsetof(OptState, page) == 16 &&
+               __builtin_offsetof(OptState, cur) == 17 && __builtin_offsetof(OptState, dirty) == 24 &&
+               OPT_PAGE_MAIN == 0 && OPT_PAGES == 4, "z_battletouch.c's ObRow and ObState");
+#ifdef CTRPORT_TARGET_O3DS
+_Static_assert(OPT_MAIN_CONTROLS == 4 && OPT_MAIN_COUNT == 10, "z_battletouch.c's obOrder (Old)");
+#else
+_Static_assert(OPT_MAIN_CONTROLS == 5 && OPT_MAIN_COUNT == 11, "z_battletouch.c's obOrder (New)");
+#endif
+#endif
+
+// bottomframe: a virtual main-page row after Dialogue box. Compose with
+// battletouch's released rows, retaining its navigation and setting handlers.
+#ifdef ENABLE_WAD16
+#ifndef CTRPORT_NO_BOTTOMFRAME
+#include "ctr_bottomframe.h"
+#define BF_MENU __attribute__((noinline, noipa, optimize("Os"), section(".aacout.text.bottomframe")))
+#define BF_MENU_RO __attribute__((section(".aacout.rodata.bottomframe")))
+static const char bfMenuLabel[] BF_MENU_RO = "Free bottom screen";
+static const char bfMenuFrame[] BF_MENU_RO = "Frame";
+static const char bfMenuDim[] BF_MENU_RO = "Dim";
+static const char bfMenuHelp[] BF_MENU_RO = "Area frame or dim when unused.";
+#ifdef CTRPORT_TARGET_O3DS
+static const uint8_t bfMenuOldY[] BF_MENU_RO = {8,22,42,56,76,90,104,124,138,152};
+#else
+static const uint8_t bfMenuOldY[] BF_MENU_RO = {8,22,41,55,69,88,102,116,135,149,163};
+#endif
+
+CtrMenuAction CtrOptbattle_keys(CtrMenu*, u32);
+void CtrOptbattle_compose(const CtrMenu*, uint16_t*);
+// Opaque original-row/text aliases keep GCC's existing local graph intact.
+void bfMenuOriginalRow(const CtrMenu*, uint32_t, uint32_t, OptRow*) __asm__("optRow");
+void bfMenuOriginalText(uint16_t*, int32_t, int32_t, const char*, uint32_t) __asm__("optText");
+
+BF_MENU CtrMenuAction CtrBottomframe_menuKeys(CtrMenu* menu, u32 down) {
+    if (CtrLegal_shown() || menu->page != MENU_PAGE_OPTIONS || opt.page != OPT_PAGE_MAIN ||
+        (down & (KEY_B | KEY_SELECT))) return CtrOptbattle_keys(menu, down);
+    if (CtrScreens_game != 0 && opt.cur[OPT_PAGE_MAIN] == OPT_MAIN_COUNT)
+        opt.cur[OPT_PAGE_MAIN] = OPT_MAIN_GAME;
+    u32 folded = CTR_MENU_FOLD(down);
+    uint32_t i = opt.cur[OPT_PAGE_MAIN];
+    if (folded & (KEY_DUP | KEY_DDOWN)) {
+        if (i == OPT_MAIN_COUNT) {
+            // Start beside ours, then let battletouch skip disabled rows.
+            opt.cur[OPT_PAGE_MAIN] = (folded & KEY_DUP) ? OPT_MAIN_SMOOTHING : OPT_MAIN_DIALOGUE;
+            return CtrOptbattle_keys(menu, down);
+        }
+        bool enter = (folded & KEY_DUP) ? i == OPT_MAIN_SMOOTHING : i == OPT_MAIN_DIALOGUE;
+        if (!(folded & KEY_DUP) && i == OPT_MAIN_GAME) {
+            OptRow row;
+            bfMenuOriginalRow(menu, OPT_PAGE_MAIN, OPT_MAIN_DIALOGUE, &row);
+            enter = row.dis;
+        }
+        if (!enter || CtrScreens_game != 0) return CtrOptbattle_keys(menu, down);
+        CtrMenuquiet_beforeKeys(menu, down);
+        opt.cur[OPT_PAGE_MAIN] = OPT_MAIN_COUNT;
+        opt.dirty = true;
+        return MENU_ACTION_NONE;
+    }
+    if (i != OPT_MAIN_COUNT) return CtrOptbattle_keys(menu, down);
+    CtrMenuquiet_beforeKeys(menu, down);
+    opt.dirty = true;
+    if (CtrScreens_game != 0 || (!(folded & (KEY_DLEFT | KEY_DRIGHT)) && !(down & KEY_A))) return MENU_ACTION_NONE;
+    CtrBottomframe_setEnabled(!CtrBottomframe_enabled());
+    menu->edited = true;
+    return MENU_ACTION_CHANGED;
+}
+BF_MENU void CtrBottomframe_menuCompose(const CtrMenu* menu, uint16_t* fb) {
+    if (opt.page == OPT_PAGE_MAIN && CtrScreens_game != 0 && opt.cur[OPT_PAGE_MAIN] == OPT_MAIN_COUNT)
+        opt.cur[OPT_PAGE_MAIN] = OPT_MAIN_GAME;
+    CtrOptbattle_compose(menu, fb);
+    if (opt.page != OPT_PAGE_MAIN) return;
+    bool selected = CtrScreens_game == 0 && opt.cur[OPT_PAGE_MAIN] == OPT_MAIN_COUNT;
+    // Repack the already composed 12 px rows into a 14 px list. One column
+    // on the paused menu's stack avoids another full-screen buffer. Resume,
+    // Quit and the help line keep their released positions. Battle row text,
+    // choices, disabled colours and selection remain battletouch's own.
+    for (uint32_t x = 3; x < 317; ++x) {
+        uint16_t column[174];
+        for (uint32_t y = 8; y < 182; ++y) {
+            column[y - 8] = fb[x * 240 + 239 - y];
+            fb[x * 240 + 239 - y] = 0;
+        }
+        for (uint32_t k = 0; k < sizeof(bfMenuOldY); ++k) {
+            uint32_t y = 8 + 14 * (k + (k >= 2));
+            for (uint32_t row = 0; row < 12; ++row) {
+                uint16_t colour = column[bfMenuOldY[k] + row - 8];
+                // battletouch falls back to Game for our virtual cursor.
+                if (selected && k == 0) {
+                    if (x < 24) colour = 0;
+                    else if (colour == 0xffe0u) colour = 0xffffu;
+                }
+                fb[x * 240 + 239 - y - row] = colour;
+            }
+        }
+        if (selected)
+            for (uint32_t y = 221; y < 235; ++y) fb[x * 240 + 239 - y] = 0;
+    }
+    uint32_t colour = CtrScreens_game != 0 ? 0x8410u : (selected ? 0xffe0u : 0xffffu);
+    bfMenuOriginalText(fb, 24, 36, bfMenuLabel, colour);
+    bfMenuOriginalText(fb, 164, 36, CtrBottomframe_enabled() ? bfMenuFrame : bfMenuDim,
+                       colour);
+    if (selected) {
+        bfMenuOriginalText(fb, 11, 36, omStrHeart, 0xf800u);
+        bfMenuOriginalText(fb, 12, 221, bfMenuHelp, 0xffffu);
+    }
+}
+#endif
+
+#endif // CTRPORT_NO_BOTTOMFRAME
+#if defined(ENABLE_WAD16) && defined(__3DS__)
+// battletouch's first-battle hint (z_battletouch.c) draws from the glyph table: a second name for optGlyphs, no code.
+__asm__(".global CtrOptmenu_glyphs\n.set CtrOptmenu_glyphs, optGlyphs\n");
+#endif
+
+// Accepted menu actions only: the composed page does not cover the top
+// menu's left margin. Retire its counter when it stops being painted there.
+// The game gets a clean transfer; the bottom menu gets a clean page copy.
+__attribute__((noinline, noipa, optimize("Os"), section(".text.late.fpsghost")))
+static CtrMenuAction fpsghostActivate(CtrMenu* menu, uint32_t row, int32_t dir) {
+    uint32_t before = gFpsScreen;
+    CtrMenuAction action = optActivate(menu, row, dir);
+    if ((before == 0u) != (gFpsScreen == 0u)) CtrFpsbox_reset();
+    if (before == 1u && gFpsScreen != 1u && opt.placed && opt.scr == GFX_TOP) {
+        CtrLog_beginConsole();
+        CtrFpsbox_restoreMenu(opt.shownBase, opt.spareBase, true);
+        // Include the whole left margin in one cache operation, never the
+        // page or hint. This LCD remains in the menu's single-buffer mode.
+        GSPGPU_FlushDataCache(opt.shownBase - OPT_TOP_SIDE, OPT_TOP_SIDE * 2u);
+        CtrLog_endConsole();
+    }
+    return action;
+}
+
+#ifdef CTR_FPSGHOST_DIAG
+// Keep the old menu bodies and their embedded constants in their old slots.
+__attribute__((noinline, noipa, optimize("Os"), section(".text.late.fpsghost")))
+static void fpsghostOpen(CtrMenu* menu, PrintConsole* console, const CtrDisplaySettings* settings, CtrDisplayCaps caps) {
+    CTR_MENUOPEN_AFTER_OPTMENU(menu, console, settings, caps);
+    CtrFpsdiag_event(1);
+}
+
+__attribute__((noinline, noipa, optimize("Os"), section(".text.late.fpsghost")))
+static void fpsghostClose(CtrMenu* menu) {
+    CTR_MENUCLOSE_AFTER_OPTMENU(menu);
+    CtrFpsdiag_event(2);
+}
+
+// A separate TU keeps argui's original function emission order intact.
+void __wrap_arguiDrawText(int32_t x, int32_t y, const char* text, uint32_t colour);
+__attribute__((noinline, noipa, optimize("Os"), section(".text.late.fpsghost")))
+void CtrFpsdiag_draw(int32_t x, int32_t y, const char* text, uint32_t colour) {
+    CtrFpsdiag_paint((uint32_t) (CtrScreens_game ^ g.rgb565), g.fb, text);
+    __wrap_arguiDrawText(x, y, text, colour);
 }
 #endif

@@ -67,7 +67,7 @@ UTA_LATE static bool utaDecOpenMemory(CtrDecoder* dec, const uint8_t* data, uint
 UTA_LATE static int32_t utaDecRead(CtrDecoder* dec, int16_t* out, uint32_t maxFrames);
 UTA_LATE static bool utaDecSeek(CtrDecoder* dec, uint64_t frame);
 UTA_LATE_R5 static void utaNoticeMissing(const char* kind, const char* path);
-// flowpitch (flowend): late code at the end of ctr_audio_system.c.
+// flowpitch (change flowend): late code at the end of ctr_audio_system.c.
 __attribute__((noinline, noipa, optimize("Os"), section(".text.flowpitch_late"))) static void flowpitchChnSetRate(int id, float rate);
 
 // The physical layer: libctru's functions (a parenthesised name is not a function-like macro call), or the capture's.
@@ -349,6 +349,68 @@ void mlPhysPausedLink(int id, bool paused) __asm__("mlPhysPaused");
 #define ML_CLAIM(ca, ctx) ({ __asm__ volatile(".rept 24; nop; .endr"); })
 #define ML_MENU_PAUSE CtrVideo_menuPause
 #define ML_FRAME_LOCK LightLock_Lock
+#endif
+
+// loadclass 4c (UNDERTALE): two layers of one song played next to each other join sample-locked (ctr_audio_system.c's
+// end). Its DSP frame link comes before gomusic's (lmRegister registers it in gomDspCallback's place, which it calls
+// first) and its pause link before gomusic's hold (the asm alias at ctr_loadaudio_mix.inc's end). Elsewhere both links
+// are gomusic's own, as before. lmRegister calls loadclassCallbackLink, an asm alias of loadclassSetCallback, so GCC
+// sees an external call there as before (a call into this file makes it emit the load mix's functions in another order).
+#if defined(ENABLE_WAD16) && defined(CTRPORT_HAVE_TREMOR)
+void loadclassSetCallback(ndspCallback callback, void* data);
+void loadclassCallbackLink(ndspCallback callback, void* data);
+void loadclassPhysPaused(int p, bool paused);
+#define LOADCLASS_PHYS_CALLBACK loadclassCallbackLink
+#define LOADCLASS_PAUSE_LINK "loadclassPhysPaused"
+#else
+#define LOADCLASS_PHYS_CALLBACK UTA_PHYS_CALLBACK
+#define LOADCLASS_PAUSE_LINK "gomPhysPaused"
+#endif
+
+// hplcopy (UNDERTALE Old): a short looping stream played fast (pitch 2 or more) is decoded once into memory on the app
+// core, at low priority, and the stream reads that copy once it is whole (ctr_audio_system.c's end). utaSetCallback's
+// registration (ML_REGISTER, one changed external call target) goes through hplRegister first, which points the
+// vtable's update at hplUpdate (it runs the file's own, then starts and frees the copies from the voices), then on to
+// mlRegister; flowhitch's read link (audofixReadLink, an asm alias) is hplcopy's read, which falls through to
+// audofix's.
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS) && defined(CTRPORT_HAVE_TREMOR)
+void hplRegisterLink(ndspCallback callback, void* data) __asm__("hplRegister");
+#undef ML_REGISTER
+#define ML_REGISTER hplRegisterLink
+#define HPL_READ_LINK "hplFeedRead"
+#else
+#define HPL_READ_LINK "audofixFeedRead"
+#endif
+
+// seamlocal (UNDERTALE, row 23): a loop seam is measured against the steps within 10 ms of it, not the file's
+// largest step anywhere (ctr_audio_system.c's end). utaDecRead's decoder read (UTA_PHYS_READ) goes through slRead,
+// which measures the stream's first pass on its way to mlRead; utaSetCallback's registration (ML_REGISTER) goes
+// through slRegister, which points the vtable's update and play entries at seamlocal's (they set a cached loop's seam
+// triggers before its seam piece is built) and then runs the chain above. Each is one changed external call target.
+// UNDERTALE only: slRead and slRegister are defined only there (ctr_audio_system.c's end, under ENABLE_WAD16), so a
+// DELTARUNE build keeps the chain above (unguarded, its link failed on the undefined slRead).
+#if defined(ENABLE_WAD16)
+int32_t slReadLink(CtrDecoder* dec, int16_t* out, uint32_t maxFrames) __asm__("slRead");
+#undef UTA_PHYS_READ
+#define UTA_PHYS_READ slReadLink
+void slRegisterLink(ndspCallback callback, void* data) __asm__("slRegister");
+#undef ML_REGISTER
+#define ML_REGISTER slRegisterLink
+#endif
+
+// lcstop (change loadclass, 11-09; UNDERTALE): the vtable's stopSound and stopAll go through lcstopStopSound and
+// lcstopStopAll (ctr_audio_system.c's end), which note the sounds they stop for the asset query's short window;
+// ctrStopAll and sndcutStopSound keep their code. The declarations ride on the vtable's line (LCSTOP_DECL).
+#if defined(ENABLE_WAD16)
+#define LCSTOP_DECL __attribute__((noinline, optimize("Os"), section(".text_lcstop"))) static void \
+    lcstopStopSound(AudioSystem* audio, int32_t soundOrInstance); \
+    __attribute__((noinline, optimize("Os"), section(".text_lcstop"))) static void lcstopStopAll(AudioSystem* audio);
+#undef CTR_STOP_ENTRY
+#define CTR_STOP_ENTRY lcstopStopSound
+#define CTR_STOPALL_ENTRY lcstopStopAll
+#else
+#define LCSTOP_DECL
+#define CTR_STOPALL_ENTRY ctrStopAll
 #endif
 
 #endif

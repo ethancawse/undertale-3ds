@@ -116,7 +116,7 @@ def layout_file(game):
 GMLAOT_EXTRA = []
 # The Python files that generate the code: gmlaot.py and what it imports, and this file, which picks its arguments.
 GENERATOR_FILES = ("gmlaot.py", "builtin_audit.py", "corpus.py", "prepare.py", "btnprompt.py", "escape.py",
-                   "late_numeric.py", "typed.py", "typed_priority.py", "padrefs.py")
+                   "late_numeric.py", "typed.py", "typed_priority.py", "padrefs.py", "aacslot.py", "aacslot.json")
 
 
 def typed_priority_file(game, target):

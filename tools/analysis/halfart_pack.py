@@ -1,4 +1,4 @@
-"""Half-resolution art (prototype, flowhalf; build.sh halfart=point|box): the listed sprites' frames stored at half
+"""Half-resolution art (prototype, change flowhalf; build.sh halfart=point|box): the listed sprites' frames stored at half
 resolution in their own texture page, for art never drawn above 0.5 screen pixels per texel (native drawing shows a
 1x item of a 640x480 room view that way). The console then keeps a quarter of the texels for them.
 

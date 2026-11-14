@@ -5,9 +5,9 @@
 #if defined(ENABLE_WAD16)
 __attribute__((noinline, section(".text.late.utlife")))
 InstanceBBox Utlife_outsideRoomBBox(Runner* runner, Instance* inst) {
-    // Reuse the retained bbox through its existing adapter. This avoids a new
-    // call-graph edge to a static in runner.c and a duplicate generic bbox body.
-    InstanceBBox bbox = Colexact_sharedBBox(runner, inst);
+    // Outside Room reads the same PC box as collision and public bbox fields.
+    // The native call stays out of line without a duplicate generic bbox body.
+    InstanceBBox bbox = Collision_readBBox(runner, inst);
     if (IS_WAD16_OR_BELOW(runner) && runner->collisionCompatibilityMode && bbox.valid) {
         bbox.right -= 1.0;
         bbox.bottom -= 1.0;

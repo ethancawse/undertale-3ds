@@ -39,6 +39,20 @@ def require_store_parity(steam, gog, *, allow_gog_extras=True):
     """Reject a stale or incomplete atlas reprojection before accepting its coverage."""
     if gog.get('source_record_sha256') != fingerprint(steam):
         raise ValueError('GOG room record is not projected from the current Steam record')
+    # Qualification and numeric atlas differences live with the per-store record.
+    # A raw item reprojection precedes these separately reviewed tile extensions.
+    projection = gog.get('observed_late_projection', {}) if allow_gog_extras else {}
+    differences = {}
+    if projection:
+        if (projection.get('source_data_sha256') != steam.get('data_sha256') or
+                projection.get('target_data_sha256') != gog.get('data_sha256')):
+            raise ValueError('Unqualified observed-late atlas difference')
+        for row in projection.get('differences', []):
+            key = (row['room'], row['sub'])
+            if key in differences:
+                raise ValueError('Duplicate observed-late atlas difference')
+            differences[key] = ({tuple(t) for t in row['source_only']},
+                                {tuple(t) for t in row['target_only']})
     keys = []
     for record in (steam, gog):
         rows = [(s['room'], s['sub']) for s in record['scenes']]
@@ -55,6 +69,19 @@ def require_store_parity(steam, gog, *, allow_gog_extras=True):
         gog_items = sum(1 for item in b['items'] if item not in extra)
         if (len(a['items']), len(a.get('parts', []))) != (gog_items, len(b.get('parts', []))):
             raise ValueError('Steam/GOG item or part coverage differs')
+        observed = {tuple(t) for t in a.get('observed_late_tiles', ())}
+        target = {tuple(t) for t in b.get('observed_late_tiles', ())}
+        # Raw reprojection copies numeric observations before the reviewed atlas extensions.
+        # Comparing counts here would miss a different tile or a moved battle-group set.
+        delta = differences.get((a['room'], a['sub']))
+        if delta is not None:
+            removed, added = delta
+            if not removed <= observed:
+                raise ValueError('Unqualified observed-late atlas difference')
+            observed = (observed - removed) | added
+        if observed != target:
+            raise ValueError('Steam/GOG observed-late tile coverage differs in scene %d/%d' %
+                             (a['room'], a['sub']))
 
 
 def read_logs(paths, counts=None):

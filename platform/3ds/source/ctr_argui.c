@@ -561,7 +561,7 @@ ARGUI_NOINLINE void arguiPaintScreen(void* fb, bool rgb565) {
         uint32_t s = (uint32_t) gFpsSize + 1u;
         g.sx = (uint8_t) (s * xMul);
         g.sy = (uint8_t) s;
-        __wrap_arguiDrawText(2, 2, g.fpsBuf, 0xFFFFu);
+        CTR_FPSDIAG_DRAW(2, 2, g.fpsBuf, 0xFFFFu);
     }
     g.menuIsOpen = open;
     GSPGPU_FlushDataCache(fb, 320u * 240u * 2u);
@@ -635,4 +635,13 @@ __asm__(".global CtrFps_drawText\n.set CtrFps_drawText,arguiDrawText\n"
 _Static_assert(__builtin_offsetof(ArguiState, rgb565) == 7, "CtrHint_rgb565 is CtrArgui_state.rgb565");
 __asm__(".global CtrHint_rgb565\n.type CtrHint_rgb565,%object\n"
         ".set CtrHint_rgb565,CtrArgui_state+7\n.size CtrHint_rgb565,1\n");
+#endif
+
+#if defined(__3DS__) && !defined(CTR_SCREENS_SETTINGS_ONLY) && defined(ENABLE_WAD16)
+// menutime (z_menutime.c's glyph pass, in the first room's load before argui's first prefetch): argui's own names for
+// its theme font and SOUL cursor, as exact aliases like CtrFps_counterSize, so this file's functions keep their order
+// and bytes and the names stay in this file alone.
+__asm__(".global CtrArgui_nameFntTheme\n.type CtrArgui_nameFntTheme,%object\n.set CtrArgui_nameFntTheme,nameFntTheme\n"
+        ".global CtrArgui_nameSprHeartSmall\n.type CtrArgui_nameSprHeartSmall,%object\n"
+        ".set CtrArgui_nameSprHeartSmall,nameSprHeartSmall\n");
 #endif

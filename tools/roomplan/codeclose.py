@@ -1,5 +1,5 @@
 """UNDERTALE's in-play code closure for the room plan: the bytecode a scene can run in play that neither its record nor
-the room change stages (Old 3DS; codeclose, ruling H1v 2026-10-28).
+the room change stages (Old 3DS; codeclose, review decision H1v 2026-10-28).
 
 Read-only. Numbers only leave this module. On the Old 3DS the bytecode sits in an SD cache file in 4 KB groups
 (engine data_win.c DataWin_moveBytecodeToFile: blobs in file order, a new group when a blob would end more than
@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import gmlaot as g  # noqa: E402
 
 CODE_GROUP_BYTES = 4096    # data_win.c CODE_GROUP_BYTES
-CAP_BYTES = 256 * 1024     # a scene's extras at most (ruling 2026-10-28: a guard, the largest H1v scene is 268 KB)
+CAP_BYTES = 256 * 1024     # a scene's extras at most (review decision 2026-10-28: a guard, the largest H1v scene is 268 KB)
 EVENT_CREATE, EVENT_DESTROY, EVENT_CLEANUP, EVENT_PRECREATE = 0, 1, 12, 14
 SKIP_CHANGE = (EVENT_DESTROY, EVENT_CLEANUP, EVENT_PRECREATE)   # z_roomload does not stage these
 OBJT_EVENT_TYPE_COUNT = 15
@@ -55,6 +55,8 @@ HUBS = ('scr_battlegroup', 'textdata_en', 'textdata_ja', 'SCR_TEXT', 'scr_gettex
 FACE_CHOOSER, FACE_CHOICE, FACE_POSES, FACE_CREATES = 'scr_facechoice', 'facechoice', 'u', 'instance_create'  # a dialogue's portrait: placed_art_sprites
 CMP_EQUAL = 3              # the compare kind in a cmp instruction's second byte
 VARTYPE_ARRAY, VARTYPE_STACKTOP, VARTYPE_NORMAL = 0x00, 0x80, 0xA0   # vm.h
+CALL_ARG_VALUES = 4         # constants kept per call argument (walk call_args)
+SCRIPT_REACH = 4096        # entries scripted_objects walks at most (a guard; UT's own script calls reach far fewer)
 WALK_VISITS = 8            # an address walked more often than this is left (loops converge well before)
 
 
@@ -104,10 +106,12 @@ class CodeClosure:
         for p in chunk('ROOM'):
             self.cc_by_room.append(i32(p + 32))
             self.insts_by_room.append([(i32(q + 8), i32(q + 16)) for q in plist(struct.unpack_from('<I', d, p + 48)[0])])
-        scripts = {}
+        scripts, self.script_by_index = {}, []
         for p in chunk('SCPT'):
+            self.script_by_index.append(i32(p + 4) if p else -1)
             if p:
                 scripts[dw.string(struct.unpack_from('<I', d, p)[0])] = i32(p + 4)
+        self.script_by_name = scripts
         self.hubs = {scripts[n] for n in HUBS if scripts.get(n, -1) >= 0}
         # The engine's groups (data_win.c): distinct blobs by offset (the longest length), in file order.
         code = dw.code
@@ -135,14 +139,18 @@ class CodeClosure:
         funcs = [f['name'] for f in dw.funcs]
         vars_ = [v['name'] for v in dw.vars]
         self.spawns, self.var_spawns, self.stores, self.any_stores, self.draws = [], [], [], [], []
-        self.sounds, self.var_sounds = [], []
+        self.sounds, self.var_sounds, self.cases, self.calls, self.script_ids, var_draws = [], [], [], [], [], []
+        self.call_args, arg_stores, sprite_vars, self.sprite_names = [], [], set(), []
         sound_calls = frozenset(f for f in funcs if hashlib.sha1(f.encode('utf-8')).hexdigest() in SOUND_CALLS)
+        self.passthrough = frozenset(n for n, c in scripts.items() if 0 <= c < len(code) and code[c] and code[c]['length']
+                                     and passes_argument(d, code[c]['abs'], code[c]['length'], vars_))
         for c in code:
             if c is None or not c['length']:
                 r = {'spawns': set(), 'var_spawns': set(), 'stores': {}, 'any_stores': {}, 'draws': set(),
-                     'sounds': set(), 'var_sounds': set()}
+                     'sounds': set(), 'var_sounds': set(), 'cases': {}, 'calls': set(), 'script_ids': set(),
+                     'var_draws': set(), 'call_args': set(), 'arg_stores': set(), 'sprite_vars': set()}
             else:
-                r = walk(d, c['abs'], c['length'], funcs, vars_, sound_calls)
+                r = walk(d, c['abs'], c['length'], funcs, vars_, sound_calls, self.passthrough, frozenset(scripts))
             self.spawns.append(r['spawns'])
             self.var_spawns.append(r['var_spawns'])
             self.stores.append(r['stores'])
@@ -150,6 +158,14 @@ class CodeClosure:
             self.draws.append(r['draws'])
             self.sounds.append(r['sounds'])
             self.var_sounds.append(r['var_sounds'])
+            self.cases.append(r['cases'])
+            self.calls.append(r['calls'])
+            self.script_ids.append(r['script_ids'])
+            var_draws.append(r['var_draws'])
+            self.call_args.append(r['call_args'])
+            arg_stores.append(r['arg_stores'])
+            sprite_vars |= r['sprite_vars']
+            self.sprite_names.append(frozenset(r['var_draws'] | r['sprite_vars']))
         chooser = scripts.get(FACE_CHOOSER, -1)
         if 0 <= chooser < len(code) and code[chooser] and code[chooser]['length']:
             self.face_objects, self.face_note = read_chooser(d, code[chooser]['abs'], code[chooser]['length'], funcs, vars_)
@@ -159,6 +175,22 @@ class CodeClosure:
         for o in range(len(self.events_by_obj)):
             for cc in self.object_codes(o, parents=False):
                 self.owner[cc] = o
+        # sprite_args: (script entry, argument number) of each argument a script (an entry no object owns) keeps in a
+        # variable some object's event takes its sprite from (sprite_index = global.bulletappearance).
+        self.sprite_args = {(c, n) for c, kept in enumerate(arg_stores) if c not in self.owner
+                            for name, n in kept if name in sprite_vars}
+
+    def taken_sprites(self, obj):
+        """The constants obj's events and its parents' store in a plain variable those events draw or take as the
+        sprite (walk var_draws, sprite_vars: draw_sprite(armspr), sprite_index = hurtgfx). So Sorry's draw event sets
+        his arm to one of two sprites and draws it; Ice Cap's Create keeps its hurt look in a variable an alarm makes
+        its sprite: each one's tile was read from the SD card mid-fight (change escapes and tilemiss, Azahar Old memcap
+        11-08). Only the switch rule reads it, for a battle group's own objects: in rooms the writer's and the damage
+        numbers' variable art would add a tile to 150 scenes and push two placed-art sets past their cap."""
+        kept = getattr(self, 'sprite_names', ())
+        codes = [c for c in self.object_codes(obj) if 0 <= c < len(kept)]
+        names = set().union(*(kept[c] for c in codes)) if codes else set()
+        return {s for c in codes for name in names for s in self.stores[c].get(name, ())}
 
     def object_codes(self, obj, skip=(), parents=True):
         """Every event code entry of obj and its parents (event types in skip aside), in data.win order."""
@@ -309,6 +341,128 @@ class CodeClosure:
                     if 'sprite' in name or name == FACE_POSES:
                         out.update(values)
         return out
+
+    def created_art_sprites(self, seeds, machinery=frozenset(), core=None):
+        """The sprites a battle group's own objects and what they create can draw (the bullet rule, build_plan.bullet_art):
+        the seeds (the group's recorded code) whose owner isn't in machinery, the owners of those and of what they reach
+        (the creation walk of ordered, nothing followed out of a hub script), less machinery; per object, its default
+        sprite and each constant its own events (no parent's) pass to a draw_sprite function or store in a variable named
+        *sprite*. A bullet created by a monster's attack in a turn no recording reached is here. With core (machinery a
+        recording ran: the writer, the soul), also the cases (dispatched_objects: what a generator in machinery creates
+        for the values the group's own objects or its default set, and what that creates) and the scripts
+        (scripted_objects: what the scripts the own objects call create), less core; the scripts' objects less
+        machinery too. Sprite numbers only; the caller checks the range."""
+        machinery = set(machinery)
+        own = {c for c in seeds if self.owner.get(c) not in machinery}
+        reached = {self.owner[c] for c in sorted(own) + self.ordered(own) if c in self.owner}
+        objs = reached - machinery
+        out = set()
+        if core is not None:
+            objs |= self.dispatched_objects(objs, reached & machinery) - set(core)
+            objs |= self.scripted_objects(objs) - machinery - set(core)
+            out |= self._case_sprites | self.passed_sprites(a for o in objs for c in self.object_codes(o, parents=False)
+                                                            if 0 <= c < len(self.call_args) for a in self.call_args[c])
+        for o in sorted(objs):
+            if 0 <= o < len(self.sprite_by_obj):
+                out.add(self.sprite_by_obj[o])
+            for c in self.object_codes(o, parents=False):
+                if 0 <= c < len(self.draws):
+                    out.update(self.draws[c])
+                    for name, values in self.any_stores[c].items():
+                        if 'sprite' in name:
+                            out.update(values)
+        return out
+
+    def dispatched_objects(self, own, generators):
+        """The objects the generators create in the cases the own objects pick, and what those create (the creation
+        walk of ordered): a case is a creation inside `if v == K` in a generator's event (walk), picked when an own
+        object's event stores K to a variable named v (another instance's counts: gen.bullettype = 11) or the
+        generator's own Create does (its default, which a creator that sets nothing keeps: Froggit with a second monster
+        makes the side generator and sets no type, so it fires its type-0 script's direct bullet). A script the case
+        runs counts with what it creates (_script_spawns). The Ice Cap
+        group's icicles: its monster makes the side generator, whose alarm makes one of 11 bullets by bullettype, so
+        every bullet of it is machinery to the rule (a quarter of the groups reach the generator); the group's
+        recording never reached that attack, and its tiles were read from the SD card in play (change escapes, Azahar
+        Old memcap 11-08: 49.3 ms)."""
+        stored = {}
+        for o in own:
+            for c in self.object_codes(o, parents=False):
+                if 0 <= c < len(self.any_stores):
+                    for name, values in self.any_stores[c].items():
+                        stored.setdefault(name, set()).update(values)
+        made, scripts = set(), set()
+        self._case_sprites = set()
+        for o in sorted(generators):
+            default = {}
+            for c in self.events_by_obj[o].get(EVENT_CREATE, []) if 0 <= o < len(self.events_by_obj) else []:
+                for name, values in self.stores[c].items():
+                    default.setdefault(name, set()).update(values)
+            for c in self.object_codes(o):
+                if 0 <= c < len(self.cases):
+                    for (name, value), items in self.cases[c].items():
+                        if value not in stored.get(name, set()) | default.get(name, set()):
+                            continue
+                        for kind, v in items:
+                            if kind == 'o' and 0 <= v < len(self.events_by_obj):
+                                made.add(v)
+                            elif kind == 'n' and self.script_by_name.get(v, -1) >= 0:
+                                scripts.add(self.script_by_name[v])
+                            elif kind == 'i' and 0 <= v < len(self.script_by_index) and self.script_by_index[v] >= 0:
+                                scripts.add(self.script_by_index[v])
+                            elif kind == 'a':
+                                self._case_sprites |= self.passed_sprites([v])
+        made |= self._script_spawns(sorted(scripts))
+        if not made:
+            return set()
+        codes = {c for o in made for c in self.object_codes(o)}
+        return made | {self.owner[c] for c in self.ordered(codes) if c in self.owner}
+
+    def passed_sprites(self, passed):
+        """The constants among passed ((callee, argument number, value): walk call_args) that go to a script's sprite
+        argument (sprite_args): the side generator's type-0 case runs the direct-bullet script with the small bullet's
+        sprite as its tenth argument, which the script keeps in the global the direct bullet's Create takes its sprite
+        from. Group 9's bullet tile was read from the SD card in play on the round 10 candidate (change tilemiss, Azahar
+        Old memcap 11-08)."""
+        out = set()
+        for callee, n, v in passed:
+            if isinstance(callee, tuple):
+                c = self.script_by_index[callee[1]] if 0 <= callee[1] < len(self.script_by_index) else -1
+            else:
+                c = self.script_by_name.get(callee, -1)
+            if c >= 0 and (c, n) in self.sprite_args:
+                out.add(v)
+        return out
+
+    def scripted_objects(self, own):
+        """The objects the scripts the own objects' events call create as constants (by name or through
+        script_execute of a constant; scripts those call too, no hub), and what those create (ordered). Whimsun's attack
+        makes its bullet through a script run by script_execute; the creation walk follows no script call, and the
+        bullet's tile was read from the SD card mid-attack (change escapes, Azahar Old memcap 11-08)."""
+        todo = []
+        for o in own:
+            todo += [c for c in self.object_codes(o, parents=False) if 0 <= c < len(self.calls)]
+        made = self._script_spawns(todo)
+        if not made:
+            return set()
+        codes = {c for o in made for c in self.object_codes(o)}
+        return made | {self.owner[c] for c in self.ordered(codes) if c in self.owner}
+
+    def _script_spawns(self, todo):
+        """The constant objects the scripts these entries call create (an entry no object owns is a script: its own
+        creations count), through scripts those call, no hub, at most SCRIPT_REACH entries."""
+        todo = [c for c in todo if 0 <= c < len(self.calls) and c not in self.hubs]
+        seen, made = set(todo), set()
+        while todo:
+            c = todo.pop()
+            if c not in self.owner:   # a script's own code: what it creates
+                made.update(x for x in self.spawns[c] if 0 <= x < len(self.events_by_obj))
+            called = [self.script_by_name.get(n, -1) for n in self.calls[c]]
+            called += [self.script_by_index[k] for k in self.script_ids[c] if 0 <= k < len(self.script_by_index)]
+            for s in called:
+                if 0 <= s < len(self.calls) and s not in self.hubs and s not in seen and len(seen) < SCRIPT_REACH:
+                    seen.add(s)
+                    todo.append(s)
+        return made
 
     def battle_objects(self, seeds):
         """The objects whose code battle_sounds would read for these seeds (the seeds' owners and what they create)."""
@@ -501,18 +655,59 @@ def face_choices(d, base, length, funcs, vars_):
     return out
 
 
-def walk(d, base, length, funcs, vars_, sound_calls=frozenset()):
+def passes_argument(d, base, length, vars_):
+    """Whether a script's code hands back its first argument when nothing else matches: it keeps argument 0 in a
+    local first (argument[0], or argument0) and ends with that local's return. The game's localizing sprite lookup is
+    one: a draw of its result draws the sprite it is given (the word search page: change popbot, 11-08, a 40 ms read in
+    play), as English and the stores the plan is built for take it."""
+    blob = bytes(d[base:base + length])
+    ins, addr = [], 0
+    while addr + 4 <= length and len(ins) < 4096:
+        try:
+            i = g.Instr(blob, addr)
+        except g.Reject:
+            return False
+        ins.append(i)
+        addr = i.next
+    if len(ins) < 4 or addr != length:
+        return False
+
+    def var(i):
+        vi = i.var_index() if i.extra is not None else -1
+        return vars_[vi] if 0 <= vi < len(vars_) else None
+
+    kept = None
+    for k, i in enumerate(ins[:8]):
+        if i.op == g.OP_POP and k > 0 and i.extra is not None:
+            src = ins[k - 1]
+            name = var(src) if src.op == g.OP_PUSH and src.t1 == g.T_VAR else None
+            first = name == 'argument0' or (name == 'argument' and (src.extra >> 24) & 0xF8 == VARTYPE_ARRAY and k > 1
+                                            and ins[k - 2].op == g.OP_PUSHI and ins[k - 2].inst == 0)
+            if first:
+                kept = var(i)
+            break
+    last, ret = ins[-2], ins[-1]
+    return (kept is not None and ret.op == g.OP_RET and last.op == g.OP_PUSHLOC and last.t1 == g.T_VAR
+            and var(last) == kept)
+
+
+def walk(d, base, length, funcs, vars_, sound_calls=frozenset(), passthrough=frozenset(), scripts=frozenset()):
     """Abstract stack walk over one code entry: the objects its instance_create / instance_create_depth /
     instance_change calls name as constants (spawns), the variables they name instead (var_spawns), whether any names
     neither (computed_spawns), the constants each plain variable is assigned (stores), the same for a variable of any kind (any_stores) and the constants passed
     as a draw_sprite function's sprite (draws), and the constants (sounds) or plain variables (var_sounds) passed as a
-    sound_calls call's sound. A stack slot is ('c', frozenset of ints), ('v', name), ('a', k) or None."""
+    sound_calls call's sound. A call to a passthrough script (passes_argument) returns its constant first argument. The
+    constants a call to a script (named in scripts, or run by script_execute of a constant) passes, by argument
+    (call_args); the variables an entry keeps an argument in (arg_stores); the variables a *sprite* variable takes
+    (sprite_vars). A stack slot is ('c', frozenset of ints), ('v', name), ('a', k) or None."""
     blob = bytes(d[base:base + length])
     states = {0: ()}
     work = [0]
     out = {'spawns': set(), 'var_spawns': set(), 'computed_spawns': False, 'stores': {}, 'any_stores': {}, 'draws': set(),
-           'sounds': set(), 'var_sounds': set()}
+           'sounds': set(), 'var_sounds': set(), 'cases': {}, 'calls': set(), 'script_ids': set(), 'var_draws': set(),
+           'call_args': set(), 'arg_stores': set(), 'sprite_vars': set()}
     visits = {}
+    cases, sites = set(), set()   # (start, end, variable, constant) of each case; (address, kind, values) of a creation or call
 
     def pops(n, stack):
         for _ in range(n):
@@ -541,6 +736,9 @@ def walk(d, base, length, funcs, vars_, sound_calls=frozenset()):
                 b = stack.pop() if stack else None
                 a = stack.pop() if stack else None
                 v = None
+                if op == g.OP_CMP and (ins.word >> 8) & 0xFF == CMP_EQUAL and a and b and a[0] == 'v' and b[0] == 'c' \
+                        and len(b[1]) == 1:
+                    v = ('q', a[1], next(iter(b[1])))   # variable == constant: a case, if a bf takes it
                 if a and b and a[0] == 'c' and b[0] == 'c' and len(a[1]) * len(b[1]) <= 16 and op in (g.OP_ADD, g.OP_SUB):
                     v = ('c', frozenset((x + y) if op == g.OP_ADD else (x - y) for x in a[1] for y in b[1]))
                 stack.append(v)
@@ -558,6 +756,10 @@ def walk(d, base, length, funcs, vars_, sound_calls=frozenset()):
                 if ins.extra is not None:
                     vi = ins.var_index()
                     name = vars_[vi] if 0 <= vi < len(vars_) else None
+                    if name is not None and val and val[0] == 'a':
+                        out['arg_stores'].add((name, val[1]))
+                    if name is not None and val and val[0] == 'v' and 'sprite' in name:
+                        out['sprite_vars'].add(val[1])
                     if name is not None and val and val[0] == 'c':
                         out['any_stores'].setdefault(name, set()).update(val[1])
                         # Only a plain variable's stores are its constants (not an array element's, not another
@@ -579,8 +781,10 @@ def walk(d, base, length, funcs, vars_, sound_calls=frozenset()):
             elif op == g.OP_B:
                 branch, stop = ins.target(), True
             elif op in (g.OP_BT, g.OP_BF):
-                pops(1, stack)
+                top = stack.pop() if stack else None
                 branch = ins.target()
+                if op == g.OP_BF and top and top[0] == 'q' and branch > ins.next:
+                    cases.add((ins.next, branch, top[1], top[2]))
             elif op == g.OP_PUSHENV:
                 pops(1, stack)   # its operand jumps to the popenv of an empty with: fall through
             elif op in (g.OP_PUSH, g.OP_PUSHLOC, g.OP_PUSHGLB, g.OP_PUSHBLTN):
@@ -610,9 +814,31 @@ def walk(d, base, length, funcs, vars_, sound_calls=frozenset()):
                 name = funcs[fi] if fi is not None and 0 <= fi < len(funcs) else None
                 args = [stack[-(k + 1)] if len(stack) > k else None for k in range(argc)]
                 del stack[max(0, len(stack) - argc):]
-                stack.append(None)
+                stack.append(args[0] if name in passthrough and argc > 0 and args[0] and args[0][0] == 'c' else None)
+                if name is not None:
+                    out['calls'].add(name)
+                    sites.add((addr, 'n', frozenset([name])))
+                if name == 'script_execute' and argc > 0 and args[0] and args[0][0] == 'c':
+                    out['script_ids'].update(args[0][1])
+                    sites.add((addr, 'i', args[0][1]))
+                # (callee, argument number, constant): the callee a name, or ('i', index) through script_execute
+                passed = set()
+                if name == 'script_execute' and argc > 0 and args[0] and args[0][0] == 'c' and len(args[0][1]) == 1:
+                    callee, given = ('i', next(iter(args[0][1]))), args[1:]
+                elif name in scripts:
+                    callee, given = name, args
+                else:
+                    callee, given = None, ()
+                for k, a in enumerate(given):
+                    if a and a[0] == 'c' and len(a[1]) <= CALL_ARG_VALUES:
+                        passed.update((callee, k, v) for v in a[1])
+                if passed:
+                    out['call_args'] |= passed
+                    sites.add((addr, 'a', frozenset(passed)))
                 if name in DRAW_FUNCTIONS and argc > 0 and args[0] and args[0][0] == 'c':
                     out['draws'].update(args[0][1])
+                elif name in DRAW_FUNCTIONS and argc > 0 and args[0] and args[0][0] == 'v':
+                    out['var_draws'].add(args[0][1])
                 if name in sound_calls and argc > 0 and args[0]:
                     if args[0][0] == 'c':
                         out['sounds'].update(args[0][1])
@@ -623,6 +849,7 @@ def walk(d, base, length, funcs, vars_, sound_calls=frozenset()):
                     kind = args[k][0] if argc > k and args[k] else None
                     if kind == 'c':
                         out['spawns'].update(args[k][1])
+                        sites.add((addr, 'o', args[k][1]))
                     elif kind == 'v':
                         out['var_spawns'].add(args[k][1])
                     else:
@@ -653,4 +880,12 @@ def walk(d, base, length, funcs, vars_, sound_calls=frozenset()):
                 stack = list(merged)
             else:
                 states[addr] = st
+    # A creation or a call inside a case's straight run (its innermost case) is that case's: a generator object makes
+    # the bullet its creator picks by a variable it sets (gen.bullettype = K, then if bullettype == K: create, or run a
+    # script that does). out['cases'][(variable, constant)]: ('o', object), ('n', function name) and ('i', script index).
+    for a, kind, values in sites:
+        inner = [c for c in cases if c[0] <= a < c[1]]
+        if inner:
+            _s, _e, name, value = min(inner, key=lambda c: c[1] - c[0])
+            out['cases'].setdefault((name, value), set()).update((kind, v) for v in values)
     return out

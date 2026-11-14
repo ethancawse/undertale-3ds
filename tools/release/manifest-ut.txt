@@ -223,12 +223,49 @@ platform/3ds/source/ctr_aot_module.h
 platform/3ds/source/ctr_apt_trace.c
 platform/3ds/source/ctr_apt_trace.h
 platform/3ds/source/z_keeplit.c
+platform/3ds/source/z_dimlight.c
+platform/3ds/source/ctr_dimlight_logic.h
+platform/3ds/source/ctr_dimlight_diag.inc
 platform/3ds/source/z_oflog.c
 platform/3ds/source/z_stackfloor.c
 platform/3ds/source/z_scanout.c
 platform/3ds/source/z_errtext_e1.c
 platform/3ds/source/z_menuborder.c
 platform/3ds/source/z_popbot.c
+platform/3ds/source/z_popbot2.c
+platform/3ds/source/z_battletouch.c
+platform/3ds/source/ctr_touch_core.h
+platform/3ds/source/z_menutime.c
+platform/3ds/source/z_logfix.c
+platform/3ds/source/z_heldslow.c
+platform/3ds/source/z_heldslow.h
+platform/3ds/source/ctr_touch_ext.h
+platform/3ds/source/z_bootahead.c
+platform/3ds/source/ctr_touchui_core.h
+platform/3ds/source/ctr_touchmenus_core.h
+platform/3ds/source/ctr_touchmenus_read.h
+platform/3ds/source/ctr_touchoverworld_core.h
+platform/3ds/source/ctr_touchoverworld_read.h
+platform/3ds/source/ctr_touchname_core.h
+platform/3ds/source/ctr_touchname_read.h
+platform/3ds/source/z_touchname.c
+platform/3ds/source/ctr_touchshops_read.h
+platform/3ds/source/z_touchshops.c
+tools/buildcache/touchname_compile.py
+tools/buildcache/test_touchname_compile.py
+platform/3ds/source/z_touchoverworld.c
+tools/buildcache/touchoverworld_compile.py
+tools/buildcache/test_touchoverworld_compile.py
+platform/3ds/source/z_touchmenus.c
+platform/3ds/source/z_touchui.c
+platform/3ds/source/ctr_touch_mute.h
+platform/3ds/source/z_touchmute.c
+platform/3ds/source/z_touchqueue.c
+platform/3ds/source/ctr_touchquiz_core.h
+platform/3ds/source/z_touchquiz.c
+tools/buildcache/touchquiz_compile.py
+tools/buildcache/test_touchquiz_compile.py
+tools/buildcache/test_touchmenus_export.py
 platform/3ds/source/z_trace_wake.c
 platform/3ds/source/ctr_argui.c
 platform/3ds/source/ctr_asgprobe.c
@@ -257,6 +294,7 @@ platform/3ds/source/ctr_audio_decoder.h
 platform/3ds/source/ctr_audio_selftest.c
 platform/3ds/source/ctr_audio_system.c
 platform/3ds/source/ctr_audio_system.h
+platform/3ds/source/ctr_bootahead.inc
 platform/3ds/source/ctr_loadaudio.inc
 platform/3ds/source/ctr_loadaudio_trace.inc
 platform/3ds/source/ctr_loadaudio_observer.inc
@@ -338,6 +376,7 @@ platform/3ds/source/ctr_input_map.h
 platform/3ds/source/ctr_knfuse_layout.inc
 platform/3ds/source/ctr_knfuse_tail.inc
 platform/3ds/source/ctr_input_schedule.h
+platform/3ds/source/ctr_input_stalltap.h
 platform/3ds/source/ctr_inputlate_keys.h
 platform/3ds/source/z_dodgefront.c
 platform/3ds/source/z_textfront.c
@@ -454,6 +493,7 @@ platform/3ds/source/z_builderx_review.c
 platform/3ds/source/z_chapterleak.c
 platform/3ds/source/z_freewins.c
 platform/3ds/source/z_leavekeep.c
+platform/3ds/source/z_labguard.c
 # argbind: argui's per-load pointers at a chapter switch (DELTARUNE only; compiles empty for UNDERTALE)
 platform/3ds/source/z_argbind.c
 platform/3ds/source/z_loadscreen.c
@@ -554,6 +594,8 @@ tools/release/check_release.py
 tools/release/test_check_release.py
 tools/release/test_release_contract.py
 tools/release/test_build_python.py
+tools/testproc.py
+tools/test_testproc.py
 tools/release/prepare_legal.py
 tools/release/test_prepare_legal.py
 tools/release/identifier-allowlist.json
@@ -635,6 +677,8 @@ tools/roomplan/build_plan.py
 tools/roomplan/closure.py
 tools/roomplan/codeclose.py
 tools/roomplan/build_sfxplan.py
+tools/layout/build_scenes.py
+tools/layout/undertale-scenes.json
 tools/roomplan/voice_census.py
 tools/roomplan/records/sounds/undertale-steam-1.08.json
 tools/roomplan/dwinfo.py
@@ -794,6 +838,12 @@ platform/3ds/source/ctr_data_version_cold.inc
 # gamedir2: the game folder listing and settings.ini worker save (both games)
 platform/3ds/source/z_gamedir.c
 
+# dwkeep: data.win's later opens to read as sub-files of one kept handle (UNDERTALE only; compiled out of DELTARUNE)
+platform/3ds/source/z_dwkeep.c
+
+# numcache: a thread's number-cache walk takes newlib's real list count (both games)
+platform/3ds/source/z_numcache.c
+
 # flowervramg: DELTARUNE Old CIA80 palette priority and promotion reclaim (compiled out of other builds)
 platform/3ds/source/ctr_allocate_heaps.inc
 platform/3ds/source/ctr_flowervramg_palette.c
@@ -807,7 +857,7 @@ platform/3ds/source/z_flowcode.c
 tools/release/builder/bannertool-1.2.3-clang.patch
 tools/release/licenses/bannertool-MIT.txt
 
-# offkill (offdraw): the early destroy of bullets past the view (UNDERTALE only) and its builder entries
+# offkill (change offdraw): the early destroy of bullets past the view (UNDERTALE only) and its builder entries
 platform/3ds/source/z_offkill.c
 tools/aot/offkill.py
 tools/aot/test_offkill.py
@@ -826,9 +876,9 @@ platform/3ds/source/z_bulletsplit.c
 platform/3ds/source/z_freebies.c
 platform/3ds/source/z_postkick.c
 
-# bboxround (simplefix): Collision_computeBBox's exact edge rounding (both games)
+# bboxround (change simplefix): Collision_computeBBox's exact edge rounding (both games)
 engine/src/z_bboxround.c
-# lbind (aotprof): aotBind's late name test
+# lbind (change aotprof): aotBind's late name test
 platform/3ds/source/z_lbind.c
 
 # Windows sound encoder validation; no DLL in the source export.
@@ -841,6 +891,7 @@ engine/src/z_utexact_alarm.h
 platform/3ds/source/ctr_utwindow.h
 platform/3ds/source/z_utwindow.c
 tools/analysis/utwindow_compile.py
+tools/analysis/test_utwindow_compile.py
 tools/release/test_smdh_metadata.py
 
 # utfade: a door's room change shows black while the new room loads (empty translation unit outside UNDERTALE)
@@ -890,6 +941,8 @@ tools/release/test_kit_hygiene.py
 tools/release/export_scrub.py
 
 tools/release/test_export_scrub.py
+tools/release/export_pins.py
+tools/release/test_export_pins.py
 
 # titancpu (DELTARUNE New Titan CPU): the typed-region priority order (empty without a list), the lazy surface
 # hand-off splits the renderer includes, and the Titan CPU recorder (titandiag builds only, compiled out of releases)
@@ -1007,6 +1060,8 @@ platform/3ds/source/z_upd1_text.c
 platform/3ds/aacout.cmake
 tools/buildcache/aacout_compile.py
 tools/buildcache/test_aacout_compile.py
+# Dev-only AAC inputs (devdiet): the emitter's dev lists, link check and budgets; release scripts unchanged.
+tools/analysis/test_devonly_aac.py
 
 # First-update parity: saved-room reinsertion order, included by engine/src/runner.c.
 engine/src/z_parity_restore.h
@@ -1023,3 +1078,121 @@ platform/3ds/source/ctr_dlgwhite.inc
 tools/analysis/check_dlgwhite_layout.py
 tools/analysis/test_dlgwhite.py
 tools/release/test_dlgwhite_gate.py
+# battlesplit: the split battle layout, UNDERTALE only (CMake leaves it out of DELTARUNE). It also needs
+# ctr_bottom_view.h and ctr_battletouch.h, which battletouch's lines list too (after z_battletouch.c): when both
+# changes are composed, keep one copy of each (check_release.py refuses a repeated path).
+platform/3ds/source/z_battlesplit.c
+platform/3ds/source/z_battlesplitbsr.c
+platform/3ds/source/ctr_battlesplit.h
+platform/3ds/source/ctr_bottom_view.h
+platform/3ds/source/ctr_battletouch.h
+# LCD call routing is required by CMake and utwindow's assembly adapter.
+tools/buildcache/dimlight_compile.py
+tools/buildcache/test_dimlight_compile.py
+# firstboot: the first time setup's moving bar (UNDERTALE): its fill math and the host test.
+platform/3ds/source/ctr_firstboot_fill.h
+tools/analysis/test_firstboot_fill.py
+
+# Collision parity correction and its checked release compiler adapter.
+engine/src/hitcheck.h
+engine/src/z_hitcheck.c
+tools/buildcache/hitcheck_compile.py
+tools/buildcache/test_hitcheck_compile.py
+tools/aot/hitcheck_guard.py
+
+# Shared late-input order validator and its negative controls (tooling only).
+tools/analysis/late-order.json
+tools/analysis/late_order.py
+tools/analysis/test_late_order.py
+tools/analysis/late-order.md
+
+# layout: the element layout model (S1), UNDERTALE only (CMake leaves it out of DELTARUNE); ctr_bottom_view.h is in
+# battlesplit's lines above.
+platform/3ds/source/z_layout.c
+platform/3ds/source/ctr_layout.h
+# bonegate bindings and isolated runtime; UNDERTALE release only.
+platform/3ds/source/ctr_bonegate.inc
+platform/3ds/source/ctr_bonegate.h
+platform/3ds/source/z_bonegate.c
+platform/3ds/source/z_boxcache.c
+platform/3ds/source/z_boxcache_layout.h
+
+platform/3ds/source/ctr_bottom_paint.h
+platform/3ds/source/z_bottompaint.c
+platform/3ds/source/z_bottompaint_layout.h
+platform/3ds/source/ctr_asrsplit_room.inc
+# AAC AOT routing: public placement metadata, generator and UT compile adapter.
+tools/aot/aacslot.py
+tools/aot/aacslot.json
+tools/buildcache/aacslot_compile.py
+
+# Native AAC placement metadata; release tenant list is empty.
+platform/3ds/aacslot-native.json
+tools/analysis/test_aacslot_shared.py
+
+# noticescroll resident reader and qualified port-menu copy adapter.
+platform/3ds/source/ctr_noticescroll_cache.inc
+tools/buildcache/portmenu_compile.py
+
+# Shared benchmark settings write guard.
+platform/3ds/source/z_benchsettings.c
+
+# Dedicated-shop completed-frame crops and host ownership/admission gate.
+platform/3ds/source/ctr_shopsplit.h
+platform/3ds/source/z_shopsplit.c
+tools/analysis/test_shopsplit.py
+
+# gpuburst F1: bank-aware CtrMemory_vramAllocTop (wraps it on UNDERTALE Old only).
+platform/3ds/source/z_vramtop.c
+
+# Console initialization must not flip the concurrent game loading picture.
+platform/3ds/source/z_bootline_console.c
+tools/analysis/test_console_swap.py
+# Standalone benchmark ready-clear unit.
+platform/3ds/asrholdbenchready.cmake
+platform/3ds/source/asrholdbenchready/ctr_benchmark.c
+platform/3ds/source/asrholdbenchready/ctr_benchready.h
+tools/buildcache/asrholdbenchready_compile.py
+tools/buildcache/test_asrholdbenchready_compile.py
+platform/3ds/source/ctr_dlgflash.inc
+tools/buildcache/dlgflash_compile.py
+tools/analysis/test_dlgflash.py
+tools/analysis/check_dlgflash_layout.py
+platform/3ds/source/ctr_dlgtop.inc
+tools/analysis/check_dlgtop_layout.py
+
+# S4 exclusive-loan controller and Draw-created-box seam.
+platform/3ds/source/ctr_dlgtop.h
+platform/3ds/source/ctr_dlgtop_lease.inc
+platform/3ds/source/ctr_dlgtop_buffers.inc
+platform/3ds/source/ctr_dlgtop_birth.inc
+tools/analysis/capture_png.py
+tools/analysis/test_capture_png.py
+tools/release/test_dlgflash_gate.py
+# Default-off fixed-address native-M measurement adapter and its build inputs.
+platform/3ds/source/z_mexdlg_native.c
+platform/3ds/mexdlg_native_m.cmake
+tools/buildcache/mexdlg_native_compile.py
+# Benchmark screen-move observer.
+platform/3ds/source/z_screenmovestamp.c
+platform/3ds/screenmovestamp.cmake
+tools/buildcache/screenmovestamp_compile.py
+tools/buildcache/test_screenmovestamp_compile.py
+
+# Restore the natural Bones/Numbers verdicts without re-reading the table.
+platform/3ds/source/z_menulag.c
+tools/analysis/test_menulag_verdict_retain.py
+
+# FPS borrowed-LCD teardown and its exact two-operand compile adapter.
+platform/3ds/source/z_fpsghost_return.c
+tools/buildcache/fpsghost_return_compile.py
+
+# sfxlate: appended Old cooler preparation and its source-build adapter.
+platform/3ds/source/ctr_sfxlate_cooler.inc
+tools/buildcache/sfxlate_compile.py
+tools/buildcache/sfxlate_object.py
+tools/analysis/picture_check.py
+tools/analysis/check_knsurf_layout.py
+tools/analysis/layout_objects.py
+tools/release/export_lazy_loads.py
+tools/release/test_export_lazy_loads.py

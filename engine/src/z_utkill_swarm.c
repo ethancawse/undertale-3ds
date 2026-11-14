@@ -23,7 +23,7 @@
 //   runner's passes left them (Instance_computeSpeedFromComponents), with direction0 for the direction it keeps when
 //   both are 0.
 //
-// Nothing in UNDERTALE 1.08 can tell (a scan of every event and observer in its code): the
+// Nothing in UNDERTALE 1.08 can tell (a scan of every event and observer): the
 // pixel's events are exactly Create, Outside Room and Animation End; no collision event names it; the only code that
 // looks at its instances is instance_exists(obj_whtpxlgrav) (answered here), and the only with (all) is in
 // obj_vsflowey_heartdefeated's Create. Anything that could see the instances turns the swarm into runner instances
@@ -53,7 +53,7 @@
 // - Anything that can't be placed is counted and logged ("UNPROVEN"); none can happen in UNDERTALE 1.08.
 // - The draw list gets span entries for runs of strips at their depth (Utsw_merge, Utsw_span), drawn as their
 //   instances' draw_self would draw them.
-// A scan of the game's code: the only code that looks at the strips' instances is instance_exists(obj_blkpxltall) in
+// A scan of the code: the only code that looks at the strips' instances is instance_exists(obj_blkpxltall) in
 // obj_vaporized's Step (object 158, before the strips' turn). Nothing reads a strip's id or user event 0. Only
 // obj_vsflowey_heart's Step runs after the strips' turn, and making obj_vsflowey_heartdefeated materializes first.
 //
@@ -64,7 +64,7 @@
 // - The pixel: by the object's name, its exact event list, and its three code entries by their bytecode
 //   (Utkill_codeIs, functions by name).
 // - The strips: by obj_blkpxltall's fields and exact event list, and its three entries and obj_vaporized's Alarm 0
-//   by their digests (swCanon; an analysis script computes the same digests from data.win).
+//   by their digests (swCanon; a host script computes the same digests from data.win).
 // - A strip mismatch leaves the strips runner instances. A pixel mismatch, the off-switch file
 //   (sdmc:/3ds/undertale-3ds/utswarm-off) or anything unexpected leaves everything a runner instance.
 // The file is looked for once, at the first frame end, and never in a dust maker's Draw, which often runs while a
@@ -685,7 +685,7 @@ static bool swFuncIs(VMContext* ctx, uint32_t index, const char* name) {
 
 // swCanon: FNV-1a 64 over a code entry's instructions (as the VM runs them, operands patched): each instruction word,
 // then a call's function by its name, a variable operand by its type bits and its name, a Push.s by its text (each
-// name or text with its NUL), any other operand bytes as they are. Sizes as gmlaot.Instr's. The analysis script
+// name or text with its NUL), any other operand bytes as they are. Sizes as gmlaot.Instr's. A host script
 // gives the same digest from data.win. False when the entry isn't exactly wordCount words long or doesn't read
 // straight through.
 static uint64_t swFnv(uint64_t h, const void* p, size_t n) SW_COLD;
@@ -1254,7 +1254,7 @@ static bool swOutside(Runner* runner, const UtswPixel* p, int32_t roomWidth, int
     Instance* inst = swDraw;
     inst->x = p->x;
     inst->y = p->y;
-    InstanceBBox bbox = Collision_computeBBox(runner, inst);
+    InstanceBBox bbox = Collision_computeBBox(runner, inst); // swDraw stays at angle zero: the PC box is identical; preserve this raw path's layout.
     if (bbox.valid) return (0 >= bbox.right || bbox.left > roomWidth || 0 >= bbox.bottom || bbox.top > roomHeight);
     return (0 > inst->x || inst->x > roomWidth || 0 > inst->y || inst->y > roomHeight);
 }

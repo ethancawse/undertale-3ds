@@ -1,7 +1,7 @@
 // LAB ONLY (build.sh undertale <o3ds|n3ds> flowdiag): flowstream round 3's diag. Never a release input; without the
 // word this file is not compiled and its define reaches no object.
 //
-// What tilecensus's diag (tilecensus) does not log, for planning first-draw prefetch (flowstream round 3,
+// What tilecensus's diag (change tilecensus) does not log, for planning first-draw prefetch (flowstream round 3,
 // firstuse's schedule): at every draw that loads tiles (the renderer's CtrTextures_ensureTiles/-But calls, wrapped),
 // one line per tile loaded, with
 //   - frame, room, frames since the room change, page, tile, where it came from (ram/read/sd/image), the call's ms,

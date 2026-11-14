@@ -285,7 +285,7 @@ __attribute__((noinline, section(".text_menuhold"))) bool CtrCtrlui_holdMoves(u3
     return ctl.row != (key == KEY_DUP ? 0u : CTL_ROWS - 1u);
 }
 
-// Layout's step (polish audit, as Smoothing does): left or right on Custom used to make it
+// Layout's step (polish audit, 11-06: as Smoothing does): left or right on Custom used to make it
 // Default, and the custom map was gone. Custom now stays in the cycle Default, B confirms, Custom and comes back byte
 // for byte. The map is kept here from the moment Layout leaves it, for as long as the game runs: settings.ini holds
 // only the map in use, so one left behind on Default or B confirms doesn't outlive a restart. Without a custom map the

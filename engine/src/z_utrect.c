@@ -1,4 +1,4 @@
-// utrect (uthunt): a native body for UNDERTALE's filled-rectangle script, the one every rectangle of the game goes
+// utrect (change uthunt): a native body for UNDERTALE's filled-rectangle script, the one every rectangle of the game goes
 // through (Hotland's 18 rising-heat columns in one room alone call it 144 times a frame, each call a script frame with
 // six locals and two os_type reads around one draw_rectangle). Per-effect code like this is used only where pixels and
 // game state stay identical to the PC game.

@@ -175,6 +175,8 @@ COLLISION_BBOX_STORAGE InstanceBBox Collision_computeBBox(Runner* runner, Instan
     return ret;
 }
 
+#include "hitcheck.h"
+#line 157
 static inline bool Collision_hasFrameMasks(Sprite* sprite) {
     return sprite != nullptr && sprite->sepMasks == 1 && sprite->masks != nullptr && sprite->maskCount > 0;
 }
@@ -229,7 +231,7 @@ static inline bool Collision_obbNeedsSAT(Sprite* spr, Instance* inst) {
 }
 
 static inline bool Collision_rectOverlapsInstance(Runner* runner, Instance* inst, GMLReal rx1, GMLReal ry1, GMLReal rx2, GMLReal ry2) {
-    InstanceBBox bbox = Collision_computeBBox(runner, inst);
+    InstanceBBox bbox = Collision_hitBBox(runner, inst);
     if (!bbox.valid) return false;
 
     if (rx1 >= bbox.right || bbox.left > rx2 || ry1 >= bbox.bottom || bbox.top > ry2) return false;
@@ -259,7 +261,7 @@ static inline bool Collision_rectOverlapsInstance(Runner* runner, Instance* inst
 
 // Tests whether a world point lies inside the instance's collision rect (margins, rotated/scaled). Cheaper and more correct than Collision_pointInInstance for sepMasks != 1, since point_in_instance bounds-checks against the full sprite texture rather than the bbox margins.
 static inline bool Collision_pointInsideInstanceBox(Runner* runner, Instance* inst, GMLReal px, GMLReal py) {
-    InstanceBBox bbox = Collision_computeBBox(runner, inst);
+    InstanceBBox bbox = Collision_hitBBox(runner, inst);
     if (!bbox.valid) return false;
     if (bbox.left > px || px >= bbox.right || bbox.top > py || py >= bbox.bottom) return false;
 
@@ -274,7 +276,7 @@ static inline bool Collision_pointInsideInstanceBox(Runner* runner, Instance* in
 
 // Circle (cx, cy, radius) vs instance collision rect. Falls back to circle-vs-AABB when the instance isn't a rotated sepMasks==2 sprite.
 static inline bool Collision_circleOverlapsInstance(Runner* runner, Instance* inst, GMLReal cx, GMLReal cy, GMLReal radius) {
-    InstanceBBox bbox = Collision_computeBBox(runner, inst);
+    InstanceBBox bbox = Collision_hitBBox(runner, inst);
     if (!bbox.valid) return false;
     GMLReal rSq = radius * radius;
 
@@ -325,7 +327,7 @@ static inline bool Collision_pointInEllipse(GMLReal x1, GMLReal y1, GMLReal x2, 
 // (zero width/height) fallback to the rectangle test, nearest-corner PtInEllipse rejection,
 // and ellipse-vs-OBB SAT for rotated sepMasks==2 sprites.
 static inline bool Collision_ellipseOverlapsInstance(Runner* runner, Instance* inst, GMLReal x1, GMLReal y1, GMLReal x2, GMLReal y2) {
-    InstanceBBox bbox = Collision_computeBBox(runner, inst);
+    InstanceBBox bbox = Collision_hitBBox(runner, inst);
     if (!bbox.valid) return false;
 
     // Native rounds the ellipse corners in compatibility mode, before computing the centre/radii.
@@ -429,7 +431,7 @@ static inline bool Collision_segmentVsAARect(GMLReal x1, GMLReal y1, GMLReal x2,
 
 // Line segment (x1,y1)-(x2,y2) vs instance collision rect.
 static inline bool Collision_lineOverlapsInstance(Runner* runner, Instance* inst, GMLReal x1, GMLReal y1, GMLReal x2, GMLReal y2) {
-    InstanceBBox bbox = Collision_computeBBox(runner, inst);
+    InstanceBBox bbox = Collision_hitBBox(runner, inst);
     if (!bbox.valid) return false;
 
     // Epsilon from GameMaker-HTML5, we apply it because the BBox is "exclusive" (outside of the sprite) but we need to put the right/bottom INSIDE of the sprite
@@ -881,7 +883,7 @@ static inline __attribute__((always_inline)) bool Colflip_rectOverlapsOBB(Sprite
 }
 
 COLFLIP_LATE COLFLIP_FLAT bool Collision_compatRectHitsInstance(Runner* runner, Instance* inst, GMLReal x1, GMLReal y1, GMLReal x2, GMLReal y2, bool prec) {
-    InstanceBBox bbox = Collision_computeBBox(runner, inst);
+    InstanceBBox bbox = Collision_hitBBox(runner, inst);
     if (!bbox.valid) return false;
     GMLReal right = bbox.right - 1.0, bottom = bbox.bottom - 1.0;
     if (x1 > right || bbox.left > x2 || y1 > bottom || bbox.top > y2) return false;

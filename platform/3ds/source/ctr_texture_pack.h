@@ -337,4 +337,15 @@ static inline uint32_t CtrPkLin_heapFreeForCopy(void) {
 #define CTR_PKLIN_HEAP_FREE heapFree
 #endif
 
+// fightpix: cold preparation/image-fallback hooks; ordinary packed-tile loads need no hook.
+#if (defined(ENABLE_WAD16) && !defined(ENABLE_WAD17)) || defined(CTRPORT_TEXPREP_REDPIX)
+#define CTRPORT_FIGHTPIX_PACK 1
+#define CTRPORT_FIGHTPIX_KEEP __attribute__((noinline))
+void CtrPack_promoteMeterRow(CtrPageLayout* layout, int32_t ty, const uint8_t* rows);
+void CtrPack_convertTileFightpix(void* dst, const CtrPageLayout* layout, int32_t tx, int32_t ty, const uint8_t* rows);
+#else
+#define CTRPORT_FIGHTPIX_KEEP
+#define CtrPack_convertTileFightpix CtrPack_convertTileRedpix
+#endif
+
 #endif

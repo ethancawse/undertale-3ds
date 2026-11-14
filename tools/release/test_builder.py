@@ -1332,6 +1332,7 @@ class BuildTest(unittest.TestCase):
             self.assertEqual(pipeline.source_wanted("tools/aot/pixgrid.py", game), game != "deltarune")
             self.assertEqual(pipeline.source_wanted("tools/aot/btnprompt_build.py", game), game != "deltarune")
             self.assertEqual(pipeline.source_wanted("tools/aot/dskip.py", game), game != "deltarune")
+            self.assertFalse(pipeline.source_wanted("tools/aot/bottomframe.py", game))
             self.assertTrue(pipeline.source_wanted("tools/aot/stglyphs.py", game))
             self.assertTrue(pipeline.source_wanted("tools/aot/stpack.py", game))
             self.assertEqual(pipeline.source_wanted("tools/aot/stmenu.py", game), game != "deltarune")

@@ -1,4 +1,4 @@
-// smartcut: Smart smoothing's item verdicts from the build.
+// change smartcut: Smart smoothing's item verdicts from the build.
 //
 // ctr_renderer.c's itemVerdict looks at each texture page item once, at its first draw under Smart smoothing: several
 // milliseconds an item on the Old 3DS, eight items on UNDERTALE's first battle frame (about 11 ms on Azahar, the

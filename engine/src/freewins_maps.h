@@ -2,7 +2,7 @@
 // Included in place of stb_ds.h by runner.c and vm_builtins.c, so neither file's line numbers move.
 #include "stb_ds.h"
 
-// freewins round 5 (UNDERTALE Old): the big ds_maps keep their storage across a VM reset.
+// change freewins round 5 (UNDERTALE Old): the big ds_maps keep their storage across a VM reset.
 //
 // At game_restart UNDERTALE rebuilds its two language text maps (English, Japanese) with ds_map_add. Built
 // from nothing, each one's entry array (16,455 entries) grows by doubling to 32,768 entries of 24 B, and its hash index

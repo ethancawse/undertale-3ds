@@ -300,30 +300,30 @@ static void flushBottomScreen(void) {
     CtrScreens_flushConsoleScreen(fb, (u32) w * h * 2);
 }
 
-// Dialogue on the bottom screen (ctr_renderer.c) draws over the consoles'
-// framebuffer, and once a screenshot has turned double buffering back on
-// (CtrPacer_shownFramebuffer) its frames flip the bottom screen's buffers, so
-// the buffer on screen may not be the one the consoles print on. When the
-// dialogue goes, the consoles move to the buffer on screen, which stays
-// single; it gets what the menu or the test already printed (keepText), or
-// is cleared of the last line (the stats repaint within a second).
+// Dialogue on the bottom screen (ctr_renderer.c) draws over the consoles' framebuffer, and a screenshot turns double
+// buffering back on (CtrPacer_shownFramebuffer). When the dialogue goes, the consoles move to the buffer on screen, made
+// single (BLANK_SINGLE; not the game's own screen after a move to the bottom, ctr_gpu_queue.c's end), with what the menu
+// or the test already printed (keepText), or cleared of the last line (the stats repaint within a second).
 #if defined(ENABLE_WAD16)
 void* CtrBlank_copyShown(void* to, const void* from, size_t bytes); // ctr_gpu_queue.c, dlgblank
 bool CtrBlank_dialogueShown(void* renderer);
 void CtrBlank_yieldBottom(void* renderer, bool yield);
+void CtrBlank_consolesSingle(gfxScreen_t screen, bool on); // ctr_gpu_queue.c, the end (bonepulse 11-09)
 #define BLANK_COPY CtrBlank_copyShown
 #define BLANK_SHOWN CtrBlank_dialogueShown
 #define BLANK_YIELD CtrBlank_yieldBottom
+#define BLANK_SINGLE CtrBlank_consolesSingle
 #else
 #define BLANK_COPY memcpy
 #define BLANK_SHOWN CtrRenderer_dialogueShown
 #define BLANK_YIELD CtrRenderer_yieldBottomScreen
+#define BLANK_SINGLE gfxSetDoubleBuffering
 #endif
 static void reclaimBottomForConsoles(bool keepText) {
     CtrLog_beginConsole();
     u16 w = 0, h = 0;
     u16* shown = (u16*) CtrPacer_shownFramebuffer(GFX_BOTTOM, GFX_LEFT, &w, &h);
-    gfxSetDoubleBuffering(GFX_BOTTOM, false);
+    BLANK_SINGLE(GFX_BOTTOM, false);
     if (shown != nullptr && gfxGetScreenFormat(GFX_BOTTOM) == GSP_RGB565_OES) {
         size_t bytes = (size_t) w * h * 2u;
         if (!keepText) memset(shown, 0, bytes);
@@ -741,15 +741,15 @@ static void startLab(void) {
         // The main loop leaves at --timeout itself; this is for a run stuck where it doesn't look.
         .deadlineSeconds = launch.timeoutSeconds > 0 ? launch.timeoutSeconds + 60 : 0,
         .logTail = CtrLog_tail,
-        .emergencyLog = CtrLog_emergency,
+        .emergencyLog = CTR_LABGUARD_PICK(CtrLabguard_emergencyLog, CtrLog_emergency),
         .progress = CtrWatchdog_progress,
-        .watching = CtrWatchdog_watching,
-        .phase = CtrWatchdog_phase,
+        .watching = CTR_LABGUARD_PICK(CtrLabguard_watching, CtrWatchdog_watching),
+        .phase = CTR_LABGUARD_PICK(CtrLabguard_phase, CtrWatchdog_phase),
         .threadName = CtrWatchdog_threadNameOf,
         .hangDetails = CtrWatchdog_lastReport,
         .bootSeconds = LAB_BOOT_SECONDS,
         .bootStep = CtrBootTrail_last,
-        .trail = CtrBootTrail_mark,
+        .trail = CTR_LABGUARD_PICK(CtrLabguard_trail, CtrBootTrail_mark),
     };
     CtrBootTrail_open(BOOT_TRAIL_PATH);
     CtrBootTrail_mark("lab mode: starting the guard");
@@ -1137,7 +1137,7 @@ startGame:
     logInfo("Startup phase: load=%u audio %.3f ms\n", (unsigned) session.loadCount, loadMs(loadStart));
 
     loadStart = loadTicks();
-    Runner* runner = Runner_create(dataWin, vm, renderer, fileSystem, audioSystem, randomSeed);
+    Runner* runner = Hitcheck_createRunner(dataWin, vm, renderer, fileSystem, audioSystem, randomSeed);
     logInfo("Startup phase: load=%u runner %.3f ms\n", (unsigned) session.loadCount, loadMs(loadStart));
     runner->osType = OS_WINDOWS;
     snprintf(runner->osLanguage, sizeof(runner->osLanguage), "%s", CtrLanguage_systemCode());
@@ -1819,7 +1819,7 @@ void CtrScreens_flushConsoles(void); Result CtrScreens_noteConsoles(const void* 
 // DELTARUNE keeps the menu on the unseen spare until the game moves up for it.
 #ifdef ENABLE_WAD16
 SCREENS_LATE CTR_COLD_OS void CtrScreens_moveConsoles(bool top) {
-    extern PrintConsole screensStats __asm__("statsConsole"); void* Loadgame_restoreMenu(void*, const void*, size_t);
+    extern PrintConsole screensStats __asm__("statsConsole"); void* CtrLayout_restoreMenu18(void*, const void*, size_t);
     extern PrintConsole screensLog __asm__("logConsole");
     extern PrintConsole screensMenu __asm__("menuConsole");
     gfxScreen_t screen = top ? GFX_TOP : GFX_BOTTOM;
@@ -1836,7 +1836,7 @@ SCREENS_LATE CTR_COLD_OS void CtrScreens_moveConsoles(bool top) {
 
     } else {
         size_t bytes = (size_t) GSP_SCREEN_WIDTH * GSP_SCREEN_HEIGHT_BOTTOM * 2u;
-        if (screensMenu.frameBuffer != shown) Loadgame_restoreMenu(shown, screensMenu.frameBuffer, bytes);
+        if (screensMenu.frameBuffer != shown) CtrLayout_restoreMenu18(shown, screensMenu.frameBuffer, bytes);
         screensMenu.frameBuffer = shown;
         GSPGPU_FlushDataCache(shown, (u32) bytes);
     }
@@ -2009,7 +2009,7 @@ CtrLaunchArgs* CtrBenchIo_launch(void) { return &launch; }
 //   (the screen is single buffered for the consoles, so that buffer is free until the game takes the screen). The
 //   menu's console stays on the shown buffer: notices print there. (Until 10-29 this waited for CtrLab_booted, after
 //   the log file opened: the game folder's two lines, which the log's opening prints again (z_gamedir.c), stayed on
-//   the bottom screen through the whole load with the log Off. Play-test 10-29: "even with logs off, i still
+//   the bottom screen through the whole load with the log Off. maintainer, play-test 10-29: "even with logs off, i still
 //   saw boot logs for a few seconds while the game was starting".)
 // - CtrLab_booted, which main calls just before the boot header (argcrash's own guard may call it earlier, before the
 //   consoles: then nothing happens), reads Other screen as main's settings will (other_screen, or bottom_mode, the
@@ -2344,7 +2344,7 @@ BOOTLOG_LATE static void bootcapStart(void) {
 }
 #endif
 
-// ===[ The stats block's heap figures (freewins) ]===
+// ===[ The stats block's heap figures (change freewins) ]===
 // mallinfo walks the heap: about 0.1 ms on UNDERTALE and 0.4 ms on DELTARUNE (console rows, cheaplevers), once a
 // second. main's stats block reads its figures in the stats console's line (when statsShown, which main gave
 // CtrLog_setConsoleEnabled this frame) and in the [perf] line (every fifth stats window). This is called once per
@@ -2452,4 +2452,20 @@ DLGTOP_GUARD void* Loadgame_guardedRestore(void* dst, const void* src, size_t by
     return memcpy(dst, backedUp ? Loadgame_menuSpare() : src, bytes);
 }
 
+#endif
+
+// heldslow (change scanout, logaudit G1; UNDERTALE only): the live runner, for the appended pacer code. A function in
+// heldslow's late text: a new name at liveRunner's own address would be a new symbol in the main bss.
+#ifdef CTRPORT_HELDSLOW
+Runner* CtrHeldslow_liveRunner(void);
+__attribute__((noinline, noipa, section(".text_heldslow"))) Runner* CtrHeldslow_liveRunner(void) { return liveRunner; }
+#endif
+
+#ifdef ENABLE_WAD16
+extern PrintConsole dimlightStatsConsole __asm__("statsConsole");
+Result CtrDimlight_lightsInit(u32 screen);
+__attribute__((noinline, noipa, section(".text.late.dimlight"))) Result CtrDimlight_emergencyInit(void) {
+    bool top = CtrScreens_consolesOnTop && dimlightStatsConsole.frameBuffer != nullptr;
+    return CtrDimlight_lightsInit(top ? GSPLCD_SCREEN_TOP : GSPLCD_SCREEN_BOTTOM);
+}
 #endif

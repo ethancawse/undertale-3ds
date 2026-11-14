@@ -2528,14 +2528,14 @@ __attribute__((noinline, noipa, section(".text.late.smartcut"))) void CtrBench_l
 
 #include "ctr_benchmark_rows.inc"
 
-// Held-frame lines (stallfix rev 3): late code only, hooked by link-time wraps, so it goes last. Not in
+// Held-frame lines (change stallfix rev 3): late code only, hooked by link-time wraps, so it goes last. Not in
 // DELTARUNE Old builds (CMakeLists.txt sets CTRPORT_BENCH_HELD with the wraps).
 #ifdef CTRPORT_BENCH_HELD
 #include "ctr_benchheld.inc"
 #endif
 
 #ifdef CTRPORT_BENCHFIX_PROBE
-// benchfix probe (ruling 2026-10-28; build.sh ... bfprobe, its own build directory, never a release). On every
+// benchfix probe (review decision 2026-10-28; build.sh ... bfprobe, its own build directory, never a release). On every
 // console sweep the main thread loses 0.3-0.9 s between "[prewindow] <sweep>" and "Sweep: <sweep> ... begins" while
 // the battle music's stream opens on the audio thread; Azahar loses 3 ms. This times, on the main thread only and only
 // in a sweep (its setup and window), every wait it can make: CtrLog_beginConsole (the log writer's drain; harness
@@ -2544,7 +2544,7 @@ __attribute__((noinline, noipa, section(".text.late.smartcut"))) void CtrBench_l
 // the ready frame's bench call around CtrLog_beginConsole, with a CPU canary (a fixed loop; slower than in the setup
 // frames = the main thread lost its core). In the window, one "[bfprobe] frame" line for each frame with main-thread
 // FS, lock or condition-variable waits of 2 ms or more, or any console wait of 1 ms (at most 400 lines). Only call
-// targets change. Rev 2 (10-28, a hunch: the main thread waits on something queued behind a stream open):
+// targets change. Rev 2 (lead 10-28, maintainer's hunch: the main thread waits on something queued behind a stream open):
 // the main thread never waits on an audio loader/opener/worker request itself (it queues them and polls; no audio thread
 // holds a lock across a read or an open), so that can only show as an FS wait (the same fs:USER session or card), a
 // lock or condition-variable wait (CondVar: the save writer's idle wait, the read-ahead), or a slow canary. For each
@@ -2955,7 +2955,7 @@ BFP_FS_WRAP(FSDIR_Read, (Handle h, u32* got, u32 count, FS_DirectoryEntry* entri
 // those rows change and no other does. Linked as --wrap=benchfidBeginFrame (z_utpolish_bench.c's one call), in a
 // section of its own after all other late text, so nothing above moves.
 //
-// benchfix (2026-10-28): the sweep-start stall (0.3-0.9 s on every console between "[prewindow] <sweep>" and
+// benchfix (2026-10-28, lead): the sweep-start stall (0.3-0.9 s on every console between "[prewindow] <sweep>" and
 // "Sweep: ... begins", Azahar ~20 ms). sweepBegin -> sweepParseRecipe asks chapterAvailable(1), a stat of
 // "<gameDir>/chapter1_windows/data.win" on the SD card (in UNDERTALE a path that never exists: libctru's archive_stat
 // then makes an FSUSER_OpenFile and an FSUSER_OpenDirectory), in the very frame the battle music's stream opens on the
@@ -2976,7 +2976,7 @@ static void bfStatFill(void);
 static void bfWindowLines(double frameMs);
 static void bfHeldAfter(void);
 
-// Round 6 (10-28, argstage47 F1): these wraps run in every player's game, where no bench is active, so each now
+// Round 6 (lead 10-28, argstage47 F1): these wraps run in every player's game, where no bench is active, so each now
 // tests the bench phase first (one load and a branch) and otherwise goes straight to the real call. The bench's own
 // work moved to .text.benchfix_r6_late (the end of this file; late_reserve.ld, last), and each wrap keeps its stage
 // slot (cand24, 353db7f54): its body is padded to the old size with a fill reached only by a phase that never occurs
@@ -3073,7 +3073,7 @@ static void bfWindowLines(double frameMs) {
     utSlowFrame.lines = 0;
 }
 
-// benchfix (2026-10-28, gaps 2 and 3): the held_frame lines' gpu and gpuwait (ctr_benchheld.inc, stallfix,
+// benchfix (2026-10-28, gaps 2 and 3): the held_frame lines' gpu and gpuwait (ctr_benchheld.inc, change stallfix,
 // which must be included above this point: bfHeldAfter reads its benchHeld).
 // gpu: heldRead gives a frame its GPU time one read later (as frame F begins, the GPU's last finished frame is taken
 // to be F-2), but a hold whose late flip is frame F-1's is listed in the read where F-1's entry is made, before its
@@ -3137,12 +3137,12 @@ static void bfHeldAfter(void) {
 }
 #endif
 
-// ===== benchfix round 6 (10-28): .text.benchfix_r6_late and .data.benchfix_r6_late (late_reserve.ld, last).
+// ===== benchfix round 6 (lead 10-28): .text.benchfix_r6_late and .data.benchfix_r6_late (late_reserve.ld, last).
 // no_reorder (round 7): kept in source order, their cand24 order, whatever calls them (bfWin, bfDrawWait,
 // bfDrawWaitSeen and bfHeldSnap too: GCC emits statics in first-use order otherwise, and round 7 swapped two).
 #define BF_R6 __attribute__((noinline, noclone, no_reorder, optimize("Os"), section(".text.benchfix_r6_late")))
 
-// c0r148 (round 6): a hold before the window. The window's first held read sees the flips still pending at its
+// c0r148 (lead round 6): a hold before the window. The window's first held read sees the flips still pending at its
 // start; a late one is a frame from before the window (c0r148 o3ds: held f987 for window 988-1287,
 // integ24-o3c-uthot-3B), and both the held lines and the presentation counts (shown_3vb, shown_max_vb, which the
 // boards judge) took it against the scene. Frames before the window's first measured frame never count: after the
@@ -3260,7 +3260,7 @@ BF_R6 void bfDrawWaitTimed(void) {
 #endif
 #undef BF_R6
 
-// ===== benchfix round 7 (10-28, argbenchr6 M1-M4): .text.benchfix_r7_late and .bss.benchfix_r7_late
+// ===== benchfix round 7 (lead 10-28, argbenchr6 M1-M4): .text.benchfix_r7_late and .bss.benchfix_r7_late
 // (late_reserve.ld, last). The held lines' window boundary, as round 6's with four edge cases fixed (bench only):
 // - M1: the window's first frame S had no ring entry (the read that opens the window sets no time baselines), so a
 //   hold that S's own slowness caused, seen at read S+1, went to frame S-1 and left as a hold before the window. The
@@ -3299,7 +3299,7 @@ BF_R6 void bfDrawWaitTimed(void) {
 // - R7B-2.1: holds only counted (past HELD_MAX) of a frame before the window leave the counts and cut as the listed
 //   ones leave. Their presentation counts stay (the read does not say which flip was theirs); a list full in the
 //   window's first reads takes 25 holds of 3+ vblanks in one read, which 1 flip a vblank cannot give.
-// - The tour's warm-up (argdtm F8): a tour room's warm-up starts again as the first frame presented after its
+// - The tour's warm-up (lead, argdtm F8): a tour room's warm-up starts again as the first frame presented after its
 //   room change begins (the frame after ready, or a later room change in the warm-up's first BF_TOUR_REDIRECT
 //   frames: a room that warps on), after the hidden load and the rooms.dtm write of the change frame. Before, it
 //   started on the change frame itself, and from round 6 again on the frame after only when the change frame alone
@@ -3551,7 +3551,7 @@ __attribute__((section(".text.frametrace_late"))) const CtrBenchSession* CtrBenc
 }
 #endif
 
-// benchcut (flowend r30, GO 11-01; bench only): the sweep's per-frame work in CtrBench_beginFrameTimed is
+// benchcut (change flowend r30, GO 11-01; bench only): the sweep's per-frame work in CtrBench_beginFrameTimed is
 // the bench's own, never the game's (real play returns at PHASE_IDLE before any of it), yet Old bench frames carried
 // 0.3-2.1 ms of it (ut_flowey's late fight ~2.1 ms). Two of its pieces are cut here, exactly: what the sweep reads,
 // writes and reports is unchanged; only the work done to get there is less. Each existing caller changes only a call

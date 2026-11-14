@@ -20,7 +20,7 @@ For a scene the closure adds:
 - for a battle group, the other sprites of each numbered series it draws from (series_of): UNDERTALE's scripts pick a
   pose from a numbered run of sprites (Mettaton EX's arm poses are eight sprites that differ in their last digit), and
   a recording of one run saw some of the numbers. A series is the sprites whose names are the same but for the digits
-  they end in, two at least (utmett: the pose a run first drew late in the fight was one the record never saw, a
+  they end in, two at least (change utmett: the pose a run first drew late in the fight was one the record never saw, a
   14 KB tile read on the game thread in the middle of an attack).
 - for an ordinary room, the art its own objects can draw that the record did not see (placed art rule, a partial
   preload: codeclose.CodeClosure.placed_art_sprites, build_plan.placed_art): the lab's Alphys, her portraits and
@@ -28,6 +28,8 @@ For a scene the closure adds:
 - for every battle group, the spare puffs (spare_items; build_plan.spare_art): any fight can end in a spare, and no
   group's record saw them (the playtest's spared first fight, 11-07: a 21 ms load on the game thread at the spare).
 - the speech bubbles' font (bubble_font_items; build_plan.bubble_font), for the battle groups build_plan names.
+- sprite_hash: each sprite's number by the FNV-1a hash of its name (build_plan.fnv1a), for build_plan.py's menu
+  levels, which name their sprites by those hashes only; a hash two names share maps to None.
 """
 import hashlib
 import struct
@@ -44,6 +46,13 @@ def _u32(d, o):
 
 def _i32(d, o):
     return struct.unpack_from('<i', d, o)[0]
+
+
+def _fnv1a(data):
+    h = 0x811C9DC5
+    for b in data:
+        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+    return h
 
 
 class Closure:
@@ -63,6 +72,7 @@ class Closure:
             self.walk_items = []
             self.spare_items = []
             self.bubble_font_items = []
+            self.sprite_hash = {}
 
     def _parse(self, d):
         chunks = {}
@@ -137,6 +147,11 @@ class Closure:
             item = tindex.get(_u32(d, inside(p + 0x1C, b'FONT')))
             if name is not None and item is not None and hashlib.sha256(name).hexdigest() == BUBBLE_FONT_SHA256:
                 self.bubble_font_items.append(item)
+        self.sprite_hash = {}
+        for s, name in enumerate(names):
+            if name is not None:
+                h = _fnv1a(name)
+                self.sprite_hash[h] = None if h in self.sprite_hash else s
         self.walk_items = []
         for obj in sorted(players):
             sprite = objects[obj][0]

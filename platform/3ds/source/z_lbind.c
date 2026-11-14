@@ -1,4 +1,4 @@
-// lbind (aotprof, ruling 2026-10-28): aotBind's name test, late code, both games.
+// lbind (change aotprof, review decision 2026-10-28): aotBind's name test, late code, both games.
 //
 // The first time a code entry runs, aotBind (engine/src/aot/vm_aot_bridge.inc) walks the whole table of generated
 // functions for one generated from it: a strcmp of names for every entry, then aotMatches. On UNDERTALE Old that was

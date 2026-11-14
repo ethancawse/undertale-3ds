@@ -1,4 +1,4 @@
-// The first-boot hint ("SELECT: Options") off the game's picture (hintpos, playtest 10-26: "the select: options
+// The first-boot hint ("SELECT: Options") off the game's picture (change hintpos, maintainer 10-26: "the select: options
 // tooltip that appears on the bottom left i believe overlays on top of the deltarune version number").
 //
 // argui (ctr_argui.c) shows the hint on the screen without the game when that screen is free (Other screen Off, or

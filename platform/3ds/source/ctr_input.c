@@ -49,7 +49,7 @@ static CtrPadCursor cursor INPUT_BSS;
 static CtrInputStats published INPUT_BSS;
 static u32 publishedEpoch INPUT_BSS;
 static bool suppressWakeExtras INPUT_BSS;
-static CtrInputEdges lastTaken INPUT_BSS;
+static CtrInputStallTap lastTaken INPUT_BSS; // same 12 B slot; main's delivery history
 static CtrInputStats lastStats INPUT_BSS;
 static u32 handoffMisses INPUT_BSS;
 static int initialCore INPUT_BSS;
@@ -97,7 +97,8 @@ static INPUT_LATE bool readRing(PadRing* ring) {
 // Called under handoff, by either the sampler or the frame consumer. A snapshot
 // can become stale while waiting for the lock; never replay it backwards.
 static INPUT_LATE bool drain(const PadRing* ring, u32 currentEpoch) {
-    if (publishedEpoch != currentEpoch) {
+    bool wake = publishedEpoch != currentEpoch;
+    if (wake) {
         cursor.ready = false;
         latch.raw = latch.extras = 0;
         latch.edges = (CtrInputEdges) {0};
@@ -111,7 +112,7 @@ static INPUT_LATE bool drain(const PadRing* ring, u32 currentEpoch) {
     bool first = !cursor.ready;
     CtrPadAdvance advance = CtrPadCursor_advance(&cursor, ring->tick, ring->previousTick, ring->index);
     if (first) {
-        if (currentEpoch != 0) latch.ignoredKeys |= CtrInputLate_keys(&latch.map, ring->buttons[ring->index]);
+        if (wake && currentEpoch != 0) latch.ignoredKeys |= CtrInputLate_keys(&latch.map, ring->buttons[ring->index]);
         advance.count = 1;
     }
     if (advance.overrun) published.overruns++;
@@ -225,7 +226,7 @@ static INPUT_LATE void onApt(APT_HookType hook, void* arg) {
 INPUT_LATE bool CtrInput_start(bool isNew3ds, const CtrInputMap* map) {
     if (worker != NULL) return !__atomic_load_n(&quit, __ATOMIC_ACQUIRE);
     quit = inputSuspended = epoch = publishedEpoch = handoffMisses = 0;
-    lastTaken = (CtrInputEdges) {0};
+    lastTaken = (CtrInputStallTap) {0};
     latch = (CtrInputLatch) {.map = *map}; // loading/setup owns input until the first game frame
     cursor = (CtrPadCursor) {0};
     suppressWakeExtras = false;
@@ -293,13 +294,27 @@ INPUT_LATE void CtrInput_getStats(CtrInputStats* stats) {
     if (worker != NULL) LightLock_Unlock(&handoff);
 }
 
+// handover: raw latch adapter keeps existing helpers specialized for &latch;
+// delivery state stays indirect, preserving existing BSS object ordering.
+#ifdef __3DS__
+__attribute__((noipa, section(".text.late.handover.h1")))
+#endif
+static CtrInputEdges CtrInputStallTap_latchFrame(CtrInputStallTap* state,
+        const CtrInputMap* map, u32 held, u32 down, bool enabled, bool reset, u32 nowMs) {
+    bool live = enabled && !reset && CtrInputMap_equal(&latch.map, map);
+    if (reset) CtrInputLatch_rebase(&latch, map, held);
+    CtrInputEdges input = CtrInputLatch_frame(&latch, map, held, down, enabled, 0);
+    return CtrInputStallTap_frame(state, input, nowMs, live);
+}
+
 INPUT_LATE CtrInputEdges CtrInput_take(const CtrInputMap* map, u32 held, u32 down,
                           bool enabled, bool suppressHeld, CtrInputStats* stats) {
     PadRing ring;
+    CtrInputEdges result;
     u32 currentEpoch = __atomic_load_n(&epoch, __ATOMIC_ACQUIRE);
     bool sleeping = __atomic_load_n(&inputSuspended, __ATOMIC_ACQUIRE) != 0;
     bool valid = !sleeping && readRing(&ring);
-    u64 nowMs = schedule.recovery ? (svcGetSystemTick() - startedTicks) * 1000 / SYSCLOCK_ARM11 : 0;
+    u64 nowMs = (svcGetSystemTick() - startedTicks) * 1000 / SYSCLOCK_ARM11;
     bool takeover = false;
     CtrInputSchedule snapshot;
     u32 overruns;
@@ -307,7 +322,10 @@ INPUT_LATE CtrInputEdges CtrInput_take(const CtrInputMap* map, u32 held, u32 dow
     {
         bool reset = suppressHeld || currentEpoch != publishedEpoch;
         if (valid) { drain(&ring, currentEpoch); ++published.mainDrains; }
-        else if (!sleeping) CtrInputLatch_sample(&latch, held);
+        else if (!sleeping) {
+            cursor.ready = false; // fallback supersedes the unconsumed history
+            CtrInputLatch_sample(&latch, held);
+        }
         // Frame reads never wait for worker health, retry deadlines or an ack.
         // Both readers share one cursor, so a hand-back cannot replay a press.
         if (!sleeping && !reset) takeover = CtrInputSchedule_check(&schedule, nowMs, published.overruns);
@@ -319,23 +337,35 @@ INPUT_LATE CtrInputEdges CtrInput_take(const CtrInputMap* map, u32 held, u32 dow
             reset = true;
             suppressWakeExtras = false;
         }
-        if (reset) CtrInputLatch_rebase(&latch, map, held);
-        lastTaken = CtrInputLatch_frame(&latch, map, held, down,
-                enabled && !sleeping && publishedEpoch == currentEpoch, 0);
+        result = CtrInputStallTap_latchFrame(&lastTaken, map, held, down,
+                enabled && !sleeping && publishedEpoch == currentEpoch, reset, (u32) nowMs);
         if (stats != NULL) lastStats = published;
         LightLock_Unlock(&handoff);
     }
     if (takeover) reportHandover(false, nowMs, &snapshot, overruns);
     lastStats.handoffMisses = handoffMisses;
     if (stats != NULL) *stats = lastStats;
-    return lastTaken;
+    return result;
 }
 
-// handover: retain the 48 B removed from s8b7's release sampler. Subsection 1
-// follows this object's functions, after their returns; constants keep place.
+// handover: retain noon's 5268 B release input section, including its former
+// 48 B tail. Subsection 1 follows the functions after their returns. The
+// assembler rejects growth beyond this slot; full layout proves all neighbors.
 #if defined(__3DS__) && defined(NDEBUG) && CTRPORT_INPUTLATE_PERIOD_MS == 16 && CTRPORT_INPUTLATE_STALL_MS == 0
 __asm__(
     ".pushsection .text.late.inputlate,\"ax\",%progbits\n"
-    ".subsection 1\n.space 48\n"
+    ".subsection 1\n.org CtrInput_guardSleep + 5268, 0\n"
     ".popsection\n");
 #endif
+
+// handover: reached after argcrash's real-lab-mode veto, or directly from
+// labguard's lab-mode forward. The first lab poll arms --after died without
+// leaving; every other request retains the stop.
+static const char armAfter[] __attribute__((section(".rodata.late.handover"))) = "--after";
+static const char armDied[] __attribute__((section(".rodata.late.handover"))) = "died";
+__attribute__((noinline, section(".text.late.handover")))
+void CtrInput_stopForTarget(const char* path, const char* const* args, int count) {
+    if (path && *path && count == 3 && args && args[0] && args[1] && args[2] &&
+            strcmp(args[1], armAfter) == 0 && strcmp(args[2], armDied) == 0) return;
+    CtrInput_requestStop();
+}

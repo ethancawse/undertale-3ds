@@ -15,6 +15,7 @@ set(RELEASE_LEGAL_FILES "")
 foreach(name LICENSE THIRD_PARTY_NOTICES)
     list(APPEND RELEASE_LEGAL_FILES "${CTRPORT_ROMFS_DIR}/legal/${name}" "${CTRPORT_ROMFS_DIR}/legal/${name}.pages")
 endforeach()
+list(APPEND RELEASE_LEGAL_FILES "${CTRPORT_ROMFS_DIR}/legal/READER.lgrz")
 add_custom_command(OUTPUT ${RELEASE_LEGAL_FILES}
     COMMAND "${CTRPORT_PYTHON_EXECUTABLE}" -X utf8 -I "${RELEASE_LEGAL_ROOT}/tools/release/prepare_legal.py"
             --root "${RELEASE_LEGAL_ROOT}" --output "${CTRPORT_ROMFS_DIR}/legal"

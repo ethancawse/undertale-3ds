@@ -13,13 +13,13 @@ identical are kept as mono, as ctr_audio_system.c's buildSfx does), and each sce
 order; each scene also says how many of them lead its first FIRST_FRAMES frames (the 3DS copies those in the room
 change's frame, the rest on a worker thread). The same inputs always give the same bytes.
 
-Kill sounds (utfirstuse): every battle scene also plans KILL_SOUNDS after its recorded sounds, so the sound
+Kill sounds (change utfirstuse): every battle scene also plans KILL_SOUNDS after its recorded sounds, so the sound
 UNDERTALE plays at every monster kill is copied on the worker during the battle rather than read and copied on the
 game thread in the kill's frame (7-8 ms on the Old 2DS with its data read ahead). A battle room is one the record
 lists battle groups in; a group the record has no scene for takes the room's scene, which gets those sounds alone when
 the record has none for the room itself. They come last, within SCENE_BYTES like the rest.
 
-Hurt sounds (utfirstuse): a monster sets its hurt sound in its Create event and plays it from that variable when
+Hurt sounds (change utfirstuse): a monster sets its hurt sound in its Create event and plays it from that variable when
 hit, so a recording sees it only in the groups it fought (group 51's: a 5 ms read and copy at the first hit in
 the others). hurt_sounds reads it from the bytecode: for each battle group in the room plan's record (--plan-records,
 build_plan.py's, which lists the code each group ran), the constant each of its objects' Create events stores to the

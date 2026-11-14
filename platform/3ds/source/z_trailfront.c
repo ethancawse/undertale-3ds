@@ -1,4 +1,4 @@
-// trailfront (asrfight, UNDERTALE Old 3DS only): the rainbow trail object's Draw 0 (the SAVE
+// trailfront (change asrfight, UNDERTALE Old 3DS only): the rainbow trail object's Draw 0 (the SAVE
 // Asriel barrage's ~129 trails a frame) run as hand code, with the interpreter as its fallback. Late code and constants
 // only (platform/3ds/late_reserve.ld): no table row, nothing that existed moves.
 //
@@ -27,7 +27,7 @@
 // chain (ctr_wrap_chain.h, between writerfront and dodgefront) at each room change, over that aotTable entry's
 // generated function or the entry not looked up yet (VM_aotSwapFront, vm.c's late end).
 //
-// strfront (asrfight, same file and link): string() of a whole number without newlib's snprintf. Each DREAM press
+// strfront (change asrfight, same file and link): string() of a whole number without newlib's snprintf. Each DREAM press
 // in the Asriel fight builds 128 item-name keys ("item_name_" + string(id)), and on the Old 3DS each string() call
 // costs ~30 us (o3DS GML profile, rows asrfight-dreamprof-coverage-*: 128-135 calls, ~4 ms of the press's ~19 ms
 // Step). builtin_string formats a real that is a whole number with snprintf("%lld") and an int32 with "%d"

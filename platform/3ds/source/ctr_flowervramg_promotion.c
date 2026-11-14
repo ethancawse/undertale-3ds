@@ -79,7 +79,7 @@ void FvgPromotion_collect(CtrTextureCache* cache, bool drop);
 FVG_PROMO_CODE void FvgPromotion_collect(CtrTextureCache* cache, bool drop) {
     __real_RoomLoad_collect(cache, drop);
 #ifndef CTRPORT_DR_OLD_CIA80_TILES
-    // Ruling, round 19: ordinary 80 MB admission changes palette timing.
+    // review decision, round19: ordinary 80 MB admission changes palette timing.
     // Ordinary builds enable reclaim only at the accepted 64 MB HBL grant.
     // Query the same OS grant used by the console log, not heap/image size.
     // CIA80 retains the already-gated collector byte for byte.

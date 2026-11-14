@@ -1,4 +1,4 @@
-// freewins: main-loop segment timers and off switches, for diagnostic builds only (build.sh ... freewins).
+// change freewins: main-loop segment timers and off switches, for diagnostic builds only (build.sh ... freewins).
 // CMakeLists.txt compiles this file only then; in every other build ctr_benchmark.h makes FW_MARK and FW_NOTE empty
 // and FW_SKIP 0, and main.c's FW_ calls sit at the ends of existing lines, so main.c's code and line numbers are the
 // release build's.

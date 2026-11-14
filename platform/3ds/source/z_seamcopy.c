@@ -564,3 +564,16 @@ uint32_t SEAM_TEXT CtrSeam_peakBytes(void) {
     return store.peakBytes;
 }
 #endif
+
+// layout (z_layout.c, dsplan R10): every copy freed at once, when the options menu's layout change needs both screen
+// targets and they don't fit: the copies are a cache, given up before the change can fail. The caller has waited for
+// the GPU. Appended, in layout's late section; nothing above calls it.
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_SMART_NO_DIRECT) && !defined(CTRPORT_SEAM_OFF)
+__attribute__((noinline, noclone, section(".text_layout"))) uint32_t CtrSeam_dropAll(void) {
+    uint32_t bytes = store.bytes;
+    for (int32_t i = 0; SEAM_SLOTS > i; i++) {
+        if (store.slots[i].page != nullptr) seamFree(&store.slots[i]);
+    }
+    return bytes - store.bytes;
+}
+#endif

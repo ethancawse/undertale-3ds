@@ -1,6 +1,6 @@
 """GOG-only Smart compatibility metadata; no pixels, strings or game code.
 
-Approved: content SHA-256 plus stable sprite/frame identity (10-23). The 49 entries all need
+Content SHA-256 plus stable sprite/frame identity was approved (10-23). The 49 entries all need
 Steam's coarse verdict. Validate the complete profile against the measured GOG container before emitting
 an optional 257-byte DTFV trailer. Any mismatch omits the entire trailer; ordinary GOG analysis remains.
 Atlas coordinates are used only to read a decoded crop, never to select its verdict.

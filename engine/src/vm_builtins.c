@@ -776,26 +776,26 @@ RValue VMBuiltins_getVariable(VMContext* ctx, Instance* inst, int16_t builtinVar
         }
         case BUILTIN_VAR_BBOX_LEFT: {
             if (inst == nullptr) break;
-            InstanceBBox bbox = Collision_computeBBox(runner, inst);
+            InstanceBBox bbox = Collision_readBBox(runner, inst);
             if (!bbox.valid) return RValue_makeReal(inst->x);
             return RValue_makeReal(bbox.left);
         }
         case BUILTIN_VAR_BBOX_RIGHT: {
             if (inst == nullptr) break;
-            InstanceBBox bbox = Collision_computeBBox(runner, inst);
+            InstanceBBox bbox = Collision_readBBox(runner, inst);
             if (!bbox.valid) return RValue_makeReal(inst->x);
             // In compatibility mode the bbox is inclusive while our bbox is exclusive
             return RValue_makeReal(runner->collisionCompatibilityMode ? bbox.right - 1 : bbox.right);
         }
         case BUILTIN_VAR_BBOX_TOP: {
             if (inst == nullptr) break;
-            InstanceBBox bbox = Collision_computeBBox(runner, inst);
+            InstanceBBox bbox = Collision_readBBox(runner, inst);
             if (!bbox.valid) return RValue_makeReal(inst->y);
             return RValue_makeReal(bbox.top);
         }
         case BUILTIN_VAR_BBOX_BOTTOM: {
             if (inst == nullptr) break;
-            InstanceBBox bbox = Collision_computeBBox(runner, inst);
+            InstanceBBox bbox = Collision_readBBox(runner, inst);
             if (!bbox.valid) return RValue_makeReal(inst->y);
             // In compatibility mode the bbox is inclusive while our bbox is exclusive
             return RValue_makeReal(runner->collisionCompatibilityMode ? bbox.bottom - 1 : bbox.bottom);
@@ -3188,7 +3188,7 @@ static RValue builtin_distance_to_point(VMContext* ctx, RValue* args, int32_t ar
     GMLReal py = RValue_toReal(args[1]);
 
     Instance* inst = ctx->currentInstance;
-    InstanceBBox bbox = Collision_computeBBox(ctx->runner, inst);
+    InstanceBBox bbox = Collision_readBBox(ctx->runner, inst);
     GMLReal bboxLeft, bboxRight, bboxTop, bboxBottom;
     if (!bbox.valid) {
         // No sprite/mask: treat bbox as a single point at (x, y)
@@ -3224,7 +3224,7 @@ static RValue builtin_distance_to_object(VMContext* ctx, RValue* args, int32_t a
     // Compute self bbox
     Sprite* selfSpr = Collision_getSprite(ctx->dataWin, self);
     if (selfSpr == nullptr) return RValue_makeReal(0.0);
-    InstanceBBox selfBBox = Collision_computeBBox(ctx->runner, self);
+    InstanceBBox selfBBox = Collision_readBBox(ctx->runner, self);
     if (!selfBBox.valid) return RValue_makeReal(0.0);
 
     GMLReal minDistSq = 1e20;
@@ -3235,7 +3235,7 @@ static RValue builtin_distance_to_object(VMContext* ctx, RValue* args, int32_t a
         Instance* inst = runner->instanceSnapshots[i];
         if (!inst->active || inst == self) continue;
 
-        InstanceBBox otherBBox = Collision_computeBBox(ctx->runner, inst);
+        InstanceBBox otherBBox = Collision_readBBox(ctx->runner, inst);
         if (!otherBBox.valid) continue;
 
         GMLReal xd = 0.0;
@@ -7381,7 +7381,7 @@ static RValue builtin_place_free(VMContext* ctx, RValue* args, int32_t argCount)
     caller->x = testX;
     caller->y = testY;
 
-    InstanceBBox callerBBox = Collision_computeBBox(runner, caller);
+    InstanceBBox callerBBox = Collision_hitBBox(runner, caller);
     bool free = true;
 
     if (callerBBox.valid) {
@@ -7390,10 +7390,10 @@ static RValue builtin_place_free(VMContext* ctx, RValue* args, int32_t argCount)
             Instance* other = runner->instances[i];
             if (!other->active || !other->solid || other == caller) continue;
 
-            InstanceBBox otherBBox = Collision_computeBBox(runner, other);
+            InstanceBBox otherBBox = Collision_hitBBox(runner, other);
             if (!otherBBox.valid) continue;
 
-            if (Collision_instancesOverlapPrecise(runner, caller, other, callerBBox, otherBBox)) {
+            if (Collision_hitPair(runner, caller, other, callerBBox, otherBBox)) {
                 free = false;
                 break;
             }
@@ -7414,7 +7414,7 @@ static bool placeEmptyAt(Runner* runner, Instance* caller, GMLReal testX, GMLRea
     caller->x = testX;
     caller->y = testY;
 
-    InstanceBBox callerBBox = Collision_computeBBox(runner, caller);
+    InstanceBBox callerBBox = Collision_hitBBox(runner, caller);
     bool empty = true;
 
     if (callerBBox.valid) {
@@ -7423,10 +7423,10 @@ static bool placeEmptyAt(Runner* runner, Instance* caller, GMLReal testX, GMLRea
             Instance* other = runner->instances[i];
             if (!other->active || other == caller) continue;
 
-            InstanceBBox otherBBox = Collision_computeBBox(runner, other);
+            InstanceBBox otherBBox = Collision_hitBBox(runner, other);
             if (!otherBBox.valid) continue;
 
-            if (Collision_instancesOverlapPrecise(runner, caller, other, callerBBox, otherBBox)) {
+            if (Collision_hitPair(runner, caller, other, callerBBox, otherBBox)) {
                 empty = false;
                 break;
             }
@@ -7445,7 +7445,7 @@ static bool placeFreeAt(Runner* runner, Instance* caller, GMLReal testX, GMLReal
     caller->x = testX;
     caller->y = testY;
 
-    InstanceBBox callerBBox = Collision_computeBBox(runner, caller);
+    InstanceBBox callerBBox = Collision_hitBBox(runner, caller);
     bool free = true;
 
     if (callerBBox.valid) {
@@ -7454,10 +7454,10 @@ static bool placeFreeAt(Runner* runner, Instance* caller, GMLReal testX, GMLReal
             Instance* other = runner->instances[i];
             if (!other->active || !other->solid || other == caller) continue;
 
-            InstanceBBox otherBBox = Collision_computeBBox(runner, other);
+            InstanceBBox otherBBox = Collision_hitBBox(runner, other);
             if (!otherBBox.valid) continue;
 
-            if (Collision_instancesOverlapPrecise(runner, caller, other, callerBBox, otherBBox)) {
+            if (Collision_hitPair(runner, caller, other, callerBBox, otherBBox)) {
                 free = false;
                 break;
             }
@@ -7476,7 +7476,7 @@ static bool noCollisionWithObject(Runner* runner, Instance* caller, GMLReal test
     caller->x = testX;
     caller->y = testY;
 
-    InstanceBBox callerBBox = Collision_computeBBox(runner, caller);
+    InstanceBBox callerBBox = Collision_hitBBox(runner, caller);
     bool free = true;
 
     if (callerBBox.valid) {
@@ -7486,10 +7486,10 @@ static bool noCollisionWithObject(Runner* runner, Instance* caller, GMLReal test
             Instance* other = runner->instanceSnapshots[i];
             if (!other->active || other == caller) continue;
 
-            InstanceBBox otherBBox = Collision_computeBBox(runner, other);
+            InstanceBBox otherBBox = Collision_hitBBox(runner, other);
             if (!otherBBox.valid) continue;
 
-            if (Collision_instancesOverlapPrecise(runner, caller, other, callerBBox, otherBBox)) {
+            if (Collision_hitPair(runner, caller, other, callerBBox, otherBBox)) {
                 free = false;
                 break;
             }
@@ -13634,10 +13634,10 @@ static bool placeMeetingGridScan(Runner* runner, Instance* caller, InstanceBBox 
                 if (!query->matchAll && query->filterByObject && !VM_isObjectOrDescendant(runner->dataWin, other->objectIndex, target)) continue;
                 if (!query->matchAll && query->filterByInstanceId && other->instanceId != (uint32_t) target) continue;
 
-                InstanceBBox otherBBox = Collision_computeBBox(runner, other);
+                InstanceBBox otherBBox = Collision_hitBBox(runner, other);
                 if (!otherBBox.valid) continue;
 
-                if (Collision_instancesOverlapPrecise(runner, caller, other, callerBBox, otherBBox)) return true;
+                if (Collision_hitPair(runner, caller, other, callerBBox, otherBBox)) return true;
             }
         }
     }
@@ -13658,10 +13658,10 @@ static bool placeMeetingObjectScan(Runner* runner, Instance* caller, InstanceBBo
         if (!SpatialGrid_instanceOverlapsRange(other, query->range)) continue;
         if (!VM_isObjectOrDescendant(runner->dataWin, other->objectIndex, target)) continue;
 
-        InstanceBBox otherBBox = Collision_computeBBox(runner, other);
+        InstanceBBox otherBBox = Collision_hitBBox(runner, other);
         if (!otherBBox.valid) continue;
 
-        if (Collision_instancesOverlapPrecise(runner, caller, other, callerBBox, otherBBox)) return true;
+        if (Collision_hitPair(runner, caller, other, callerBBox, otherBBox)) return true;
     }
     return false;
 }
@@ -13676,10 +13676,10 @@ static bool placeMeetingInstanceTest(Runner* runner, Instance* caller, InstanceB
     if (other == nullptr || other->objectIndex == STRUCT_OBJECT_INDEX || !other->active || other == caller) return false;
     if (!SpatialGrid_instanceOverlapsRange(other, query->range)) return false;
 
-    InstanceBBox otherBBox = Collision_computeBBox(runner, other);
+    InstanceBBox otherBBox = Collision_hitBBox(runner, other);
     if (!otherBBox.valid) return false;
 
-    return Collision_instancesOverlapPrecise(runner, caller, other, callerBBox, otherBBox);
+    return Collision_hitPair(runner, caller, other, callerBBox, otherBBox);
 }
 
 // Whether place_meeting can search the object's instances instead of the grid cells, and does better to: an
@@ -13720,7 +13720,7 @@ static RValue builtin_place_meeting(VMContext* ctx, RValue* args, int32_t argCou
     caller->x = testX;
     caller->y = testY;
 
-    InstanceBBox callerBBox = Collision_computeBBox(runner, caller);
+    InstanceBBox callerBBox = Collision_hitBBox(runner, caller);
     bool found = false;
 
     if (callerBBox.valid) {
@@ -13781,7 +13781,7 @@ static RValue builtin_collision_line(VMContext* ctx, RValue* args, int32_t argCo
         if (notme && inst == self) continue;
 
         if (!Collision_lineOverlapsInstance(ctx->runner, inst, lx1, ly1, lx2, ly2)) continue;
-        InstanceBBox bbox = Collision_computeBBox(ctx->runner, inst);
+        InstanceBBox bbox = Collision_hitBBox(ctx->runner, inst);
 
         // Normalize line left-to-right for clipping
         GMLReal xl = lx1, yl = ly1, xr = lx2, yr = ly2;
@@ -13961,7 +13961,7 @@ static RValue builtin_collision_rectangle(VMContext* ctx, RValue* args, int32_t 
 
         if (!Collision_rectOverlapsInstance(ctx->runner, inst, x1, y1, x2, y2)) continue;
 
-        InstanceBBox bbox = Collision_computeBBox(ctx->runner, inst);
+        InstanceBBox bbox = Collision_hitBBox(ctx->runner, inst);
 
         // Precise check if requested and sprite has precise masks
         if (prec != 0) {
@@ -14057,7 +14057,7 @@ static RValue builtin_collision_circle(VMContext* ctx, RValue* args, int32_t arg
                 if (prec != 0) {
                     Sprite* spr = Collision_getSprite(ctx->dataWin, inst);
                     if (Collision_hasFrameMasks(spr)) {
-                        InstanceBBox bbox = Collision_computeBBox(ctx->runner, inst);
+                        InstanceBBox bbox = Collision_hitBBox(ctx->runner, inst);
                         GMLReal iLeft   = GMLReal_fmax(qx1, bbox.left);
                         GMLReal iRight  = GMLReal_fmin(qx2, bbox.right);
                         GMLReal iTop    = GMLReal_fmax(qy1, bbox.top);
@@ -14151,7 +14151,7 @@ static RValue builtin_collision_ellipse(VMContext* ctx, RValue* args, int32_t ar
                 if (prec != 0) {
                     Sprite* spr = Collision_getSprite(ctx->dataWin, inst);
                     if (Collision_hasFrameMasks(spr)) {
-                        InstanceBBox bbox = Collision_computeBBox(ctx->runner, inst);
+                        InstanceBBox bbox = Collision_hitBBox(ctx->runner, inst);
                         GMLReal iLeft   = GMLReal_fmax(qx1, bbox.left);
                         GMLReal iRight  = GMLReal_fmin(qx2, bbox.right);
                         GMLReal iTop    = GMLReal_fmax(qy1, bbox.top);
@@ -14238,7 +14238,7 @@ static RValue builtin_collision_line_list(VMContext* ctx, RValue* args, int32_t 
                 if (!query.matchAll && query.filterByObject && !VM_isObjectOrDescendant(ctx->dataWin, inst->objectIndex, target)) continue;
                 if (!query.matchAll && query.filterByInstanceId && inst->instanceId != (uint32_t) target) continue;
 
-                InstanceBBox bbox = Collision_computeBBox(ctx->runner, inst);
+                InstanceBBox bbox = Collision_hitBBox(ctx->runner, inst);
 
                 GMLReal tEnter, tExit;
                 if (!Collision_segmentVsAARectClip(x1, y1, x2, y2, bbox.left, bbox.top, bbox.right, bbox.bottom, &tEnter, &tExit)) continue;
@@ -14324,7 +14324,7 @@ static RValue builtin_collision_rectangle_list(VMContext* ctx, RValue* args, int
                 if (!query.matchAll && query.filterByInstanceId && inst->instanceId != (uint32_t) target) continue;
 
                 if (!Collision_rectOverlapsInstance(ctx->runner, inst, x1, y1, x2, y2)) continue;
-                InstanceBBox bbox = Collision_computeBBox(ctx->runner, inst);
+                InstanceBBox bbox = Collision_hitBBox(ctx->runner, inst);
 
                 if (prec != 0) {
                     Sprite* spr = Collision_getSprite(ctx->dataWin, inst);
@@ -14422,7 +14422,7 @@ static RValue builtin_collision_circle_list(VMContext* ctx, RValue* args, int32_
                 if (prec != 0) {
                     Sprite* spr = Collision_getSprite(ctx->dataWin, inst);
                     if (Collision_hasFrameMasks(spr)) {
-                        InstanceBBox bbox = Collision_computeBBox(ctx->runner, inst);
+                        InstanceBBox bbox = Collision_hitBBox(ctx->runner, inst);
                         GMLReal iLeft   = GMLReal_fmax(qx1, bbox.left);
                         GMLReal iRight  = GMLReal_fmin(qx2, bbox.right);
                         GMLReal iTop    = GMLReal_fmax(qy1, bbox.top);
@@ -14520,7 +14520,7 @@ static RValue builtin_collision_ellipse_list(VMContext* ctx, RValue* args, int32
                 if (prec != 0) {
                     Sprite* spr = Collision_getSprite(ctx->dataWin, inst);
                     if (Collision_hasFrameMasks(spr)) {
-                        InstanceBBox bbox = Collision_computeBBox(ctx->runner, inst);
+                        InstanceBBox bbox = Collision_hitBBox(ctx->runner, inst);
                         GMLReal iLeft   = GMLReal_fmax(qx1, bbox.left);
                         GMLReal iRight  = GMLReal_fmin(qx2, bbox.right);
                         GMLReal iTop    = GMLReal_fmax(qy1, bbox.top);
@@ -14622,7 +14622,7 @@ static RValue builtin_instance_place(VMContext* ctx, RValue* args, int32_t argCo
     caller->x = testX;
     caller->y = testY;
 
-    InstanceBBox callerBBox = Collision_computeBBox(runner, caller);
+    InstanceBBox callerBBox = Collision_hitBBox(runner, caller);
     int32_t resultId = INSTANCE_NOONE;
 
     if (callerBBox.valid) {
@@ -14641,10 +14641,10 @@ static RValue builtin_instance_place(VMContext* ctx, RValue* args, int32_t argCo
                     if (!query.matchAll && query.filterByObject && !VM_isObjectOrDescendant(runner->dataWin, other->objectIndex, targetObjIndex)) continue;
                     if (!query.matchAll && query.filterByInstanceId && other->instanceId != (uint32_t) targetObjIndex) continue;
 
-                    InstanceBBox otherBBox = Collision_computeBBox(runner, other);
+                    InstanceBBox otherBBox = Collision_hitBBox(runner, other);
                     if (!otherBBox.valid) continue;
 
-                    if (Collision_instancesOverlapPrecise(runner, caller, other, callerBBox, otherBBox)) {
+                    if (Collision_hitPair(runner, caller, other, callerBBox, otherBBox)) {
                         resultId = other->instanceId;
                         break;
                     }
@@ -14685,7 +14685,7 @@ static RValue builtin_instance_place_list(VMContext* ctx, RValue* args, int32_t 
     caller->x = testX;
     caller->y = testY;
 
-    InstanceBBox callerBBox = Collision_computeBBox(runner, caller);
+    InstanceBBox callerBBox = Collision_hitBBox(runner, caller);
     int32_t count = 0;
 
     if (callerBBox.valid) {
@@ -14704,10 +14704,10 @@ static RValue builtin_instance_place_list(VMContext* ctx, RValue* args, int32_t 
                     if (!query.matchAll && query.filterByObject && !VM_isObjectOrDescendant(runner->dataWin, other->objectIndex, targetObjIndex)) continue;
                     if (!query.matchAll && query.filterByInstanceId && other->instanceId != (uint32_t) targetObjIndex) continue;
 
-                    InstanceBBox otherBBox = Collision_computeBBox(runner, other);
+                    InstanceBBox otherBBox = Collision_hitBBox(runner, other);
                     if (!otherBBox.valid) continue;
 
-                    if (Collision_instancesOverlapPrecise(runner, caller, other, callerBBox, otherBBox)) {
+                    if (Collision_hitPair(runner, caller, other, callerBBox, otherBBox)) {
                         arrput(list->items, RValue_makeReal((GMLReal) other->instanceId));
                         count++;
                     }
@@ -25273,7 +25273,7 @@ GAME_FPS_TARGET_CODE static double gameFpsRealTarget(Runner* runner) {
 #endif
 #undef GAME_FPS_TARGET_CODE
 
-// ds_map_add borrows a static string (freewins, win 2): a key, or a string value, that RValue_isStaticString
+// ds_map_add borrows a static string (change freewins, win 2): a key, or a string value, that RValue_isStaticString
 // finds (the data.win's string table, or the one-character strings) is stored as the pointer, not a copy. Both live
 // until the VM is freed, and every map is freed before that. UNDERTALE builds its two language text maps (16,455
 // entries each) from Push.s constants: 1.8 MB of copied values and 0.7 MB of copied keys in 65,820
@@ -25347,7 +25347,7 @@ __attribute__((noinline, section(".text.late.cdbox"))) RValue cdBoxSide(VMContex
     if (inst != nullptr && inst->objectIndex != STRUCT_OBJECT_INDEX) {
         if (builtinVarId == BUILTIN_VAR_BBOX_LEFT) {
             Runner* runner = ctx->runner;
-            InstanceBBox bbox = Collision_computeBBox(runner, inst);
+            InstanceBBox bbox = Collision_readBBox(runner, inst);
             if (bbox.valid) {
                 bool compat = runner->collisionCompatibilityMode;
                 cdBoxMemo.inst = inst;

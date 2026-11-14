@@ -4,7 +4,7 @@ The console converts every texture page of a data.win into pageNNN.dtx files and
 folder beside it (platform/3ds/source/ctr_texture_pack.c) the first time a game starts: about 30 s for UNDERTALE on
 an Old 3DS and several minutes for DELTARUNE. tools/texprep builds that same console code for the PC, so the builder
 can write those folders onto the SD card itself. Both host and console clear hidden RGB in the normal and hurt Final
-Froggit heads' alpha-0 texels in recognized Steam/GOG layouts. UT cache epochs 5/6 invalidate old pages and complete markers; DR stays on 3/4. Checks
+Froggit heads' alpha-0 texels in recognized Steam/GOG layouts. UT cache epochs 8/6 invalidate old pages and complete markers; DR stays on 3/4. Checks
 stay as they are: it reads a page only when its header matches the data.win, and it prepares any page that is
 missing or stale, so an absent or partial folder only means the console does that work as before.
 
@@ -66,12 +66,18 @@ PAD_START, PAD_END = 52, 56
 # docs/release/builder-status.md, "Texture preparation on the PC".
 # Rebuild and re-pin whenever any file in `texprep --sources` changes (a release step, builder-status.md).
 PINNED = {
-    # Release pin (S8, 2026-11-07): built by labplan from the upd1 trial cee254c2f's export_scrub distribution copy;
-    # its sources equal S8's (test_texprep_pin), so it is the binary the release builder ships.
-    # MSYS2 UCRT64 GCC 16.1.0, static, zero PE timestamp; two source directories, 0 warnings.
-    # texprep-src-1:ad1a4f2c1dc91a024a40dc18f69370f96974e4a2f6d9e258aa1995889ba3982d
-    ("win32", "x86_64"): ("texprep-windows-x64.exe", 365682,
-                          "97e82a674212e4311187453716d896c98af80c05f88272b8f84650faee2a3bf2"),
+    # Release pin (fightpix, 2026-11-08): checked export_scrub distribution sources, including the scoped
+    # FIGHT-meter source-alpha correction; real Steam/GOG rounded and Steam exact cache parity qualified.
+    # Re-pinned (firstboot, 2026-11-08) for ctr_texture_pack.c's UNDERTALE-only setup-bar reader, which
+    # texprep does not compile: Steam/GOG rounded and Steam exact caches byte-identical to d08bd0a3.
+    # Re-pinned (relready, 2026-11-08) for runner.h's hitcheck field. Two scrubbed-source builds are
+    # identical; only the embedded source digest and PE checksum differ from the previous pin.
+    # Re-pinned (hitcheck V12, 2026-11-09) for runner.h's initialization-wrapper declaration.
+    # Two scrubbed-source builds match; all PE sections differ only in the embedded source digest.
+    # MSYS2 UCRT64 GCC 16.1.0, static, zero PE timestamp, 0 warnings.
+    # texprep-src-1:e2aff1eaed806e14c2a9979fb4ad5ad847a9af4e0eba53dd4cf2623a482dcea9
+    ("win32", "x86_64"): ("texprep-windows-x64.exe", 367735,
+                          "f809450d6697954889eb4fe9177079217586bcc4ddb4b78e9f5343a76189c379"),
     # Linux builds locally with the system compiler. The former static glibc 2.39 binary is
     # retired: it lacked a corresponding-source/relink kit and did not fit older Debian hosts.
     # macOS (arm64 and x86_64): texprep-macos-universal, built on an M1 Mac (steps in builder-status.md).

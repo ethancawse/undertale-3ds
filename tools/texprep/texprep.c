@@ -9,7 +9,7 @@
 //
 // The console's texture preparation (ctr_texture_pack.c) is included whole, unchanged, so the driver can point
 // its cache folder somewhere other than beside data.win (the player's game folder stays read-only). Nothing
-// below changes tile formats or compression. UT selects cache epochs 5/6 and clears both recognized heads' hidden
+// below changes tile formats or compression. UT selects cache epochs 7/6 and clears both recognized heads' hidden
 // RGB after format selection, matching console output; see tools/lanes/results/redpix.md for its alpha-blend use audit.
 
 // Declarations the console code expects from newlib, where the host's C library spells them differently.

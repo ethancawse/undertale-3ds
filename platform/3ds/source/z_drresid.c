@@ -2,7 +2,7 @@
 // statics in sections of their own, linked last (platform/3ds/late_reserve.ld): nothing that existed before moves.
 // UNDERTALE and the Old models compile this file empty.
 //
-// The room plan and rooms.dtm cover a room's first frames, and the New DR whole-room sets (hitches) the rooms
+// The room plan and rooms.dtm cover a room's first frames, and the New DR whole-room sets (change hitches) the rooms
 // whose every scene fits the texture budget together. The oversized rooms (Knight's snow zone with Tenna's episode
 // and the sax fight, Titan, Flowery and Flowery's end room) don't fit whole, so their fights drew their attacks' art
 // for the first time in play: each a tile load from the SD card (7-30 ms; Flowery 43 loads, 556 ms in the bench

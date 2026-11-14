@@ -251,6 +251,8 @@ def main(args):
         return status
     text = original.read_text(encoding='utf-8')
     text = main_slots(text, game, model) if is_main else retain(text, sections, old, game)
+    if not is_main and game == 'undertale' and '-DCTRPORT_NO_BOTTOMFRAME' not in command:
+        text = route_startup_cover(text)
     write_assembly(padded, text)
     assemble, index = [command[0]], 1
     while index < len(command):
@@ -265,6 +267,24 @@ def main(args):
     if status:
         print('ERROR: frozen 75zq slot assembly failed; tools/buildcache/loadgame-order.json is the size/order contract. Move grown work to appended late helpers; never increase an existing slot.',file=sys.stderr)
     return status
+
+
+def route_startup_cover(text):
+    """Only two decoded call operands in the retained loading-swap body change."""
+    body = list(re.finditer(r'^Loadgame_swap:\n.*?^\s*\.size\s+Loadgame_swap,[^\n]*', text, re.M | re.S))
+    assert len(body) == 1, 'startup cover caller inventory'
+    original = body[0][0]
+    routed = original
+    for old, new in (('__real_gfxScreenSwapBuffers', 'CtrLoadscreen_coverTopSwap'),
+                     ('CtrScreens_pacerShow', 'CtrLoadscreen_coverBottomSwap')):
+        assert re.search(r'(?m)^' + new + ':$', text), 'missing startup cover adapter'
+        pattern = r'(?m)^([ \t]+b(?:l)?(?:eq|ne|cs|cc|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?[ \t]+)' + old + r'((?:\(PLT\))?[ \t]*)$'
+        routed, count = re.subn(pattern, lambda m: m[1] + new + m[2], routed)
+        assert count == 1, ('startup cover call inventory', old, count)
+    restored = routed.replace('CtrLoadscreen_coverTopSwap', '__real_gfxScreenSwapBuffers').replace(
+        'CtrLoadscreen_coverBottomSwap', 'CtrScreens_pacerShow')
+    assert restored == original, 'non-operand startup cover change'
+    return text[:body[0].start()] + routed + text[body[0].end():]
 
 
 if __name__ == '__main__':

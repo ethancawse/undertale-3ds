@@ -16,7 +16,7 @@
 // Built for UNDERTALE Old only (CMakeLists.txt). Late code only and last (late_reserve.ld); no statics, no constants.
 #include "wad_versions.h"
 
-#if defined(ENABLE_WAD16)
+#if defined(ENABLE_WAD16) && defined(CTRPORT_AOT)
 
 #include "aot/vm_aot.h"
 #include "data_win.h"

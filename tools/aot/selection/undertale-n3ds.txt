@@ -2,7 +2,7 @@
 # 10 bench scenes, 315 rooms and 104 encounters; it fills 16 MB at 85 bytes an instruction. Names only: the
 # code is generated from your own data.win at build time (gmlaot.py --selection, platform/3ds/build.sh aot).
 # Gain is GML instructions a frame (select.py --weigh ops, each profile counted up to 33000 a frame).
-# UT New (n3ds) keeps this list as it was before aotprof's UT Old edit of undertale.txt (2026-10-28), so the
+# UT New (n3ds) keeps this list as it was before change aotprof's UT Old edit of undertale.txt (2026-10-28), so the
 # New build and its layout stay unchanged; prepare.py reads <game>-n3ds.txt for n3ds when it exists.
 # <data.win folder> <code entry>
 root gml_Script_ossafe_fill_rectangle

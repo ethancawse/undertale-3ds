@@ -1,4 +1,4 @@
-"""Keep original menu/chapter slots; route only three cold call operands to appended helpers.
+"""Keep original menu/chapter slots; route only named cold call operands to appended helpers.
 
 No source, instruction, data or pool is replaced. The original local functions remain callable through
 qualified aliases. Full layout and decoded-call audits verify the emitted result independently.
@@ -20,7 +20,13 @@ def route(text, source, chapter_prefix='BxN'):
         assert len(rows) == 1, ('Unqualified options-row ABI', rows)
         assert not re.search(r'(?m)^optRowMain\.(?:isra|part)\.', text), 'Row ABI changed'
         entries = [(rows[0], 'Bx_menuRow', 'Bx_menuRowOriginal'),
-                   ('optActivate', 'Bx_menuActivate', 'Bx_menuActivateOriginal')]
+                   ('optActivate', 'Bx_menuActivate', 'Bx_menuActivateOriginal'),
+                   # battletouch (11-08): the main page's keys and draw go through its Battle layout and Battle
+                   # stylus rows (z_battletouch.c), which call the originals; optRow and the menu's state by name only.
+                   ('optKeys', 'CtrOptbattle_keys', 'CtrOptbattle_keysOriginal'),
+                   ('optCompose', 'CtrOptbattle_compose', 'CtrOptbattle_composeOriginal'),
+                   ('optRow', None, 'CtrOptbattle_row'),
+                   ('opt', None, 'CtrOptbattle_state')]
     elif source == 'main.c':
         assert chapter_prefix in ('BxN', 'BxO')
         entries = [('CtrChapters_init', chapter_prefix + '_init', None),
@@ -33,6 +39,8 @@ def route(text, source, chapter_prefix='BxN'):
         if alias:
             assert len(re.findall(r'(?m)^' + re.escape(name) + r':$', text)) == 1, name
             aliases.append('\t.global ' + alias + '\n\t.set ' + alias + ', ' + name)
+        if target is None:
+            continue
         pattern = r'(?m)^([ \t]+b(?:l)?' + CONDITION + r'[ \t]+)' + re.escape(name) + r'(\(PLT\))?([ \t]*(?:@[^\n]*)?)$'
         text, count = re.subn(pattern, lambda m: m[1] + target + (m[2] or '') + m[3], text)
         assert count == 1, ('Unexpected cold caller count', name, count)
@@ -91,6 +99,9 @@ def main(args):
             stream.write(original_text)
     text, counts = route(original_text, Path(candidates[0]).name,
                          'BxO' if old_guard else 'BxN')
+    if ('-DENABLE_WAD16' in command and '-DCTRPORT_NO_BOTTOMFRAME' not in command
+            and Path(candidates[0]).name == 'ctr_optmenu.c'):
+        text, counts['bottomframe'] = route_bottomframe(text)
     with routed_file.open('w', encoding='utf-8', newline='\n') as stream:
         stream.write(text)
     assemble, i = [command[0]], 1
@@ -108,6 +119,36 @@ def main(args):
         calls=counts, exit=result, original=str(original_file), routed=str(routed_file)), indent=2) + '\n')
     print('Builder cold call operands: ' + json.dumps(counts), flush=True)
     return result
+
+
+def route_bottomframe(text):
+    """Route two menu entry operands, retaining GCC's old graph and every other byte.
+
+    The appended adapters call the old bodies through opaque assembler names.
+    Match the exact caller and original callee; never globally replace those
+    callees, since doing so would turn the adapters' continuations into recursion.
+    """
+    edges = (('optKeysHeard', 'CtrOptbattle_keys', 'CtrBottomframe_menuKeys'),
+             ('optComposeShown', 'CtrOptbattle_compose', 'CtrBottomframe_menuCompose'))
+    assert all(re.search(r'(?m)^' + new + r':$', text) for _, _, new in edges), 'missing bottomframe menu adapters'
+    before, edits = text, []
+    for caller, old, new in edges:
+        bodies = list(re.finditer(r'^' + caller + r':\n.*?^\s*\.size\s+' + caller + r',[^\n]*', text, re.M | re.S))
+        assert len(bodies) == 1, ('bottomframe caller inventory', caller)
+        body = bodies[0]
+        calls = list(re.finditer(r'(?m)^([ \t]+b(?:l)?' + CONDITION + r'[ \t]+)(?P<target>' + old +
+                                r')(?:\(PLT\))?[ \t]*$', body[0]))
+        assert len(calls) == 1, ('bottomframe call inventory', caller, old, len(calls))
+        call = calls[0]
+        edits.append((body.start() + call.start('target'), body.start() + call.end('target'), old, new))
+    for start, end, old, new in sorted(edits, reverse=True):
+        text = text[:start] + new + text[end:]
+    restored = text
+    for start, end, old, new in sorted(edits):
+        assert restored[start:start + len(new)] == new
+        restored = restored[:start] + old + restored[start + len(new):]
+    assert restored == before, 'non-operand bottomframe assembly change'
+    return text, dict(calls=2, edges=[dict(caller=c, old=o, new=n) for c, o, n in edges])
 
 
 if __name__ == '__main__':

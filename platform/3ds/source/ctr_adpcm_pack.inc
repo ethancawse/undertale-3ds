@@ -95,7 +95,7 @@ extern const MmLegacy CtrAdpcm_musicLegacy;
 __asm__(".pushsection .rodata.late.adpcm,\"a\",%progbits\n"
         ".p2align 2\n.global CtrAdpcm_musicLegacy\n"
         ".type CtrAdpcm_musicLegacy,%object\nCtrAdpcm_musicLegacy:\n"
-        ".word openStream, postMessage, utaPhys\n"
+        ".word openStream, CtrLogfix_post, utaPhys\n"
         ".size CtrAdpcm_musicLegacy, .-CtrAdpcm_musicLegacy\n.popsection\n");
 
 #include "ctr_adpcm_sfx_pieces.inc"

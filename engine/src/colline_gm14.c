@@ -57,6 +57,9 @@ static COLLINE14_LATE float colline14Float(const RValue* v) {
     return (float) colline14Real(v);
 }
 
+static __attribute__((noinline, flatten, section(".text_hitcheck_readers_late")))
+bool Hitcheck_readerEllipse(Runner*, Instance*, float, float, float, float, bool);
+#line 60
 // The first instance of objArg that the line (circle false) or the circle's box (circle true) hits, in the order the
 // other collision builtins take (collision_gm14.c); prec and notme are the two arguments after objArg.
 static COLLINE14_LATE RValue colline14FirstHit(VMContext* ctx, RValue* args, int32_t objArg, bool circle, float x1, float y1, float x2, float y2) {
@@ -73,7 +76,7 @@ static COLLINE14_LATE RValue colline14FirstHit(VMContext* ctx, RValue* args, int
         Instance* inst = runner->instanceSnapshots[snapIdx];
         if (!inst->active) continue;
         if (notme && inst == self) continue;
-        if (!(circle ? Colline14_ellipseHits(runner, inst, x1, y1, x2, y2) : Colline14_lineHits(runner, inst, x1, y1, x2, y2, prec))) continue;
+        if (!(circle ? Hitcheck_readerEllipse(runner, inst, x1, y1, x2, y2, prec) : Colline14_lineHits(runner, inst, x1, y1, x2, y2, prec))) continue;
         resultId = inst->instanceId;
         break;
     }
@@ -88,10 +91,10 @@ static COLLINE14_LATE RValue builtin_collision_line_gm14(VMContext* ctx, RValue*
 }
 
 // collision_circle(x, y, r, obj, prec, notme): Instance::Collision_Ellipse of the float32 box (x - r, y - r, x + r,
-// y + r), each bound the float32 sum or difference. Not precise only: UT's two calls pass prec 0, and a precise call
-// goes to the builtin this one replaced.
+// y + r), each bound the float32 sum or difference. Precise queries use
+// the PC integer ellipse and pixel-corner mask walk below.
 static COLLINE14_LATE RValue builtin_collision_circle_gm14(VMContext* ctx, RValue* args, int32_t argCount) {
-    if (!ctx->runner->collisionCompatibilityMode || 6 > argCount || colline14Bool(args[4])) return colline14Previous.collisionCircle(ctx, args, argCount);
+    if (!ctx->runner->collisionCompatibilityMode || 6 > argCount) return colline14Previous.collisionCircle(ctx, args, argCount);
     float cx = colline14Float(&args[0]), cy = colline14Float(&args[1]), r = colline14Float(&args[2]);
     return colline14FirstHit(ctx, args, 3, true, (float) ((double) cx - (double) r), (float) ((double) cy - (double) r), (float) ((double) cx + (double) r), (float) ((double) cy + (double) r));
 }
@@ -228,5 +231,96 @@ __attribute__((noinline, noipa, optimize("Os"), section(".cdcap_late"))) void cd
     IntRValueHashMap_freeAllValues(map);
 }
 #endif
+
+// PC Precise_Ellipse 0x48bd80, independently transcribed in
+// tools/analysis/test_colline_gm14.c:refEllipse. Integer ellipse and pixel corners.
+static __attribute__((noinline, flatten, section(".text_hitcheck_readers_late")))
+bool Hitcheck_readerEllipse(Runner* runner, Instance* inst, float x1, float y1, float x2, float y2, bool prec) {
+    (void) prec;
+    return Colline14_ellipseHits(runner, inst, x1, y1, x2, y2);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+
+// Unused UT region specialization removed; retain later __LINE__ values.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// Append to the existing last hitcheck input: keep every earlier release body
+// and the original Runner_create graph intact. This runs once before room init.
+__attribute__((noinline, section(".text_hitcheck_readers_late")))
+Runner* Hitcheck_createRunner(DataWin* dataWin, VMContext* vm, Renderer* renderer,
+        FileSystem* fileSystem, AudioSystem* audioSystem, uint32_t randomSeed) {
+    Runner* runner = Runner_create(dataWin, vm, renderer, fileSystem, audioSystem, randomSeed);
+    if (dataWin->gen8.wadVersion > 16) return runner;
+    // The resolved-table walk groups responders by target subtype. Collision
+    // handlers can move another participant, so dispatch needs self-object
+    // order instead. Leave every target and instance bucket in its own order.
+    int32_t* objects = runner->objectsWithAnyEventOfType[EVENT_COLLISION];
+    ptrdiff_t count = arrlen(objects);
+    for (ptrdiff_t i = 1; i < count; ++i) {
+        int32_t object = objects[i];
+        ptrdiff_t j = i;
+        while (j > 0 && objects[j - 1] > object) {
+            objects[j] = objects[j - 1];
+            --j;
+        }
+        objects[j] = object;
+    }
+    return runner;
+}
 
 #endif /* ENABLE_WAD16 */

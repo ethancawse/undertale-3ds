@@ -1,4 +1,4 @@
-"""Precompute the renderer's per-item Smart smoothing verdicts from a data.win (smartcut, the first battle frame).
+"""Precompute the renderer's per-item Smart smoothing verdicts from a data.win (change smartcut, the first battle frame).
 
 Usage: py -3 -I tools/aot/itemverdict.py <data.win> [--out <file>] [--items N,N,...] [--quiet]
        (build.sh writes the tables through tools/aot/fontverdict.py's build mode, beside the font tables.)
@@ -8,7 +8,7 @@ itemVerdict): whether its art is in 2x2 blocks (smartTally, smartBestPhase, smar
 texels a side whether its ink of at most 3 colours survives the shrink at some phase (smartInk: line art, placed by
 that phase), else whether it is fine detail (kept sharp if it is a frame of the HP label, smartKeepSharp), and then
 whether it averages clean (smartRegionClean). On the Old 3DS this costs several milliseconds an item at its first
-sight; UNDERTALE's first battle frame looks at 8 items (about 11 ms on Azahar, as measured). This tool repeats
+sight; UNDERTALE's first battle frame looks at 8 items (about 11 ms on Azahar, by a probe). This tool repeats
 the analysis on the texels as the console stores them (tools/aot/fontverdict.py's page decode, tile grid and format
 choice, for both colour modes), so the console reads the verdicts once per data.win instead.
 

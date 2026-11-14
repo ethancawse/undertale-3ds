@@ -1,4 +1,4 @@
-// leavekeep (credfix, charter rev 1 item 1, 2026-10-27): a lab leave ends the process without unmapping the heap.
+// leavekeep (change credfix, charter rev 1 item 1, 2026-10-27): a lab leave ends the process without unmapping the heap.
 //
 // Why: the lab's crash, hang and fallback leaves (ctr_lab.c leave/standAside/fallbackMain) leave audio, the GPU and
 // every other thread running on purpose, then end through CtrExitFiles_labExit > _exit > __ctru_exit > __appExit >
@@ -188,7 +188,7 @@ __attribute__((noinline, section(".exitpanic_text"))) Result CtrSvcControlMemory
 
 // The Rosalina watcher's thread create (ctr_rosalina.c's threadCreate calls, renamed by CMakeLists.txt). A core-1 ask
 // before the app's CPU time limit is set fails in the kernel (E0A01839), and that refused create looks to keep one
-// thread count past the process's end (exitpanic, census rows 10-30). Answer it as the kernel would, without
+// thread count past the process's end (change exitpanic, census rows 10-30). Answer it as the kernel would, without
 // asking: NULL, after which the watcher tries -2 as before. Every other ask goes on unchanged. Last in the late text.
 __attribute__((noinline, section(".exitpanic_rosa_text"))) Thread CtrRosalina_threadCreate(ThreadFunc entrypoint,
         void* arg, size_t stack_size, int prio, int core_id, bool detached) {

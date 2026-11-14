@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Bundle original legal texts and fixed-size console pages; no game inputs."""
 import argparse
+from bisect import bisect_right
+from collections import deque
 import json
 from pathlib import Path
 import re
@@ -122,14 +124,148 @@ def write_changed(path, data):
         path.write_bytes(data)
 
 
+_LENGTH_BASE = (3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59,
+                67, 83, 99, 115, 131, 163, 195, 227, 258)
+_LENGTH_EXTRA = (0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
+                 4, 4, 4, 4, 5, 5, 5, 5, 0)
+_DISTANCE_BASE = (1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385,
+                  513, 769, 1025, 1537, 2049, 3073, 4097, 6145)
+_DISTANCE_EXTRA = (0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7,
+                   8, 8, 9, 9, 10, 10, 11, 11)
+
+
+def _reverse_bits(value, width):
+    result = 0
+    for _ in range(width):
+        result = result * 2 + (value & 1)
+        value >>= 1
+    return result
+
+
+# RFC 1951 fixed trees: canonical Huffman codes go onto the LSB-first wire bit-reversed.
+_FIXED_CODES = tuple((_reverse_bits(code, width), width) for code, width in (
+    (symbol + 0x30, 8) if symbol < 144 else (symbol - 144 + 0x190, 9) if symbol < 256 else
+    (symbol - 256, 7) if symbol < 280 else (symbol - 280 + 0xc0, 8) for symbol in range(288)))
+_DISTANCE_CODES = tuple(_reverse_bits(i, 5) for i in range(len(_DISTANCE_BASE)))
+
+
+def _zlib_fixed(data):
+    """One standard zlib stream: fixed-Huffman DEFLATE, greedy 8 KiB LZ77, explicit Adler-32.
+
+    Deterministic by construction: integer operations only, no floats or dict/set iteration, and no hash-seeded
+    choice. A dict only retrieves a byte-prefix's insertion-ordered chain. Search the newest 64 positions first;
+    longest match wins, nearest wins ties. Insert every consumed position, including within an overlapping match.
+    Each NSP1 block starts a fresh stream/window. This must never delegate compression to the host Python zlib.
+    """
+    output = bytearray(b'\x78\x01')  # RFC 1950: DEFLATE, 32 KiB advertised window, no dictionary, FCHECK valid.
+    accumulator = 0
+    available = 0
+
+    def emit(value, width):
+        nonlocal accumulator, available
+        accumulator |= value << available
+        available += width
+        while available >= 8:
+            output.append(accumulator & 255)
+            accumulator >>= 8
+            available -= 8
+
+    emit(3, 3)  # BFINAL=1, BTYPE=01: one final fixed-Huffman block.
+    chains = {}
+    position = 0
+    while position < len(data):
+        end = min(position + 258, len(data))
+        best = 2
+        previous = 0
+        key = data[position:position + 3]
+        chain = chains.get(key, ()) if len(key) == 3 else ()
+        for at in reversed(chain):
+            if position - at > 8192:
+                break
+            if not data.startswith(data[position:position + best + 1], at):
+                continue
+            length = best + 1
+            while position + length < end and data[at + length] == data[position + length]:
+                length += 1
+            best, previous = length, at
+            if position + best == end:
+                break
+        step = 1
+        if best >= 3:
+            step = best
+            code = bisect_right(_LENGTH_BASE, best) - 1
+            emit(*_FIXED_CODES[257 + code])
+            emit(best - _LENGTH_BASE[code], _LENGTH_EXTRA[code])
+            distance = position - previous
+            code = bisect_right(_DISTANCE_BASE, distance) - 1
+            emit(_DISTANCE_CODES[code], 5)
+            emit(distance - _DISTANCE_BASE[code], _DISTANCE_EXTRA[code])
+        else:
+            emit(*_FIXED_CODES[data[position]])
+        for at in range(position, position + step):
+            key = data[at:at + 3]
+            if len(key) == 3:
+                if key not in chains:
+                    chains[key] = deque(maxlen=64)
+                chains[key].append(at)
+        position += step
+    emit(*_FIXED_CODES[256])  # End-of-block; pad the last byte with zero bits.
+    if available:
+        output.append(accumulator)
+    a, b = 1, 0
+    for value in data:
+        a = (a + value) % 65521
+        b = (b + a) % 65521
+    output.extend(((b << 16) | a).to_bytes(4, 'big'))
+    return bytes(output)
+
+
+def pack_records(documents):
+    """NSP1: two unchanged LGL1 files, independently zlib-compressed in 8 KiB blocks.
+
+    The absolute offset table permits constant-time jumps without decoding preceding text.
+    FNV-1a covers the entire container except its own word; each block also has zlib's Adler32.
+    This is a RomFS asset, never an ELF constant or a game-derived input.
+    """
+    if len(documents) != 2:
+        raise ValueError('Legal pack requires exactly two documents')
+    blocks = []
+    for data in documents:
+        if data[:4] != b'LGL1' or len(data) < 8:
+            raise ValueError('Legal pack requires LGL1 records')
+        blocks.extend(_zlib_fixed(data[i:i + 8192]) for i in range(0, len(data), 8192))
+    offset = 24 + 4 * (len(blocks) + 1)
+    offsets = [offset]
+    for block in blocks:
+        offset += len(block)
+        offsets.append(offset)
+    if offset > 262144:
+        raise ValueError('Legal pack exceeds the bounded reader format')
+    result = bytearray(struct.pack('<4s5I', b'NSP1', offset, 8192,
+                                   len(documents[0]), len(documents[1]), 0))
+    result.extend(struct.pack('<%dI' % len(offsets), *offsets))
+    result.extend(b''.join(blocks))
+    checksum = 2166136261
+    for value in result[:20] + result[24:]:
+        checksum = ((checksum ^ value) * 16777619) & 0xffffffff
+    struct.pack_into('<I', result, 20, checksum)
+    return bytes(result)
+
+
 def prepare(root, output, notices=None):
     contract = json.loads((root / 'docs/release/build-contract.json').read_text(encoding='utf-8'))
     output.mkdir(parents=True, exist_ok=True)
+    documents = []
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES'):
-        data = (notices if name == 'THIRD_PARTY_NOTICES' and notices is not None else root / name).read_bytes()
+        source = notices if name == 'THIRD_PARTY_NOTICES' and notices is not None else root / name
+        data = source.read_bytes()
+        if b'\r' in data:
+            raise ValueError(f'{source}: carriage return in raw RomFS legal input; restore LF-only line endings')
         pages = paginate(data, contract['legal_columns'], contract['legal_lines'])
         write_changed(output / name, data)
         write_changed(output / (name + '.pages'), pages)
+        documents.append(pages)
+    write_changed(output / 'READER.lgrz', pack_records(documents))
 
 
 if __name__ == '__main__':

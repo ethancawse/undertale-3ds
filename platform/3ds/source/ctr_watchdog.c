@@ -346,3 +346,14 @@ __attribute__((noinline, noclone, section(".text.bfprobe"))) int32_t CtrWatchdog
     return n;
 }
 #endif
+
+#ifdef ENABLE_WAD16
+// homesave: pause before its APT save drain, which runs before onAptEvent.
+// The alias leaves the old compiler anchors and all original function bytes alone.
+extern volatile bool homesaveSuspended __asm__("suspended");
+void CtrHomesave_pause(void);
+__attribute__((noinline, noclone, optimize("Os"), section(".homesave_code")))
+void CtrHomesave_pause(void) {
+    homesaveSuspended = true;
+}
+#endif

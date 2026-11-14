@@ -229,7 +229,7 @@ UTHUD_TEXT uint32_t __wrap_CtrRenderer_getDisplayCaps(Renderer* renderer) {
 // The snap is for shakes: a view that swings back and forth around a rest, with the content fixed in the room. A view
 // that scrolls one way usually carries content with it (Photoshop Flowey's intro: the SOUL's y is set to its rest plus
 // the view's, so the PC holds it still). Snapping each odd view of such a scroll moves that content by half an output
-// pixel every other frame: the SOUL hopped 1 px at 15 Hz (playtest, 2026-10-26). So view 0's position is followed per
+// pixel every other frame: the SOUL hopped 1 px at 15 Hz (maintainer, 2026-10-26). So view 0's position is followed per
 // frame (beginView), and while either axis scrolls steadily, view_snap is off for the frame: the picture is then the
 // view_snap = 0 picture, which is what native drawing gives everywhere else.
 //

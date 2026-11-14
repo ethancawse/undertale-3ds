@@ -163,7 +163,7 @@ static inline __attribute__((always_inline)) bool Colflip14_rectOverlapsOBB(Spri
 }
 
 COLFLIP14_LATE COLFLIP14_FLAT bool Colflip14_rectHitsInstance(Runner* runner, Instance* inst, GMLReal x1, GMLReal y1, GMLReal x2, GMLReal y2, bool prec) {
-    InstanceBBox bbox = Collision_computeBBox(runner, inst);
+    InstanceBBox bbox = Collision_hitBBox(runner, inst);
     if (!bbox.valid) return false;
     // A miss only from right + 1 (bbox.right) on, the rect taken in float32.
     if ((float) x1 >= (float) bbox.right || (float) bbox.left > (float) x2 || (float) y1 >= (float) bbox.bottom || (float) bbox.top > (float) y2) return false;

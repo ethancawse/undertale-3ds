@@ -79,7 +79,7 @@ static uint32_t staleCount;
 static bool ready;
 static LightLock lock;
 
-// The heap's high water (freewins, round 4): newlib's arena (the bytes sbrk has handed malloc, which can never
+// The heap's high water (change freewins, round 4): newlib's arena (the bytes sbrk has handed malloc, which can never
 // pass the heap's end) after every recorded allocation, since boot and since the last dump. Its peak plus where
 // malloc's arena starts is the smallest heap this run would have fitted in: the same calls place the same blocks in
 // any heap that large, since only the top's end depends on the heap's size.

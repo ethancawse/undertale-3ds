@@ -1,4 +1,4 @@
-// noshots (credfix, ruling 2026-10-28): a timing row takes no scene "shot" pictures.
+// noshots (change credfix, review decision 2026-10-28): a timing row takes no scene "shot" pictures.
 //
 // Why: --bench noshots (and bench_io=0, which ctr_bench_io.c turns into noshots on every --bench row unless
 // bench_io=1) only stopped the halfway and sweep shots; a scene's own "shot" steps still saved top, bottom and shot

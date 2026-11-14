@@ -288,7 +288,7 @@ uint32_t CtrTextures_hashTexels(const C3D_Tex* tex);
 // CtrTextures_lendBudget counting tiles no one has wanted since the room began as idle (kawkaw).
 bool CtrTextures_lendBudgetInRoom(CtrTextureCache* cache, uint32_t bytes, uint32_t idleFrames);
 
-// Packed copies in spare linear memory (utflowey2; UNDERTALE Old only, see ctr_texture_pack.h): the low-heap
+// Packed copies in spare linear memory (change utflowey2; UNDERTALE Old only, see ctr_texture_pack.h): the low-heap
 // relief that drops only copies in the heap, and the tile allocation's out-of-memory step that drops an idle copy in
 // linear memory before any tile (z_utstall.c). beginFrame's relieveHeap stays; z_utstall.c's check each frame keeps
 // the heap over its threshold first, by dropping copies in the heap only.

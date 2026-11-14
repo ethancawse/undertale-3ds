@@ -17,11 +17,20 @@ DRIVERS = ('platform/3ds/build.sh', 'platform/3ds/CMakeLists.txt', 'tools/texpre
 ENTRY_POINTS = ('tools/release/builder/builder.py', 'tools/release/builder_platform_probe.py',
                 'tools/release/package_builder.py', 'tools/release/check_release.py', 'tools/audio/sfxpack.py')
 OPTIONAL_PACKERS = {'tools/analysis/crispart_pack.py', 'tools/analysis/smalltext_pack.py'}
+# Explicit optional edges: each owner handles absence without an incomplete release.
+OPTIONAL_INPUTS = {
+    ('tools/release/test_builder_library_pins.py', 'tools/release/undertale_release_day.py'):
+        'Private release driver: test_release_day_driver_does_not_offer_package_inputs checks is_file then skips.',
+    ('tools/aot/stglyphs.py', 'tools/analysis/stglyphs_extra.py'):
+        'Optional analysis font tables: guarded by isfile; release fonts use only the in-module tables.',
+}
 GAME_ONLY = {'tools/aot/pixgrid.py': 'undertale', 'tools/aot/btnprompt_build.py': 'undertale',
              # UNDERTALE Old's covered-star key (build.sh runs it for UNDERTALE only).
              'tools/aot/dskip.py': 'undertale',
              'tools/aot/chapter_manifest.py': 'deltarune',
              'tools/roomplan/build_sfxplan.py': 'undertale', 'tools/aot/gog_smart.py': 'undertale',
+             # layout S3's scene table and its names-only spec (build.sh runs it for UNDERTALE only).
+             'tools/layout/build_scenes.py': 'undertale', 'tools/layout/undertale-scenes.json': 'undertale',
              # UNDERTALE Old's half-resolution art (build.sh halfart, the builder's products.HALFART setting).
              'tools/analysis/halfart_pack.py': 'undertale',
              # stpack.py and stglyphs.py make both games' glyph packs (DELTARUNE New's Crisp text, sansfont round 3).
@@ -34,6 +43,8 @@ GAME_ONLY = {'tools/aot/pixgrid.py': 'undertale', 'tools/aot/btnprompt_build.py'
              'tools/aot/check_dspe_gate.py': 'deltarune',
              # offkill's early-destroy entries (build.sh runs it for UNDERTALE only; pipeline.py's source_wanted agrees).
              'tools/aot/offkill.py': 'undertale',
+             # UT builds reject data that references the trimmed collision region builtins.
+             'tools/aot/hitcheck_guard.py': 'undertale',
              # Smart smoothing's whole-rows list (fontverdict.py imports it for UNDERTALE only).
              'tools/aot/thinrule.py': 'undertale',
              # the dialogue script's case table (build.sh runs it for UNDERTALE Old only; pipeline.py's source_wanted agrees).
@@ -51,7 +62,8 @@ GAME_ONLY.update({
         'platform/3ds/source/z_utold_tile_assets.c', 'platform/3ds/utold_tile_compile.py',
         'platform/3ds/utold_tile_elf.py', 'platform/3ds/utold_tile_place.py')})
 GAME_ONLY.update({path: 'deltarune' for path in (
-    'tools/release/builder/chapters.py', 'tools/release/builder/audio-deltarune.json')})
+    'tools/release/builder/chapters.py', 'tools/release/builder/audio-deltarune.json',
+    'tools/release/manifest-dr.txt')})
 
 
 class Repository:
@@ -214,7 +226,24 @@ def directory_prefix(node, env):
     return value(node, env)
 
 
-def check(repository, manifest, game, entry_points=None, drivers=None):
+def loaded_path(node, aliases):
+    """Explicit file loaders, including aliased imports. Reads feeding exec/compile use read_argument."""
+    if not isinstance(node, ast.Call):
+        return None
+    name = qualified(node.func)
+    head, dot, tail = name.partition('.')
+    name = aliases.get(head, head) + (dot + tail if dot else '')
+    positions = {'importlib.util.spec_from_file_location': (1, 'location'),
+                 'importlib.machinery.SourceFileLoader': (1, 'path'),
+                 'runpy.run_path': (0, 'path_name')}
+    if name not in positions:
+        return None
+    index, keyword = positions[name]
+    return node.args[index] if len(node.args) > index else next(
+        (item.value for item in node.keywords if item.arg == keyword), None)
+
+
+def check(repository, manifest, game, entry_points=None, drivers=None, *, include_exported_python=True):
     """Return all missing inputs with their first importing/opening caller. Does not weaken the content gate."""
     files, required, visited, optional = repository.files, {}, set(), set()
     pending = []
@@ -222,11 +251,18 @@ def check(repository, manifest, game, entry_points=None, drivers=None):
         path = pp.normpath(path).lstrip('/')
         if not relevant(path, game):
             return
+        if path not in manifest and (caller.split(':')[0], path) in OPTIONAL_INPUTS:
+            return
         required.setdefault(path, caller)
         if path.endswith('.py') and path in files and path not in visited:
             pending.append(path)
     for path in ENTRY_POINTS if entry_points is None else entry_points:
         need(path, 'builder entry point')
+    # Tests and standalone tools can load siblings without being reachable from a builder entry point.
+    if include_exported_python:
+        for path in sorted(manifest):
+            if path.endswith('.py'):
+                need(path, 'exported Python file')
     for path in manifest - files:
         required.setdefault(path, 'manifest entry')
     for driver in DRIVERS if drivers is None else drivers:
@@ -262,11 +298,21 @@ def check(repository, manifest, game, entry_points=None, drivers=None):
         searches = ['/' + pp.dirname(path)]
         # Inserts under conditional/platform/function scopes are all considered, so host OS cannot hide an import.
         scoped_nodes = [(node, local) for nodes, local in scopes(tree, env) for node in nodes]
+        aliases = {}
+        for node, _ in scoped_nodes:
+            if isinstance(node, ast.Import):
+                aliases.update({a.asname: a.name for a in node.names if a.asname})
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                aliases.update({a.asname or a.name: node.module + '.' + a.name for a in node.names})
         for node, local in scoped_nodes:
             if isinstance(node, ast.Call) and qualified(node.func) in ('sys.path.insert', 'sys.path.append') and node.args:
                 directory = value(node.args[-1], local)
                 if isinstance(directory, str):
                     searches.insert(0, directory)
+        asserted = {id(child) for node, _ in scoped_nodes
+                    if isinstance(node, ast.Assert) or (isinstance(node, ast.Call) and
+                                                         qualified(node.func).rpartition('.')[2].startswith('assert'))
+                    for child in ast.walk(node)}
         for node, local_env in scoped_nodes:
             if isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
@@ -292,11 +338,25 @@ def check(repository, manifest, game, entry_points=None, drivers=None):
                     need(imported, '%s:%d import' % (path, node.lineno))
             # Inspect reads, rather than path strings in assertions about deliberately excluded source files.
             argument = read_argument(node)
+            loader = loaded_path(node, aliases)
+            if loader is not None:
+                argument = loader
             result = value(argument, local_env) if argument is not None else None
-            if isinstance(result, str) and result.startswith('/'):
-                candidate = pp.normpath(result).lstrip('/')
-                if candidate in files:
+            if isinstance(result, str):
+                if result.startswith('/'):
+                    candidate = pp.normpath(result).lstrip('/')
+                else:
+                    sibling = pp.normpath(pp.join(pp.dirname(path), result))
+                    candidate = result if result in files else sibling
+                # A fixed .py loader/read is a dependency even when the file was removed from the source.
+                if candidate in files or (candidate.endswith('.py') and (loader is not None or argument is not None)):
                     need(candidate, '%s:%d fixed path' % (path, getattr(node, 'lineno', 0)))
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str) and '\n' not in node.value
+                    and id(node) not in asserted and node.value.endswith('.py') and '/' not in node.value):
+                # Fixed sibling subprocess scripts and generator fingerprints (not names inside assertions).
+                candidate = pp.join(pp.dirname(path), node.value)
+                if candidate in files:
+                    need(candidate, '%s:%d sibling script' % (path, node.lineno))
             directory = directory_prefix(node, local_env)
             if isinstance(directory, str) and directory.startswith('/'):
                 candidate = pp.normpath(directory).lstrip('/')
@@ -309,13 +369,6 @@ def check(repository, manifest, game, entry_points=None, drivers=None):
                     for child in files:
                         if child.startswith(candidate + '/') and not child.endswith('.pyc'):
                             need(child, '%s:%d fixed directory' % (path, getattr(node, 'lineno', 0)))
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and '\n' not in node.value:
-                # Fixed repo-relative subprocess paths and sibling generator fingerprints.
-                literal = node.value
-                if literal.endswith('.py') and '/' not in literal:
-                    candidate = pp.join(pp.dirname(path), literal)
-                    if candidate in files:
-                        need(candidate, '%s:%d sibling script' % (path, node.lineno))
     missing = [{'path': p, 'required_by': required[p], 'absent_from_source': p not in files}
                for p in sorted(required) if p not in manifest or p not in files]
     return dict(game=game, missing=missing, python_modules=sorted(visited), required=sorted(required),

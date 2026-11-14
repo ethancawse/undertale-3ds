@@ -20,7 +20,7 @@
 // Built for UNDERTALE Old only (CMakeLists.txt). Late code only and last (late_reserve.ld); no statics.
 #include "wad_versions.h"
 
-#if defined(ENABLE_WAD16)
+#if defined(ENABLE_WAD16) && defined(CTRPORT_AOT)
 
 #include "aot/vm_aot.h"
 #include "collision.h"

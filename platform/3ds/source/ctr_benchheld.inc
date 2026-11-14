@@ -1,8 +1,8 @@
-// ===== Held frames (stallfix, rev 3, 10-27): where each hitch is, in the standard bench, no special build.
+// ===== Held frames (change stallfix, rev 3, 10-27): where each hitch is, in the standard bench, no special build.
 //
 // Presentation v1 (ctr_benchfid_rooms.inc) counts per room visit how long each shown frame stayed up. Here every flip
 // that ended a hold of 3 or more vblanks in a measured window (a frame the player saw for longer than a 30 fps slot) is
-// listed with the frame it came from, so that a developer can run that frame on Azahar (tools/analysis/azframe.py) and look
+// listed with the frame it came from, so that a change can run that frame on Azahar (tools/analysis/azframe.py) and look
 // at it. Included at the end of ctr_benchmark.c and hooked by link-time wraps (end of this file), so no existing
 // function moves. The lines come at the scene's result, before its room lines (cold: nothing is written while
 // measuring):

@@ -2,7 +2,7 @@
 // (platform/3ds/late_reserve.ld): nothing here moves existing code or data, and it runs once per data.win check.
 //
 // UNDERTALE's True Pacifist ending reads credits.txt (its credits loader, the PC branch) for the names that fly at the
-// player in the special thanks; without it that room runs with no names at all, after the whole game (a playtest run,
+// player in the special thanks; without it that room runs with no names at all, after the whole game (maintainer's run,
 // 2026-10-26). DELTARUNE's Chapter 1 reads its English text from lang/lang_en.json (its language loader, after
 // file_exists); the other chapters' lang folders hold only lang_ja.json, so only Chapter 1 is checked. The builder
 // copies both. When the file is missing next to data.win, the player gets the same one-time notice as for a missing

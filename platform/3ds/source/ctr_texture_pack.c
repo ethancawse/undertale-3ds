@@ -54,16 +54,29 @@ static LightLock sdWriteLock;
 
 // "DTX1". Bump PACK_VERSION whenever the conversion or the layout of packed
 // pages changes, so old cache files are rebuilt instead of misread. UT uses
-// versions 5/6 after redpix; DR retains rounded/exact versions 3/4.
+// rounded version 8 after fightpix's shared-tile alpha follow-up; exact remains 6. DR retains versions 3/4.
 #define PACK_MAGIC 0x31585444u
 #if defined(CTRPORT_TEXPREP_UT_CACHE)
 // The generic PC tool packs both games; its parsed WAD version selects the epoch.
-#define PACK_VERSION (CTRPORT_TEXPREP_UT_CACHE ? (packExact ? 6u : 5u) : (packExact ? 4u : 3u))
+#define PACK_VERSION (CTRPORT_TEXPREP_UT_CACHE ? (packExact ? 6u : 8u) : (packExact ? 4u : 3u))
+#define PACK_ROUNDED (!packExact)
 #elif defined(ENABLE_WAD16)
-// UT: rebuild pre-redpix pages and the complete marker through the normal prepare screen.
-#define PACK_VERSION (packExact ? 6u : 5u)
+// UT: rebuild rounded pages and the complete marker through the normal prepare screen.
+// Keep the original byte-load/add instruction shape: 8/6 is no longer consecutive.
+// The only packExact writer refreshes this byte through a cold late hook.
+static uint8_t fightpixVersionDelta __attribute__((section(".data.fightpix_late"))) = 3;
+static void fightpixExactPath(const char* path) __attribute__((noinline, section(".text.fightpix_late")));
+#define PACK_VERSION ((uint32_t) fightpixVersionDelta + 5u)
+// Values 1/3 encode exact/rounded, so the parser reuses its epoch load.
+#define PACK_ROUNDED (fightpixVersionDelta >> 1)
 #else
 #define PACK_VERSION (packExact ? 4u : 3u)
+#define PACK_ROUNDED (!packExact)
+#endif
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_TEXPREP_UT_CACHE)
+#define FIGHTPIX_EXACT_PATH fightpixExactPath
+#else
+#define FIGHTPIX_EXACT_PATH CtrPack_setDataWinPath
 #endif
 #line 60
 // Cache files are a few MB at most; anything bigger is not ours.
@@ -171,7 +184,7 @@ void CtrPack_setExact(bool exact) {
     // The same data.win, in the other folder.
     char path[PACK_PATH_MAX];
     memcpy(path, dataWinPath, sizeof(path));
-    CtrPack_setDataWinPath(path);
+    FIGHTPIX_EXACT_PATH(path);
 }
 
 bool CtrPack_lossy(void) {
@@ -614,7 +627,7 @@ bool CtrPack_parseHeader(const uint8_t* data, size_t size, const CtrPackKey* key
         memcpy(&tile, table + (size_t) i * sizeof(PackTile), sizeof(tile));
         if (tile.format == CTR_TILE_EMPTY) {
             if (tile.size != 0) return false;
-        } else if (tile.format >= CTR_TILE_FORMAT_COUNT || (!packExact && tile.format != CTR_TILE_RGBA5551 && tile.format != CTR_TILE_RGBA8)) {
+        } else if (tile.format >= CTR_TILE_FORMAT_COUNT || (PACK_ROUNDED && tile.format != CTR_TILE_RGBA5551 && tile.format != CTR_TILE_RGBA8)) {
             return false;
         } else if (tile.size == 0) {
             return false;
@@ -1175,7 +1188,7 @@ static bool startBuilder(PackBuilder* b, const CtrPageLayout* layout) {
     return appendBytes(b, &header, sizeof(header)) && appendBytes(b, b->table, tableSize);
 }
 
-static bool packRow(void* user, const CtrPageLayout* layout, int32_t ty, const uint8_t* rows) {
+static bool CTRPORT_FIGHTPIX_KEEP packRow(void* user, const CtrPageLayout* layout, int32_t ty, const uint8_t* rows) {
     PackBuilder* b = user;
     if (!b->started && !startBuilder(b, layout)) return false;
     uint64_t start = nowNanos();
@@ -1191,7 +1204,7 @@ static bool packRow(void* user, const CtrPageLayout* layout, int32_t ty, const u
         b->table[i].format = layout->formats[i];
         if (layout->formats[i] == CTR_TILE_EMPTY) continue;
         uint64_t t0 = nowNanos();
-        CtrPack_convertTileRedpix(b->texels, layout, tx, ty, rows);
+        CtrPack_convertTileFightpix(b->texels, layout, tx, ty, rows);
         uint64_t t1 = nowNanos();
         uint32_t texelBytes = CtrPack_texelBytes((CtrTileFormat) layout->formats[i]);
         size_t compressed = CtrLz_compress(b->texels, CtrPack_tileBytes(layout, i), b->scratch, texelBytes);
@@ -1215,6 +1228,12 @@ static bool packRow(void* user, const CtrPageLayout* layout, int32_t ty, const u
     return ok;
 }
 
+#ifdef CTRPORT_FIGHTPIX_PACK
+static bool fightpixPackRow(void* user, const CtrPageLayout* layout, int32_t ty, const uint8_t* rows)
+    __attribute__((noinline, section(".text.fightpix_late")));
+#define packRow fightpixPackRow
+#endif
+#line 1209
 // Writes a page gathered whole to the temporary file: sized first, so the
 // card allocates it in one go, then written a piece at a time, flushed and
 // closed. The caller holds sdWriteLock.
@@ -2136,3 +2155,109 @@ static void racefixPublish(CtrPackWorker* worker) {
     if (!failed) writeCompleteMarker(&worker->key, worker->pageCount);
     __atomic_store_n(&racefixMarkerBusy, 0, __ATOMIC_RELEASE);
 }
+
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_TEXPREP_UT_CACHE)
+static void fightpixExactPath(const char* path) {
+    fightpixVersionDelta = packExact ? 1 : 3;
+    CtrPack_setDataWinPath(path);
+}
+#endif
+
+// ===[ fightpix: preserve the FIGHT meter's source alpha in rounded caches ]===
+#ifdef CTRPORT_FIGHTPIX_PACK
+#define FIGHTPIX_TEXT __attribute__((noinline, section(".text.fightpix_late")))
+
+// Full unmodified 256x256 source fingerprints: Steam/GOG share the last three tiles.
+// No sprite pixels are stored here. A different atlas or source leaves the old policy intact.
+static const struct { uint8_t tx, ty; uint32_t hash; } fightpixMeterTiles[]
+    __attribute__((section(".rodata.fightpix_late"))) = {
+        {2, 1, 0xe98cd354u}, {2, 1, 0xdceb99b0u},
+        {3, 1, 0x230864b1u}, {3, 1, 0x3c221149u},
+        {1, 2, 0xa52da44eu}, {2, 2, 0x16d3461fu}, {3, 2, 0x2b3e9bbcu},
+    };
+
+static bool fightpixMeterTile(const CtrPageLayout* layout, int32_t tx, int32_t ty, const uint8_t* rows) FIGHTPIX_TEXT;
+static bool fightpixMeterTile(const CtrPageLayout* layout, int32_t tx, int32_t ty, const uint8_t* rows) {
+#ifdef CTRPORT_TEXPREP_UT_CACHE
+    if (!CTRPORT_TEXPREP_UT_CACHE) return false;
+#endif
+    if (packExact || layout->width != 1024 || layout->height != 2048 || layout->tileW != 256 || layout->tileH != 256 ||
+        ty < 1 || ty > 2 || tx < 1 || tx > 3 || (ty == 1 && tx == 1)) return false;
+    uint32_t hash = 2166136261u;
+    for (int y = 0; y < 256; y++) {
+        const uint8_t* p = rows + ((size_t) y * 1024 + tx * 256) * 4;
+        for (int x = 0; x < 256; x++, p += 4) hash = (hash ^ load32(p)) * 16777619u;
+    }
+    for (unsigned i = 0; i < sizeof(fightpixMeterTiles) / sizeof(fightpixMeterTiles[0]); i++) {
+        if (fightpixMeterTiles[i].tx == tx && fightpixMeterTiles[i].ty == ty && fightpixMeterTiles[i].hash == hash) return true;
+    }
+    return false;
+}
+
+void CtrPack_promoteMeterRow(CtrPageLayout* layout, int32_t ty, const uint8_t* rows) FIGHTPIX_TEXT;
+void CtrPack_promoteMeterRow(CtrPageLayout* layout, int32_t ty, const uint8_t* rows) {
+    if (ty < 1 || ty > 2 || layout->tilesX != 4) return;
+    for (int32_t tx = 1; tx < 4; tx++) {
+        int i = ty * layout->tilesX + tx;
+        if (layout->formats[i] == CTR_TILE_RGBA5551 && fightpixMeterTile(layout, tx, ty, rows)) layout->formats[i] = CTR_TILE_RGBA8;
+    }
+}
+
+static inline uint32_t fightpixRoundedChannel(uint32_t v) {
+    uint32_t q = (v * 31 + 127) / 255;
+    return (q << 3) | (q >> 2);
+}
+
+void CtrPack_convertTileFightpix(void* dst, const CtrPageLayout* layout, int32_t tx, int32_t ty, const uint8_t* rows) FIGHTPIX_TEXT;
+void CtrPack_convertTileFightpix(void* dst, const CtrPageLayout* layout, int32_t tx, int32_t ty, const uint8_t* rows) {
+    if (layout->formats[ty * layout->tilesX + tx] != CTR_TILE_RGBA8 || !fightpixMeterTile(layout, tx, ty, rows)) {
+        CtrPack_convertTileRedpix(dst, layout, tx, ty, rows);
+        return;
+    }
+    // The original five tiles were all 5551. Keep their expanded RGB5 and restore source alpha throughout
+    // the promoted tiles, including 86 partial texels of other sprites. Their RGBA8 storage already exists.
+    uint32_t* out = dst;
+    for (int y = 0; y < 256; y++) {
+        const uint8_t* p = rows + ((size_t) y * 1024 + tx * 256) * 4;
+        for (int x = 0; x < 256; x++, p += 4) {
+            uint32_t r = fightpixRoundedChannel(p[0]), g = fightpixRoundedChannel(p[1]), b = fightpixRoundedChannel(p[2]);
+            uint32_t a = p[3];
+            size_t i = ((size_t) (y >> 3) * 32 + (x >> 3)) * 64 + mortonOffset(x & 7, y & 7);
+            out[i] = (r << 24) | (g << 16) | (b << 8) | a;
+        }
+    }
+}
+
+#undef packRow
+static bool fightpixPackRow(void* user, const CtrPageLayout* layout, int32_t ty, const uint8_t* rows) FIGHTPIX_TEXT;
+static bool fightpixPackRow(void* user, const CtrPageLayout* layout, int32_t ty, const uint8_t* rows) {
+    // decodeRows owns this mutable layout; its const callback view prevents ordinary consumers changing it.
+    CtrPack_promoteMeterRow((CtrPageLayout*) layout, ty, rows);
+    return packRow(user, layout, ty, rows);
+}
+#endif
+
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_TEXPREP_UT_CACHE)
+// ===[ firstboot: the work a first time setup has done and has in hand (review decision 11-08, F2) ]===
+
+// For z_loadscreen.c's CtrFirstboot_packRun (UNDERTALE), whose bar never shows more than the work done, the pages
+// being packed now and one average page. Read under the worker's lock, as finishPage and claimPage write it: a page is
+// done once finishPage marks it (packed, found, failed or left to the game's background packing) and in hand while a
+// thread has it claimed. A page put back after a memory wait is pending again, in neither, whatever a thread's search
+// position. Each page's work is its source bytes plus slack. Read only. Global and in its own section, appended in
+// late_reserve.ld after the last late input, so nothing above moves; texprep (CTRPORT_TEXPREP_UT_CACHE) leaves it out.
+void CtrPackWorker_firstbootWork(CtrPackWorker* worker, uint32_t slack, uint64_t* done, uint64_t* inHand)
+    __attribute__((noinline, section(".text_firstboot")));
+void CtrPackWorker_firstbootWork(CtrPackWorker* worker, uint32_t slack, uint64_t* done, uint64_t* inHand) {
+    uint64_t finished = 0, claimed = 0;
+    LightLock_Lock(&worker->lock);
+    for (uint32_t i = 0; worker->pageCount > i; i++) {
+        uint8_t state = worker->pageStates[i];
+        if (state == PAGE_DONE) finished += (uint64_t) worker->blobSizes[i] + slack;
+        else if (state == PAGE_CLAIMED) claimed += (uint64_t) worker->blobSizes[i] + slack;
+    }
+    LightLock_Unlock(&worker->lock);
+    *done = finished;
+    *inHand = claimed;
+}
+#endif

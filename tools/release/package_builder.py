@@ -35,7 +35,7 @@ EXTRA_FILES = ("tools/release/verify_game.py", "tools/release/release_contract.p
                "tools/release/test_builder_platforms.py", "tools/release/builder_platform_probe.py",
                "tools/release/package_builder.py", "tools/release/test_builder_native_data.py",
                "tools/release/test_texcache.py", "tools/release/check_kit_hygiene.py", "tools/release/export_scrub.py",
-               "tools/release/macos_bundle.py", "tools/release/runtime_pins.py",
+               "tools/release/export_pins.py", "tools/release/macos_bundle.py", "tools/release/runtime_pins.py",
                "tools/release/builder-runtime-pins.json",
                "tools/release/macos_runtime_check.py")
 DIRECTORIES = pipeline.SOURCE_DIRS + ("tools/release/builder",)
@@ -198,7 +198,11 @@ def inputs(root, game, runtime=None):
         raise ValueError("Builder game selection marker is missing or ambiguous")
     result[key] = text.encode("utf-8")
     import export_scrub
+    import export_pins
+    source_result = result
     result = export_scrub.scrub_files(result)
+    # The kit builds from cleaned sources too: a content pin must list the cleaned bytes.
+    export_pins.check(source_result, result)
     for rel, data in runtime_files.items():
         result["tools/release/builder/runtime/" + rel] = data
     return result

@@ -5,6 +5,8 @@
 The synthetic bytecode names no game identifiers. The last test checks the real table against the player's UNDERTALE
 data when it is installed (CTRPORT_UNDERTALE_DATA or Steam), and is skipped otherwise.
 """
+import contextlib
+import importlib.util
 import os
 import struct
 import sys
@@ -14,6 +16,27 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import textcase  # noqa: E402
+
+
+@contextlib.contextmanager
+def aot_prepare(directory):
+    """tools/aot/prepare.py loaded by path, and 'prepare' only inside the block. In one pytest process over every
+    tool, tools/audio/prepare.py can already be sys.modules['prepare'] or come first on sys.path, so a bare import may
+    not be this file. sys.modules and sys.path are put back afterwards."""
+    missing = object()
+    old, path = sys.modules.get('prepare', missing), sys.path[:]
+    spec = importlib.util.spec_from_file_location('prepare', os.path.join(directory, 'prepare.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['prepare'] = module
+    try:
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        sys.path[:] = path
+        if old is missing:
+            sys.modules.pop('prepare', None)
+        else:
+            sys.modules['prepare'] = old
 
 PUSHBLTN_V = 0xC305FFFF  # PushBltn.v self.<var>
 
@@ -128,7 +151,10 @@ class TestTable(unittest.TestCase):
 
 class TestRealData(unittest.TestCase):
     def test_undertale(self):
-        import prepare
+        with aot_prepare(HERE) as prepare:
+            self.undertale(prepare)
+
+    def undertale(self, prepare):
         import corpus
         found = prepare.find_data('undertale', None)
         parts = [p for _, p, _ in corpus.parts('undertale', found)] if found else []

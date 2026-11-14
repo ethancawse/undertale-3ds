@@ -1595,8 +1595,8 @@ __attribute__((noipa, used)) UA_TEXT bool CtrUtfadeA_shield(CtrTileReader* reade
 __asm__(".global CtrUtfadeA_finished\n\t.type CtrUtfadeA_finished, %function\n\t.set CtrUtfadeA_finished, CtrUtfadeA_shield");
 #endif
 
-// Once a frame (z_utstall.c's utflPkCollect calls here in place of flowstream's call): btlentry and flowstream, then
-// our finished reads installed, then a fading door's destination read ahead.
+// Once a frame (z_utstall.c's utflPkCollect): collect btlentry and flowstream before the door's reads.
+// A fading door keeps its reads ahead; installs wait for the hidden matched room load.
 UA_TEXT void CtrUtfadeA_collect(CtrTextureCache* cache, bool drop) {
     Runner* runner = cache != nullptr ? cache->runner : nullptr;
     if (runner == nullptr || cache->reader == nullptr) {
@@ -1626,7 +1626,6 @@ UA_TEXT void CtrUtfadeA_collect(CtrTextureCache* cache, bool drop) {
     // door's Alarm 2 done, and the room load checks the room it goes to): stopped before any of its tiles go in.
     int32_t dest = uaDoorDest(runner);
     if (ua.scene != nullptr && dest != ua.dest && (0 <= dest || 0 > runner->pendingRoom)) uaCancel(cache, uaStopDoor);
-    uint64_t start = svcGetSystemTick();
     ua.frameDone = 0;
     for (uint32_t k = 0; BT_READS > k; k++) {
         CtrTileRead* read = ua.read[k];
@@ -1636,9 +1635,8 @@ UA_TEXT void CtrUtfadeA_collect(CtrTextureCache* cache, bool drop) {
             if (bt.read[k] == read) bt.read[k] = nullptr;
             continue;
         }
-        if (!uaFinished(cache->reader, read)) continue;
-        if (!uaInstall(cache, k, true, start)) break;
-        uaRelease(cache, k);
+        // Installing in the collector can miss a visible fade frame. Finished
+        // reads wait for the matched load; visit every slot for ownership cleanup.
     }
     const uint8_t* plan = RoomPlan_utstallPlan(cache);
     if (plan == nullptr) return;
@@ -1698,5 +1696,116 @@ UA_TEXT void CtrUtfadeA_roomLoad(CtrTextureCache* cache, Runner* runner) {
         ua.code = false;
     }
     CtrRoomload_prefetchRoom(cache, runner);
+}
+// ---- bthand (change tilemiss, 11-08; UNDERTALE Old): btlentry's reads handed to the battle room's load.
+// Round 10 of the room plan (change tilemiss) plans the art a battle group's monsters create and switch to, so a group's
+// whole set grew by up to 8 tiles; btlentry installs about 35-44 tiles before the room change (none while the soul
+// flies, round 6), and the rest loaded on the room change frame, with the soul still on the black: 94 -> 187 ms there in
+// group 32 on Azahar Old with the console's memory. Its reads keep reading during the flight, and a finished one's
+// bytes waited in its slot until the room change released them; the room load then read the same tiles again from
+// the SD card, on the game thread.
+// So, when the room load starts (ctr_textures.c's CtrTextures_roomLoadedOld calls here, then utfade A's, then the room
+// load) and the room is the one btlentry read ahead for (its plan scene's room: the battle room, or a story battle's),
+// btlentry's reads still in flight are waited for (BH_WAIT_MS at most: the room load would read the same bytes on the
+// game thread), and each finished one's tiles not yet in go in with no time limit, by btlentry's install rules with
+// nothing evicted (texture budget, and linear memory above BT_FLOOR after the tile); then the read is released, as the
+// room load's releaseReads would. The room change frame isn't presented: the black and the soul stay on screen through
+// it. A tile without room is left to the room load, which evicts for its whole set as before. A read of a door (utfade
+// A's, in the same slot) is left to utfade A.
+// Textures only, as btlentry: no game state, script, timing the game sees or RNG changes; every tile is the same texels
+// whenever it loads. Its own appended late sections (late_reserve.ld); it calls none of this file's static functions
+// (a new caller would change how they compile) and reaches utfade A's room load by its assembler name.
+#define BH_TEXT __attribute__((noinline, section(".text.bthand_late")))
+#define BH_CONST __attribute__((aligned(4), section(".rodata.bthand_in_text")))
+#define BH_WAIT_MS 1000u // the most the room load waits for btlentry's reads in flight
+void CtrBtHand_roomLoad(CtrTextureCache* cache, Runner* runner);
+void bhUtfadeRoomLoad(CtrTextureCache* cache, Runner* runner) __asm__("CtrUtfadeA_roomLoad");
+static const char bhLog[] BH_CONST =
+    "Battle entry (bthand): group %ld: %u of %u reads finished at the room load (waited %.1f ms), %u more tiles in "
+    "(%u without room left to the load), %.1f ms in all\n";
+
+BH_TEXT void CtrBtHand_roomLoad(CtrTextureCache* cache, Runner* runner) {
+    RoomPlanScene s;
+    if (bt.scene != nullptr && bt.cache == cache && cache->reader != nullptr && runner != nullptr &&
+        (memcpy(&s, bt.scene, sizeof(s)), s.room == (uint32_t) runner->currentRoomIndex)) {
+        uint64_t start = svcGetSystemTick(), tick = SYSCLOCK_ARM11 / 1000u;
+        for (;;) {
+            bool waiting = false;
+            for (uint32_t k = 0; BT_READS > k; k++) {
+                CtrTileRead* read = bt.read[k];
+                if (read != nullptr && ua.read[k] != read && cache->pages[bt.page[k]].read == read && !uaFinished(cache->reader, read))
+                    waiting = true;
+            }
+            if (!waiting || svcGetSystemTick() - start >= (uint64_t) BH_WAIT_MS * tick) break;
+            svcSleepThread(UA_SLICE_NS);
+        }
+        uint64_t waited = svcGetSystemTick() - start;
+        uint32_t reads = 0, finished = 0, in = 0, noRoom = 0;
+        for (uint32_t k = 0; BT_READS > k; k++) {
+            CtrTileRead* read = bt.read[k];
+            if (read == nullptr || ua.read[k] == read) continue;
+            CtrPage* page = &cache->pages[bt.page[k]];
+            if (page->read != read) continue; // the cache took it
+            reads++;
+            if (!uaFinished(cache->reader, read)) continue; // left to the room load's releaseReads
+            finished++;
+            const CtrPageLayout* layout = &read->view.layout;
+            bool allowed = CtrMemory_allowRelief(false);
+            if (read->headerOk && !page->layoutKnown && (page->tiles = calloc((size_t) (layout->tilesX * layout->tilesY), sizeof(CtrTile))) != nullptr) {
+                page->width = layout->width;
+                page->height = layout->height;
+                page->tileW = layout->tileW;
+                page->tileH = layout->tileH;
+                page->tilesX = layout->tilesX;
+                page->tilesY = layout->tilesY;
+                page->layoutKnown = true;
+            }
+            CtrMemory_allowRelief(allowed);
+            if (read->headerOk && page->layoutKnown && !page->packInfo && page->width == layout->width && page->height == layout->height &&
+                page->tileW == layout->tileW && page->tileH == layout->tileH && page->tilesX == layout->tilesX && page->tilesY == layout->tilesY) {
+                for (int32_t i = 0; page->tilesX * page->tilesY > i; i++) {
+                    CtrTile* each = &page->tiles[i];
+                    each->format = layout->formats[i];
+                    each->offset = read->view.tileOffset[i];
+                    each->size = read->view.tileSize[i];
+                    each->checksum = read->view.tileChecksum[i];
+                }
+                page->formatsKnown = true;
+                page->packInfo = true;
+                page->cacheFile = CTR_CACHE_FILE_VALID;
+            }
+            for (uint32_t t = bt.next[k]; CTR_PAGE_MAX_TILES > t; t++) {
+                if (!read->want[t]) continue;
+                CtrTile* tile = page->packInfo && t < (uint32_t) (page->tilesX * page->tilesY) ? &page->tiles[t] : nullptr;
+                if (tile == nullptr || tile->valid || tile->reserved || !read->headerOk || read->data == nullptr ||
+                    read->tileAt[t] == CTR_READ_NOT_READ || tile->offset != read->view.tileOffset[t] || tile->size != read->view.tileSize[t])
+                    continue;
+                uint32_t bytes = (uint32_t) page->tileW * (uint32_t) page->tileH * CtrPack_texelBytes((CtrTileFormat) tile->format);
+                uint32_t linear = linearSpaceFree();
+                if (cache->residentBytes + bytes > cache->budgetBytes || BT_FLOOR > linear || linear - BT_FLOOR < bytes ||
+                    !C3D_TexInit(&tile->tex, (u16) page->tileW, (u16) page->tileH, CtrPack_gpuFormat((CtrTileFormat) tile->format))) {
+                    noRoom++;
+                    continue;
+                }
+                if (tile->tex.size != bytes || BT_FLOOR > linearSpaceFree()) { // utfade A's r220 F1: the floor after it too
+                    C3D_TexDelete(&tile->tex);
+                    noRoom++;
+                    continue;
+                }
+                C3D_TexSetFilter(&tile->tex, GPU_NEAREST, GPU_NEAREST);
+                C3D_TexSetWrap(&tile->tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+                tile->reserved = true; // btlentry's btReserve: installTile takes it as allocated
+                page->bytes += bytes;
+                cache->residentBytes += bytes;
+                in += CtrTextures_btlentryInstall(cache, page, (int32_t) t);
+            }
+            CtrTextures_btlentryInstall(cache, page, -1); // released: frees a reserved texture whose install failed
+            bt.read[k] = nullptr;
+        }
+        if (reads > 0)
+            logInfo(bhLog, (long) bt.group, (unsigned) finished, (unsigned) reads, (double) waited / (double) tick, (unsigned) in,
+                    (unsigned) noRoom, (double) (svcGetSystemTick() - start) / (double) tick);
+    }
+    bhUtfadeRoomLoad(cache, runner);
 }
 #endif

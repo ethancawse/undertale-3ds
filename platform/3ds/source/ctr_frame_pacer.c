@@ -1,5 +1,5 @@
 #include "ctr_frame_pacer.h"
-
+#include "ctr_fpsbox.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,7 +28,7 @@
 // flips have been shown (and let go here, see CtrPacer_screenReady). Held
 // flips are let go from the game screen's vblank callback (pacebot, end).
 // A frame is still shown after its CPU and GPU time together, though.
-// Low input delay is invariant (decided 2026-10-28). A missed deadline
+// Low input delay is invariant (maintainer, 2026-10-28). A missed deadline
 // drops or extends that picture; it never arms an extra vblank for later
 // pictures. Ordinary slots may realign after an actual late flip. Explicit
 // frame-skip and Auto display-rate choices keep their existing schedules.
@@ -1086,7 +1086,7 @@ __attribute__((section(".text.frametrace_late"))) void CtrPacer_ftState(uint32_t
 }
 #endif
 
-// ===[ pacebot: the game screen's vblanks (pacer, late code) ]===
+// ===[ pacebot: the game screen's vblanks (change pacer, late code) ]===
 //
 // GSP shows a screen's present from that screen's own vblank: VBlank0 the top, VBlank1 the bottom (docs/3ds-hardware.md,
 // "The bottom screen flips on its own vblank"). With the game on the bottom screen the pacer keeps to VBlank1, so a
@@ -1198,7 +1198,7 @@ PACEBOT_TEXT void __wrap_CtrPacer_setGameScreen(gfxScreen_t screen) {
     extern uint8_t CtrScreens_pacerGame;
     extern __typeof__(pace) pacebotPace __asm__("pace");
     LightLock_Lock(&pacebotPace.lock);
-    uint32_t shift = __real_C3D_FrameCounter((int) screen) - __real_C3D_FrameCounter((int) CtrScreens_pacerGame);
+    uint32_t shift = __real_C3D_FrameCounter((int) screen) - CtrFpsbox_moveOrigin((int) CtrScreens_pacerGame);
     pacebotPace.slotStart += shift;
     pacebotPace.holdUntil += shift;
     pacebotPace.frameDue += shift;
@@ -1327,5 +1327,591 @@ __attribute__((noinline, noclone, noipa, section(".text_pacealign"))) void __wra
     extern __typeof__(pace) cutPace __asm__("pace");
     __real_CtrPacer_frameBegun();
     if (cutPace.skipping && CtrBench_paceCutDue()) paceCut(false, 0, 0);
+}
+#endif
+
+// heldslow (change scanout, logaudit G1, 2026-11-08; UNDERTALE only, CTRPORT_HELDSLOW): a record of each game-screen
+// image that stayed up longer than its frames' slots planned, printed by z_heldslow.c every [perf] window.
+// - The frame's hand-over to the GPU (CtrHeldslow_transfer: ctr_gpu_queue.c's C3D_FrameEnd calls it by name for each
+//   screen's display transfer, on the main thread, after the frame before is done) notes, for the game screen, the
+//   frame (main.c's liveRunner, read by a function appended there), its room, and the vblanks its predecessor was
+//   planned to stay up: the slot length (the larger of this frame's and the last handed-over one's) times the slots
+//   since, counting the unshown frames the pacer meant (CtrPacer_skipSlot's half rate, counted as ctr_renderer.c's
+//   call comes here by name; every step at Auto's levels, which show by a beat), and at Auto's levels the vblank a
+//   beat moved this frame (CtrPacer_frameEnding's due, one past its slot) less the one it moved the frame before. A
+//   frame skip's catch-up, a late frame, a room change's unshown frame and its load are not planned, so they make
+//   records. All of it is read then, on the main thread, never from the main thread's state when the GPU is done:
+//   by then the main thread may be in the next frame (c26rev7 F1).
+// - The frames' swap (CtrScreens_pacerSwap, wrapped: ctr_argui.c's branch to it is the only caller), when the GPU is
+//   done with the frame, takes that note for the flip that shows it (the next hand-over comes only after this swap).
+//   A swap with no new hand-over since the last has no plan and makes no record.
+// - The flips (this file's calls of __real_gfxScreenSwapBuffers, pointed here by name in CMakeLists.txt) compare the
+//   game screen's flip totals with the last: one counted flip more, and the vblanks it added (how long the image it
+//   replaces stayed up) over plan, is a record. The totals count nothing across a suspend or a screen change, so
+//   those make none. The flips run with the lock held.
+// State on the heap (allocated at the first game-screen hand-over); one pointer in the late data (4 bytes).
+#ifdef CTRPORT_HELDSLOW
+#include <stdlib.h>
+#include "runner.h"
+#include "ctr_startup_clock.h"
+#include "z_heldslow.h"
+
+#define HS_CODE __attribute__((noinline, noipa, optimize("Os"), section(".text_heldslow")))
+
+typedef struct {
+    // The frame swapped to the game screen last (pending its flip) and the one on it, with their rooms.
+    uint32_t pendFrame, shownFrame;
+    int16_t pendRoom, shownRoom;
+    uint32_t pendPlanned;
+    // The game screen's flip totals at its last flip.
+    uint32_t flips;
+    uint64_t sum;
+    // The last hand-over's note (main thread; read by the swap after it): its frame, room and plan, and its count.
+    uint32_t subFrame, subPlanned, subSeq, takenSeq;
+    int16_t subRoom;
+    // Main thread only: pace.frameIndex, the slot length, Auto's levels and the vblank its beat moved the frame, at the
+    // last hand-over; and CtrPacer_skipSlot's unshown frames since.
+    uint32_t subIndex, subLength, subAdj, skips;
+    bool subLevel;
+    uint32_t heldCount, heldMore;
+    // Whether a flip of the game screen has come by since the state was made (the frame on it is known).
+    bool primed;
+    CtrHeldRecord held[CTR_HELD_RECORDS];
+    // G2 (main thread only): the ticks at this frame's step, draw, audio and present marks; the slot start seen at the
+    // last wait mark and that mark's tick; the slow frames kept since the last take, and how many more.
+    uint64_t tick[4], seenSlot, lastWait;
+    uint32_t slowCount, slowMore;
+    // The suspends, sleeps and their ends (CtrHeldslow_onApt, the APT thread or the main one) and the count at the last
+    // wait mark; the hook's cookie.
+    uint32_t pauses, seenPauses;
+    aptHookCookie aptCookie;
+    CtrSlowRecord slow[CTR_SLOW_RECORDS];
+    // The bottom's count (ctr_gpu_queue.c's appended code, either thread, under the GPU queue's lock; atomic for the
+    // take): its transfers into the buffer on screen let through outside its blank, dlgblank's forced goes, and
+    // whether it gave up holding them for the session.
+    uint32_t bottomOutside, bottomForced;
+    bool bottomGaveUp;
+    // movehold (the end of this file; under the pacer's lock): at the game screen's last counted-from flip, its shown
+    // vblank, the flip totals, the suspend/sleep count, which screen it was, and whether these are set.
+    bool mhValid;
+    uint8_t mhGame;
+    uint32_t mhShown, mhFlips, mhPauses;
+} CtrHeldslowState;
+
+// NULL until the first game-screen swap; 1 if that allocation failed (nothing is recorded then).
+CtrHeldslowState* CtrHeldslow_state __attribute__((section(".data.heldslow_late"))) = NULL;
+Runner* CtrHeldslow_liveRunner(void); // main.c's liveRunner (its appended late text)
+void CtrHeldslow_realSwap(gfxScreen_t screen, bool hasStereo) __asm__("__real_gfxScreenSwapBuffers");
+void __real_CtrScreens_pacerSwap(gfxScreen_t screen, bool hasStereo);
+void __wrap_CtrScreens_pacerSwap(gfxScreen_t screen, bool hasStereo);
+void CtrHeldslow_swap(gfxScreen_t screen, bool hasStereo);
+void CtrHeldslow_skipSlot(void);
+
+void CtrHeldslow_transfer(C3D_FrameBuf* frameBuf, gfxScreen_t screen, gfx3dSide_t side, u32 transferFlags);
+void CtrHeldslow_onApt(APT_HookType hook, void* param);
+
+// The main thread's hand-over of a frame's display transfer (C3D_FrameEnd, after its wait for the frame before): for
+// the game screen's (left) one, the frame's note. The state is made at the first.
+HS_CODE void CtrHeldslow_transfer(C3D_FrameBuf* frameBuf, gfxScreen_t screen, gfx3dSide_t side, u32 transferFlags) {
+    extern __typeof__(pace) hsPace __asm__("pace");
+    CtrHeldslowState* s = CtrHeldslow_state;
+    if (screen == (gfxScreen_t) CtrScreens_pacerGame && side == GFX_LEFT && hsPace.ready &&
+        s != (CtrHeldslowState*) 1) {
+        uint32_t length = hsPace.slotLength;
+        if (s == NULL) {
+            s = calloc(1, sizeof(*s));
+            if (s != NULL) {
+                LightLock_Lock(&hsPace.lock);
+                s->flips = hsPace.flipTotals.flips;
+                s->sum = hsPace.flipTotals.sum;
+                LightLock_Unlock(&hsPace.lock);
+                s->subIndex = hsPace.frameIndex - 1;
+                s->subLength = length;
+                s->shownRoom = s->pendRoom = s->subRoom = -1;
+                CtrHeldslow_state = s;
+                // As the other hooks made after start-up (z_sleepflush.c's): no parameter; the hook reads the state.
+                aptHook(&s->aptCookie, CtrHeldslow_onApt, NULL);
+            } else {
+                CtrHeldslow_state = (CtrHeldslowState*) 1;
+            }
+        }
+        if (s != NULL) {
+            uint32_t slot = length > s->subLength ? length : s->subLength;
+            // Auto's levels: the vblank the beat moved this frame's due (CtrPacer_frameEnding), at most one.
+            uint32_t adj = hsPace.levelMode && hsPace.frameDue - hsPace.slotStart - length == 1u ? 1u : 0u;
+            uint32_t planned = hsPace.levelMode || s->subLevel
+                                   ? slot * (hsPace.frameIndex - s->subIndex) + adj - s->subAdj
+                                   : slot * (1 + s->skips);
+            if (1 > (int32_t) planned) planned = 1;
+            Runner* runner = CtrHeldslow_liveRunner();
+            s->subPlanned = planned;
+            s->subFrame = runner != NULL ? (uint32_t) runner->frameCount : 0;
+            s->subRoom = runner != NULL ? (int16_t) runner->currentRoomIndex : -1;
+            s->subIndex = hsPace.frameIndex;
+            s->subLength = length;
+            s->subLevel = hsPace.levelMode;
+            s->subAdj = adj;
+            s->skips = 0;
+            // The GPU queue's lock (taken after this, before the GPU has the frame) hands it to the swap's thread.
+            __atomic_store_n(&s->subSeq, s->subSeq + 1u, __ATOMIC_RELEASE);
+        }
+    }
+    C3D_FrameBufTransfer(frameBuf, screen, side, transferFlags);
+}
+
+// When the GPU is done with a frame (its queue's finish, the GSP thread): the game screen's swap takes its note.
+HS_CODE void __wrap_CtrScreens_pacerSwap(gfxScreen_t screen, bool hasStereo) {
+    extern __typeof__(pace) hsPace __asm__("pace");
+    CtrHeldslowState* s = CtrHeldslow_state;
+    if (screen == (gfxScreen_t) CtrScreens_pacerGame && hsPace.ready && s != NULL && s != (CtrHeldslowState*) 1) {
+        uint32_t seq = __atomic_load_n(&s->subSeq, __ATOMIC_ACQUIRE);
+        // Read by the flip under the pacer's lock, which the swap takes before any flip of this frame.
+        if (seq != s->takenSeq) {
+            s->takenSeq = seq;
+            s->pendPlanned = s->subPlanned;
+            s->pendFrame = s->subFrame;
+            s->pendRoom = s->subRoom;
+        } else {
+            s->pendPlanned = UINT32_MAX;
+        }
+    }
+    __real_CtrScreens_pacerSwap(screen, hasStereo);
+}
+
+// APT's suspends (the HOME Menu, from aptMainLoop on the main thread), sleeps (APT's own thread) and their ends: G2
+// counts no frame they fall in (CtrHeldslow_mark).
+HS_CODE void CtrHeldslow_onApt(APT_HookType hook, void* param) {
+    (void) param;
+    CtrHeldslowState* s = CtrHeldslow_state;
+    if (hook != APTHOOK_ONEXIT && s != NULL && s != (CtrHeldslowState*) 1) {
+        __atomic_fetch_add(&s->pauses, 1u, __ATOMIC_RELEASE);
+    }
+}
+
+HS_CODE void CtrHeldslow_skipSlot(void) {
+    CtrPacer_skipSlot();
+    CtrHeldslowState* s = CtrHeldslow_state;
+    if (s != NULL && s != (CtrHeldslowState*) 1) s->skips++;
+}
+
+// The flips' way in (CtrHeldslow_swap, the name CMake gives this file's __real_gfxScreenSwapBuffers calls) is one
+// assembler branch to the body: to the compiler this file's flips still call an outside function, as before. A call to
+// a function defined here would change the order the compiler emits this file's own functions in, and move them.
+#ifdef __3DS__
+__asm__(".pushsection .text_heldslow,\"ax\",%progbits\n.global CtrHeldslow_swap\n.type CtrHeldslow_swap,%function\n"
+        "CtrHeldslow_swap:\n\tb CtrHeldslow_swapBody\n.size CtrHeldslow_swap,4\n.popsection\n");
+#endif
+void CtrHeldslow_swapBody(gfxScreen_t screen, bool hasStereo);
+
+// Called with the lock held, but for the swaps before the pacer is ready (which count no flips).
+HS_CODE void CtrHeldslow_swapBody(gfxScreen_t screen, bool hasStereo) {
+    extern __typeof__(pace) hsPace __asm__("pace");
+    CtrHeldslowState* s = CtrHeldslow_state;
+    if (s != NULL && s != (CtrHeldslowState*) 1 && screen == (gfxScreen_t) CtrScreens_pacerGame) {
+        uint32_t flips = hsPace.flipTotals.flips;
+        uint64_t sum = hsPace.flipTotals.sum;
+        uint32_t vblanks = (uint32_t) (sum - s->sum);
+        if (s->primed && flips == s->flips + 1 && vblanks > s->pendPlanned) {
+            if (CTR_HELD_RECORDS > s->heldCount) {
+                CtrHeldRecord* r = &s->held[s->heldCount++];
+                r->frame = s->pendFrame;
+                r->room = s->pendRoom;
+                r->shownFrame = s->shownFrame;
+                r->shownRoom = s->shownRoom;
+                r->fromVblank = hsPace.lastShown - vblanks;
+                r->vblanks = vblanks > 0xFFFFu ? 0xFFFFu : (uint16_t) vblanks;
+                r->planned = s->pendPlanned > 0xFFFFu ? 0xFFFFu : (uint16_t) s->pendPlanned;
+                r->ms = (uint32_t) (CtrStartup_elapsedUs() / 1000u);
+            } else {
+                s->heldMore++;
+            }
+        }
+        s->flips = flips;
+        s->sum = sum;
+        s->shownFrame = s->pendFrame;
+        s->shownRoom = s->pendRoom;
+        s->primed = true;
+    }
+    CtrHeldslow_realSwap(screen, hasStereo);
+}
+
+HS_CODE uint32_t CtrHeldslow_takeHeld(CtrHeldRecord* out, uint32_t* more) {
+    extern __typeof__(pace) hsPace __asm__("pace");
+    CtrHeldslowState* s = CtrHeldslow_state;
+    *more = 0;
+    if (s == NULL || s == (CtrHeldslowState*) 1) return 0;
+    LightLock_Lock(&hsPace.lock);
+    uint32_t count = s->heldCount;
+    memcpy(out, s->held, count * sizeof(*out));
+    *more = s->heldMore;
+    s->heldCount = s->heldMore = 0;
+    LightLock_Unlock(&hsPace.lock);
+    return count;
+}
+
+// heldslow G2 (change scanout, logaudit G2, 2026-11-08): a record of each frame whose main thread took over 33.4 ms, from
+// its slot's start (pace.slotTick, the pacer's own "main" time) to the next frame's wait, split at main.c's watchdog
+// marks (its calls of CtrWatchdog_mark come here by name, CMakeLists.txt): before the step, the step, the draw, audio
+// and the room change, present and the frame's end. A frame that waited for no slot (CtrPacer_skipSlot's half rate
+// keeps slotTick) counts from the last frame's wait. A frame a suspend (the HOME Menu) or a sleep falls in makes no
+// record: an APT hook (registered with the state) counts them. Printed with the held images (z_heldslow.c); kept in
+// the same state. Four ticks a frame at the step, draw, audio and present marks and one at the wait;
+// CTRPORT_SLOWLOG_ONETICK keeps only the wait's (the frame's total, no parts).
+#include "ctr_watchdog.h"
+
+void CtrHeldslow_mark(const char* phase);
+
+static HS_CODE uint16_t slowTenths(uint64_t ticks) {
+    uint64_t tenths = ticks * 10u / (uint64_t) CPU_TICKS_PER_MSEC;
+    return tenths >= CTR_SLOW_UNKNOWN ? (uint16_t) (CTR_SLOW_UNKNOWN - 1u) : (uint16_t) tenths;
+}
+
+HS_CODE void CtrHeldslow_mark(const char* phase) {
+    extern __typeof__(pace) hsPace __asm__("pace");
+    CtrWatchdog_mark(phase);
+    CtrHeldslowState* s = CtrHeldslow_state;
+    if (s == NULL || s == (CtrHeldslowState*) 1) return;
+    char c = phase[0];
+#ifndef CTRPORT_SLOWLOG_ONETICK
+    if (c == 's' && phase[1] == 't') { s->tick[0] = svcGetSystemTick(); return; } // "step"
+    if (c == 'd') { s->tick[1] = svcGetSystemTick(); return; }                    // "draw"
+    if (c == 'a') { s->tick[2] = svcGetSystemTick(); return; }                    // "audio update"
+    if (c == 'p') { s->tick[3] = svcGetSystemTick(); return; }                    // "present"
+#endif
+    if (c != 'w') return;                                                          // "wait for frame"
+    uint64_t now = svcGetSystemTick();
+    uint64_t slot = hsPace.slotTick;
+    uint64_t start = slot != s->seenSlot ? slot : s->lastWait;
+    s->seenSlot = slot;
+    s->lastWait = now;
+    // A suspend (the HOME Menu), a sleep or their end since the last wait: the time blocked in them is no frame's
+    // work, so this frame makes no record (c26rev7 F3). The next counts from its own slot or this wait, after them.
+    uint32_t pauses = __atomic_load_n(&s->pauses, __ATOMIC_ACQUIRE);
+    if (pauses != s->seenPauses) {
+        s->seenPauses = pauses;
+        return;
+    }
+    if (start == 0) return;
+    uint64_t busy = now - start;
+    if ((uint64_t) (33.4 * CPU_TICKS_PER_MSEC) >= busy) return;
+    if (CTR_SLOW_RECORDS > s->slowCount) {
+        CtrSlowRecord* r = &s->slow[s->slowCount++];
+        Runner* runner = CtrHeldslow_liveRunner();
+        r->frame = runner != NULL ? (uint32_t) runner->frameCount : 0;
+        r->room = runner != NULL ? (int16_t) runner->currentRoomIndex : -1;
+        r->ms = (uint32_t) (CtrStartup_elapsedUs() / 1000u);
+        r->tenths[0] = slowTenths(busy);
+#ifndef CTRPORT_SLOWLOG_ONETICK
+        // Each part only if its marks came in order this frame (a tick before the start is an earlier frame's).
+        uint64_t at[6] = { start, s->tick[0], s->tick[1], s->tick[2], s->tick[3], now };
+        for (int i = 0; 5 > i; i++) {
+            r->tenths[1 + i] = at[i] >= start && at[i + 1] >= at[i] ? slowTenths(at[i + 1] - at[i]) : CTR_SLOW_UNKNOWN;
+        }
+#else
+        for (int i = 0; 5 > i; i++) r->tenths[1 + i] = CTR_SLOW_UNKNOWN;
+#endif
+    } else {
+        s->slowMore++;
+    }
+}
+
+HS_CODE uint32_t CtrHeldslow_takeSlow(CtrSlowRecord* out, uint32_t* more) {
+    CtrHeldslowState* s = CtrHeldslow_state;
+    *more = 0;
+    if (s == NULL || s == (CtrHeldslowState*) 1) return 0;
+    uint32_t count = s->slowCount;
+    memcpy(out, s->slow, count * sizeof(*out));
+    *more = s->slowMore;
+    s->slowCount = s->slowMore = 0;
+    return count;
+}
+
+// The bottom's count: from ctr_gpu_queue.c's appended code, after dlgblank let a transfer into the bottom's shown buffer
+// through without its blank (a forced go, or any go once it gave up), and for z_heldslow.c's line.
+HS_CODE void CtrHeldslow_noteBottom(bool forced, bool outside, bool gaveUp) {
+    CtrHeldslowState* s = CtrHeldslow_state;
+    if (s == NULL || s == (CtrHeldslowState*) 1) return;
+    if (outside) __atomic_fetch_add(&s->bottomOutside, 1u, __ATOMIC_RELAXED);
+    if (forced) __atomic_fetch_add(&s->bottomForced, 1u, __ATOMIC_RELAXED);
+    if (gaveUp) __atomic_store_n(&s->bottomGaveUp, true, __ATOMIC_RELAXED);
+}
+
+HS_CODE void CtrHeldslow_takeBottom(uint32_t* outside, uint32_t* forced, bool* gaveUp) {
+    CtrHeldslowState* s = CtrHeldslow_state;
+    *outside = *forced = 0;
+    *gaveUp = false;
+    if (s == NULL || s == (CtrHeldslowState*) 1) return;
+    *outside = __atomic_exchange_n(&s->bottomOutside, 0u, __ATOMIC_RELAXED);
+    *forced = __atomic_exchange_n(&s->bottomForced, 0u, __ATOMIC_RELAXED);
+    *gaveUp = __atomic_load_n(&s->bottomGaveUp, __ATOMIC_RELAXED);
+}
+#endif // CTRPORT_HELDSLOW
+
+// ===[ movehold: the game picture a screen move kept up, counted as its frame's (change bonepulse, 11-09) ]===
+//
+// (UNDERTALE only, late code.) A screen move (ctr_renderer.c's two moves, at an Options toggle) rebases the pacer to the
+// new game screen's vblanks (__wrap_CtrPacer_setGameScreen), which clears lastShownValid. The first frame flipped on
+// the new screen then counted nothing. So the picture that stayed up across the move, from its last flip on the old
+// screen to that first one (CtrScreens_pacerShow's handover presents of it in between), was in no [pace] bucket and
+// made no [held] record (bstoggle: frame 900, 75 ms, 0 counted flips at 901).
+// - Every swap from this file's flips comes here first: CMake points this file's __real_gfxScreenSwapBuffers here, and
+//   this goes on to heldslow's CtrHeldslow_swap. The flips count before they swap, with the lock held once the pacer
+//   is ready.
+// - At each game-screen swap while lastShownValid holds, heldslow's state keeps the screen, its shown vblank
+//   (lastShown), the flip totals and heldslow's suspend/sleep count.
+// - The first game flip after a rebase has lastShownValid again, unchanged totals, a different game screen and no
+//   suspend or sleep since. Its interval runs from the kept vblank, moved to the new screen's count by the two screens'
+//   frame counters now (as the rebase moves the schedule), to this flip's. It goes into the window's shown buckets and
+//   the flip totals as flip() would count it, before heldslow's swap reads them: so a move that kept the picture up
+//   past its slot makes a [held] record, and [pace] shows it in its buckets.
+// - pacerShow's handover presents are part of that interval, not frames: lastShownValid is clear while they run.
+// - Counting only: lastShown, lastShownValid and the schedule are untouched. The totals' readers (bench, fpsbox,
+//   spikerec, rosalina's log, heldslow) only report. A move with no heldslow state (before the first game hand-over,
+//   or a failed allocation) counts nothing, as before.
+// State: 16 bytes at the end of heldslow's heap state; no late data.
+#ifdef CTRPORT_HELDSLOW
+#define MH_CODE __attribute__((noinline, noipa, optimize("Os"), section(".text.movehold_late")))
+void CtrMovehold_swapBody(gfxScreen_t screen, bool hasStereo);
+// The flips' way in, as heldslow's: one assembler branch, so to the compiler this file's flips still call an outside
+// function and its own functions keep their order.
+#ifdef __3DS__
+__asm__(".pushsection .text.movehold_late,\"ax\",%progbits\n.global CtrMovehold_swap\n.type CtrMovehold_swap,%function\n"
+        "CtrMovehold_swap:\n\tb CtrMovehold_swapBody\n.size CtrMovehold_swap,4\n.popsection\n");
+#endif
+
+// countFlip's sums, kept here so the flips' own calls of it compile as before.
+static MH_CODE void moveHoldCount(CtrFlipStats* f, uint32_t vblanks) {
+    f->count[vblanks > CTR_FLIP_BUCKETS ? CTR_FLIP_BUCKETS - 1 : vblanks - 1]++;
+    f->flips++;
+    f->sum += vblanks;
+    f->sumSq += (uint64_t) vblanks * vblanks;
+}
+
+// Called with the lock held, but for the swaps before the pacer is ready (which count nothing).
+MH_CODE void CtrMovehold_swapBody(gfxScreen_t screen, bool hasStereo) {
+    extern __typeof__(pace) mhPace __asm__("pace");
+    CtrHeldslowState* s = CtrHeldslow_state;
+    uint8_t game = CtrScreens_pacerGame;
+    if (s != NULL && s != (CtrHeldslowState*) 1 && mhPace.ready && mhPace.lastShownValid &&
+        screen == (gfxScreen_t) game) {
+        uint32_t pauses = __atomic_load_n(&s->pauses, __ATOMIC_ACQUIRE);
+        uint32_t flips = mhPace.flipTotals.flips;
+        if (s->mhValid && game != s->mhGame && flips == s->mhFlips && pauses == s->mhPauses) {
+            uint32_t from = s->mhShown + (__real_C3D_FrameCounter((int) game) - __real_C3D_FrameCounter((int) s->mhGame));
+            uint32_t vblanks = mhPace.lastShown - from;
+            if (vblanks > 0u && 0x10000u > vblanks) {
+                mhPace.stats.shown[vblanks >= 4u ? 3u : vblanks - 1u]++;
+                moveHoldCount(&mhPace.stats.flips, vblanks);
+                moveHoldCount(&mhPace.flipTotals, vblanks);
+                if (mhPace.levelMode) {
+                    moveHoldCount(&mhPace.levelTotals.flips[mhPace.flipLevel], vblanks);
+                    if (vblanks > mhPace.levelTotals.maxVblanks[mhPace.flipLevel]) {
+                        mhPace.levelTotals.maxVblanks[mhPace.flipLevel] = vblanks;
+                    }
+                }
+                flips++;
+            }
+        }
+        s->mhShown = mhPace.lastShown;
+        s->mhFlips = flips;
+        s->mhPauses = pauses;
+        s->mhGame = game;
+        s->mhValid = true;
+    }
+    CtrHeldslow_swap(screen, hasStereo);
+}
+#endif // CTRPORT_HELDSLOW (movehold)
+
+// ===[ bottomflip: the second screen's held flip on its own vblank, and both screens' real shown counts ]===
+//
+// (change bonepulse, 11-09; UNDERTALE only, late code; docs/3ds-hardware-2.md, "The bottom screen's held flip".)
+// With the game on top, a frame that also flips a double-buffered bottom screen has both flips held for the slot's
+// last vblank when it is done before it, and the top's vblank callback let both go
+// (releaseHeld). GSP applies a present at its own screen's vblank, and VBlank1 comes 0.02-1.36 ms after VBlank0
+// (docs/3ds-hardware.md, "Both screens' vblanks fire together"). So a held bottom flip mostly beat GSP's VBlank1 and
+// showed one vblank early, now and then lost and showed on time, while a frame done after that vblank (not held)
+// showed on time too: whenever frames moved between held and not held, the bottom screen showed frames for 3 then 1
+// vblanks while the top kept 2/2/2. The pacer counts only the game screen's flips, so no [pace] or [held] line saw it.
+// - A held bottom flip let go from the top's vblank callback (the GSP event thread, the game on top) is kept here and
+//   presented from the bottom's own vblank callback, which runs right after: it shows a vblank later, with the top's.
+//   Until then the bottom reads as present-pending, so nothing writes its buffers (the GPU queue's transfers,
+//   bottompaint's copy and every screen-ready wait ask gspIsPresentPending, through the pacer or directly). Forced
+//   releases on other threads (the next frame's frame end, suspend) present at once, as before. A newer present
+//   for the bottom replaces a kept one.
+// - Each screen's presents are counted, and at each bottom vblank a present no longer pending has been shown: the
+//   vblanks it stayed up (1/2/3/4+), judder (an interval 2 or more from the one before, a 3-then-1 pair) and presents
+//   replaced before they showed. One [screens] line per [pace] window that showed anything on the bottom screen. The
+//   top's counts are the real ones that the pacer's inferred shown counts stand for.
+// - State on the heap, made on the main thread when the renderer starts the pacer (CtrPacer_init), before the first
+//   frame, so every frame is covered; one pointer in the late data. A failed allocation leaves it off (old presents).
+//   (Before 11-09's review: made at the first [pace] window, so the first window's frames were not covered.)
+// Hooks are link wraps: gspPresentBuffer and gspIsPresentPending (libctru), the bottom's vblank callback's lock call
+// (CtrBottomPaint_vblank1Lock, ctr_gpu_queue.c's onVBlank1, after it counts the vblank), CtrGpu_takePaceStats
+// (CtrPacer_logStats's call, for the line) and CtrPacer_init (ctr_renderer.c's call, for the state; DELTARUNE's
+// pixfix wraps it there, and this is UNDERTALE only). No existing body changes.
+#if defined(CTRPORT_BOTTOMFLIP) && defined(__3DS__)
+#include <stdlib.h>
+#define BF_CODE __attribute__((noinline, optimize("Os"), section(".text.bottomflip_late")))
+#define BF_CONST __attribute__((aligned(4), section(".rodata.bottomflip_in_text")))
+
+typedef struct {
+    uint32_t shown[4], judder, replaced, same;
+} CtrBfCounts;
+
+typedef struct {
+    // Presents per screen (any thread, atomic) and the count seen at the last bottom vblank.
+    uint32_t seq[2], seen[2];
+    // Bottom vblanks counted here; each screen's last shown one and the interval before.
+    uint32_t vblanks, lastShown[2], prevInterval[2];
+    bool lastShownValid[2];
+    // The kept bottom present (pace's lock held to change it).
+    bool kept;
+    unsigned keptSwap;
+    const void* keptA;
+    const void* keptB;
+    u32 keptStride, keptMode;
+    // Each screen's last presented buffer: a present of the same one is a single buffer's (the transfer, not the
+    // present, changes the picture).
+    const void* lastFb[2];
+    // The GSP event thread (seen at the bottom's vblank callback).
+    Thread gspThread;
+    // This window's counts (pace's lock held), and the held flips moved to the bottom's vblank.
+    CtrBfCounts counts[2];
+    uint32_t moved;
+} CtrBfState;
+
+// NULL until the pacer starts; 1 if that allocation failed.
+CtrBfState* CtrBottomflip_state __attribute__((section(".data.bottomflip_late"))) = NULL;
+
+static const char bfLine[] BF_CONST =
+    "[screens] top shown for 1/2/3/4+ vblanks %lu/%lu/%lu/%lu, judder %lu, replaced %lu, single buffer %lu; bottom shown "
+    "for 1/2/3/4+ vblanks %lu/%lu/%lu/%lu, judder %lu, replaced %lu, single buffer %lu; %lu held bottom flips moved to its vblank\n";
+
+static inline CtrBfState* bfReady(void) {
+    CtrBfState* s = CtrBottomflip_state;
+    return s == NULL || s == (CtrBfState*) 1 ? NULL : s;
+}
+
+bool __real_gspIsPresentPending(unsigned screen);
+bool __wrap_gspIsPresentPending(unsigned screen);
+BF_CODE bool __wrap_gspIsPresentPending(unsigned screen) {
+    CtrBfState* s = bfReady();
+    if (s != NULL && screen == GFX_BOTTOM && __atomic_load_n(&s->kept, __ATOMIC_ACQUIRE)) return true;
+    return __real_gspIsPresentPending(screen);
+}
+
+bool __real_gspPresentBuffer(unsigned screen, unsigned swap, const void* fb_a, const void* fb_b, u32 stride, u32 mode);
+bool __wrap_gspPresentBuffer(unsigned screen, unsigned swap, const void* fb_a, const void* fb_b, u32 stride, u32 mode);
+BF_CODE bool __wrap_gspPresentBuffer(unsigned screen, unsigned swap, const void* fb_a, const void* fb_b, u32 stride, u32 mode) {
+    extern uint8_t CtrScreens_pacerGame;
+    extern __typeof__(pace) bfPace __asm__("pace");
+    CtrBfState* s = bfReady();
+    if (s == NULL || screen > GFX_BOTTOM) return __real_gspPresentBuffer(screen, swap, fb_a, fb_b, stride, mode);
+    if (fb_a == s->lastFb[screen]) __atomic_fetch_add(&s->counts[screen].same, 1u, __ATOMIC_RELAXED);
+    s->lastFb[screen] = fb_a;
+    if (screen == GFX_BOTTOM && CtrScreens_pacerGame == GFX_TOP && bfPace.ready && bfPace.heldBottom && !bfPace.holding &&
+        s->gspThread != nullptr && threadGetCurrent() == s->gspThread) {
+        // releaseHeld from the top's vblank callback, pace's lock held: keep it for the bottom's vblank.
+        if (s->kept) s->counts[GFX_BOTTOM].replaced++;
+        s->keptSwap = swap;
+        s->keptA = fb_a;
+        s->keptB = fb_b;
+        s->keptStride = stride;
+        s->keptMode = mode;
+        __atomic_store_n(&s->kept, true, __ATOMIC_RELEASE);
+        s->moved++;
+        return false;
+    }
+    // A newer bottom present replaces a kept one; callers without pace's lock (screen setup) count atomically.
+    bool replaced = screen == GFX_BOTTOM && __atomic_exchange_n(&s->kept, false, __ATOMIC_ACQ_REL);
+    if (replaced || __real_gspIsPresentPending(screen)) __atomic_fetch_add(&s->counts[screen].replaced, 1u, __ATOMIC_RELAXED);
+    bool r = __real_gspPresentBuffer(screen, swap, fb_a, fb_b, stride, mode);
+    __atomic_add_fetch(&s->seq[screen], 1u, __ATOMIC_RELEASE);
+    return r;
+}
+
+void __real_CtrBottomPaint_vblank1Lock(LightLock* gate);
+void __wrap_CtrBottomPaint_vblank1Lock(LightLock* gate);
+BF_CODE void __wrap_CtrBottomPaint_vblank1Lock(LightLock* gate) {
+    extern __typeof__(pace) bfPace __asm__("pace");
+    CtrBfState* s = bfReady();
+    if (s != NULL) {
+        s->gspThread = threadGetCurrent();
+        LightLock_Lock(&bfPace.lock);
+        s->vblanks++;
+        for (unsigned i = 0; 2 > i; i++) {
+            uint32_t q = __atomic_load_n(&s->seq[i], __ATOMIC_ACQUIRE);
+            if (q == s->seen[i] || __real_gspIsPresentPending(i)) continue;
+            s->seen[i] = q;
+            if (s->lastShownValid[i]) {
+                uint32_t iv = s->vblanks - s->lastShown[i];
+                if (iv > 0) {
+                    CtrBfCounts* c = &s->counts[i];
+                    c->shown[iv >= 4u ? 3u : iv - 1u]++;
+                    if (s->prevInterval[i] != 0 && (iv >= s->prevInterval[i] + 2u || s->prevInterval[i] >= iv + 2u)) c->judder++;
+                    s->prevInterval[i] = iv;
+                }
+            }
+            s->lastShown[i] = s->vblanks;
+            s->lastShownValid[i] = true;
+        }
+        if (s->kept) {
+            // Shown at the next bottom vblank, with the top's flip of the same frame.
+            __atomic_store_n(&s->kept, false, __ATOMIC_RELEASE);
+            __real_gspPresentBuffer(GFX_BOTTOM, s->keptSwap, s->keptA, s->keptB, s->keptStride, s->keptMode);
+            __atomic_add_fetch(&s->seq[GFX_BOTTOM], 1u, __ATOMIC_RELEASE);
+        }
+        LightLock_Unlock(&bfPace.lock);
+    }
+    __real_CtrBottomPaint_vblank1Lock(gate);
+}
+
+void __real_CtrPacer_init(void);
+void __wrap_CtrPacer_init(void);
+BF_CODE void __wrap_CtrPacer_init(void) {
+    if (CtrBottomflip_state == NULL) {
+        CtrBfState* made = (CtrBfState*) calloc(1, sizeof(CtrBfState));
+        __atomic_store_n(&CtrBottomflip_state, made != NULL ? made : (CtrBfState*) 1, __ATOMIC_RELEASE);
+    }
+    __real_CtrPacer_init();
+}
+
+void __real_CtrGpu_takePaceStats(CtrGpuPaceStats* out);
+void __wrap_CtrGpu_takePaceStats(CtrGpuPaceStats* out);
+BF_CODE void __wrap_CtrGpu_takePaceStats(CtrGpuPaceStats* out) {
+    extern __typeof__(pace) bfPace __asm__("pace");
+    __real_CtrGpu_takePaceStats(out);
+    CtrBfState* s = bfReady();
+    if (s == NULL) return;
+    CtrBfCounts c[2];
+    LightLock_Lock(&bfPace.lock);
+    memcpy(c, s->counts, sizeof(c));
+    memset(s->counts, 0, sizeof(s->counts));
+    uint32_t moved = s->moved;
+    s->moved = 0;
+    LightLock_Unlock(&bfPace.lock);
+    const CtrBfCounts* b = &c[GFX_BOTTOM];
+    if (b->shown[0] + b->shown[1] + b->shown[2] + b->shown[3] + b->replaced + b->same + moved == 0) return;
+    logInfo(bfLine, (unsigned long) c[0].shown[0], (unsigned long) c[0].shown[1], (unsigned long) c[0].shown[2],
+            (unsigned long) c[0].shown[3], (unsigned long) c[0].judder, (unsigned long) c[0].replaced, (unsigned long) c[0].same, (unsigned long) b->shown[0],
+            (unsigned long) b->shown[1], (unsigned long) b->shown[2], (unsigned long) b->shown[3], (unsigned long) b->judder,
+            (unsigned long) b->replaced, (unsigned long) b->same, (unsigned long) moved);
+}
+#endif // CTRPORT_BOTTOMFLIP
+
+// A port menu has already presented this iteration by copying at its screen's
+// vblank. Its schedule must not then follow the paused game's late GPU flip.
+// Use the existing per-frame keep-schedule policy, as utfadeBlack does above;
+// waitForSlot/levelWait overwrites it before the next frame, including resume.
+// Only the qualified final Options/Legal/Credits and setup-notice copies call
+// here. No GPU, event or extra vblank wait; keep the copy's scan-safe wait.
+// The assembler alias keeps every pre-existing pacer body byte-identical.
+#if defined(ENABLE_WAD16) && defined(__3DS__)
+void* CtrPortmenu_copy(void* to, const void* from, size_t bytes);
+__attribute__((noinline, noipa, optimize("Os"), section(".text.late.noticescroll_menucopy")))
+void* CtrPortmenu_copy(void* to, const void* from, size_t bytes) {
+    extern __typeof__(pace) menuCopyPace __asm__("pace");
+    menuCopyPace.catchUp = true;
+    return memcpy(to, from, bytes);
 }
 #endif

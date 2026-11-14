@@ -120,5 +120,8 @@ void CtrTileReader_release(CtrTileReader* reader, CtrTileRead* read);
 // thread is stopped, replacing a write still waiting. Takes data over (it
 // is freed once written).
 void CtrTileReader_writeFile(CtrTileReader* reader, const char* path, uint8_t* data, size_t size);
+// closehand (UNDERTALE Old): hands a file the game thread is done with to the thread, which closes it once no read
+// is queued; closes it at once if the thread can't take it (none running, quitting, its list full, a crowded card).
+void CtrTileReader_closeOrHand(CtrTileReader* reader, FILE* f);
 
 #endif

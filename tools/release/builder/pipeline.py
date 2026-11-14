@@ -50,7 +50,9 @@ SOURCE_FILES = ("engine/LICENSE", "VERSION", "LICENSE", "THIRD_PARTY_NOTICES",
                 "docs/release/credits-port.txt", "tools/release/sfxpack-versions.json",
                 # CMake's renderer launcher imports both helpers, including on builds that delegate unchanged.
                 "tools/analysis/vine_old_observer_compile.py", "tools/analysis/vine_old_parent.py",
-                "tools/analysis/vine_extract.py")
+                "tools/analysis/vine_extract.py",
+                # layout S3's scene table builder and its names-only spec (build.sh, UNDERTALE only: source_wanted).
+                "tools/layout/build_scenes.py", "tools/layout/undertale-scenes.json")
 SKIP_DIRS = {"__pycache__", ".git", "build", "scratch"}
 SKIP_SUFFIXES = (".pyc", ".win", ".ogg", ".cia", ".3dsx", ".elf", ".o", ".a", ".dat")
 
@@ -199,15 +201,36 @@ def _wanted(name):
 
 def source_wanted(relative, game=None):
     """Inputs used by the 3DS build, excluding desktop backends and private test data."""
+    if relative.replace('\\', '/') in {
+            'platform/3ds/source/' + name for name in (
+                'z_bottomframe.c', 'z_bottomframe_core.c', 'z_bottomframe_assets.c',
+                'z_bottomframe_settings.c', 'bottomframe_core.h', 'bottomframe_assets.h', 'ctr_bottomframe.h')}:
+        return False  # Retired client: excluded from every target by CMake.
     if path_hygiene.is_junk(relative):
         return False
+    if relative.replace("\\", "/") == "tools/buildcache/test_aacslot_compile.py":
+        return False  # Host regression uses the private linked-ELF proof helper.
+    if relative.replace("\\", "/") == "tools/buildcache/test_portmenu_compile.py":
+        return False  # Host regression loads a private experiment helper; production adapter still ships.
+    normalized = relative.replace("\\", "/")
+    mexdlg_fixtures = 'tools/buildcache/fixtures/mexdlg'
+    if (normalized == 'tools/buildcache/test_mexdlg_native_compile.py'
+            or normalized == mexdlg_fixtures or normalized.startswith(mexdlg_fixtures + '/')):
+        return False  # Checkout-only native-M regressions; the test needs Git history.
+    if relative.replace("\\", "/") in (
+            'tools/buildcache/mexdlg_compile.py', 'tools/buildcache/mexdlg_d12_compile.py',
+            'tools/buildcache/test_mexdlg_d12_retired.py',
+            'platform/3ds/mexdlg_d12_m.cmake'):
+        return False  # Historical change measurement controls; no production build dependency.
     if relative.replace("\\", "/") == "tools/release/builder/undertale-3ds-builder.cmd":
         return False  # Packages have one game-specific launcher at their root.
     parts = relative.replace("\\", "/").split("/")
     game_only = {
+        'platform/3ds/source/z_bootline_console.c': 'undertale',
         'platform/3ds/aacout.cmake': 'undertale',
         'tools/buildcache/aacout_compile.py': 'undertale',
         'tools/buildcache/test_aacout_compile.py': 'undertale',
+        'tools/buildcache/aacslot_compile.py': 'undertale',
         'platform/3ds/source/ctr_aac_debug_bits.c': 'deltarune',
         'platform/3ds/source/ctr_audio_decoder_aac.inc': 'deltarune',
         # dlgtop's compiler adapter and retained slots are selected only by UT CMake.
@@ -264,13 +287,15 @@ def source_wanted(relative, game=None):
         return len(parts) == 3 and (parts[-1] in (
             "builtin_audit.py", "btnprompt.py", "corpus.py", "data_versions.py", "escape.py", "fontverdict.py",
             "gmlaot.py", "itemverdict.py", "inkart.py", "prepare.py", "padrefs.py", "aot_select.py", "typed.py", "typed_priority.py",
-            "loadscreen_art.py", "late_numeric.py", "private_game.py",
+            "loadscreen_art.py", "late_numeric.py", "private_game.py", "aacslot.py", "aacslot.json",
             "symverdict.py", "stglyphs.py", "stpack.py", "stasrtext.py", "credits.py", "weirdshd.py")
             # dskip.py: UNDERTALE Old's covered-star key (build.sh runs it for UNDERTALE only).
             or (parts[-1] in ("pixgrid.py", "btnprompt_build.py", "stmenu.py", "dskip.py") and game != "deltarune")
             or (parts[-1] in ("gog_smart.py", "gog-smart-1.08.json") and game != "deltarune")
             # offkill.py: the early destroy's entries (build.sh runs it; UNDERTALE only).
             or (parts[-1] == "offkill.py" and game != "deltarune")
+            # hitcheck_guard.py: reject UT data that calls the trimmed region builtins.
+            or (parts[-1] == "hitcheck_guard.py" and game != "deltarune")
             # thinrule.py: Smart smoothing's whole-rows list, which fontverdict.py's build mode writes for UNDERTALE only.
             or (parts[-1] == "thinrule.py" and game != "deltarune")
             # textcase.py: the dialogue script's case table (build.sh runs it; UNDERTALE Old only).
@@ -297,6 +322,9 @@ def source_wanted(relative, game=None):
         return len(parts) == 3 and (parts[-1] in (
             'stage.py', 'prepare.py', 'mono_sfx.py', 'convert.py', 'dspadpcm.py', 'dspadpcm.c', 'FORMAT.md')
             or parts[-1] == 'sfxpack.py' and game != 'deltarune')
+    if parts[:2] == ["tools", "layout"]:
+        # layout S3's scene table: build.sh resolves the names-only spec against the player's data.win (UNDERTALE only).
+        return game != "deltarune" and parts[2:] in (["build_scenes.py"], ["undertale-scenes.json"])
     if parts[:2] == ["tools", "roomplan"]:
         if parts[2:] == ['build_sfxplan.py']:
             return game != 'deltarune'
@@ -304,11 +332,11 @@ def source_wanted(relative, game=None):
         if parts[2:] == ['voice_census.py']:
             return game != 'deltarune'
         # The room plan's build step (build.sh runs build_plan.py) and this game's committed records.
-        # codeclose.py: build_plan.py imports it (UNDERTALE's in-play code closure; codeclose).
+        # codeclose.py: build_plan.py imports it (UNDERTALE's in-play code closure; change codeclose).
         # records/sounds/: the sound plan records (build_sfxplan.py, UNDERTALE).
         if parts[2] == "records" and (len(parts) == 4 or (len(parts) == 5 and parts[3] == "sounds")):
             return game is None or parts[-1].startswith(game + "-")
-        # phases/: the phase plan's records (build_phases.py, utflowey).
+        # phases/: the phase plan's records (build_phases.py, change utflowey).
         if parts[2] == "phases" and len(parts) == 4:
             return game is None or parts[-1].startswith(game + "-")
         # New DELTARUNE builds derive tracks.dtp from these reviewed records.
@@ -372,6 +400,9 @@ def source_wanted(relative, game=None):
             return game != "deltarune"
         # credfix's exit trail (build.sh exittrail): an o2DS panic diagnosis build, never a release.
         if parts == ["platform", "3ds", "source", "z_exittrail.c"]:
+            return False
+        # The ballast test build (build.sh ballast, dsplan B10.2): never a release, so never in a player's kit.
+        if parts == ["platform", "3ds", "source", "z_ballast.c"]:
             return False
         # Half-resolution art (build.sh halfart, products.HALFART): UNDERTALE's Old 3DS build only. Its draw-scale
         # census (build.sh halfcensus) is a developer test.

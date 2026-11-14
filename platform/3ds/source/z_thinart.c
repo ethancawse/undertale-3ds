@@ -163,7 +163,7 @@ static TA_TEXT void taRoomUpdate(Renderer* r) {
     Runner* runner = r->runner;
     int32_t group = runner == nullptr ? -1 : RoomPlan_utstallGroup(runner);
     bool active = runner != nullptr && runner->currentRoom != nullptr &&
-        strcmp(runner->currentRoom->name, taRoom) == 0 && (group == 80 || group == 81);
+        strcmp(runner->currentRoom->name, taRoom) == 0 && (group == 57 || group == 80 || group == 81);
     if (!active) {
         if (ta.owner == r) {
             if (ta.copy != nullptr) {
@@ -245,7 +245,7 @@ static TA_LINK void taMakeRoom(Renderer* r) {
     bool active = runner != nullptr && runner->currentRoom != nullptr && strcmp(runner->currentRoom->name, taSlotRoom) == 0;
     if (active) {
         int32_t group = RoomPlan_utstallGroup(runner);
-        active = group == 80 || group == 81;
+        active = group == 57 || group == 80 || group == 81;
     }
     if (!active || *(uint8_t*) ((char*) r + Smartiv_layout[8]) != Smartiv_layout[9]) {
         ta.wait = false;

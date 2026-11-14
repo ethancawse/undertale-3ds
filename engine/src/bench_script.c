@@ -825,7 +825,7 @@ bool BenchScript_runNow(BenchScript* script, Runner* runner, const char* line) {
     return ok;
 }
 
-// benchcut (flowend r30, GO 11-01; bench only): a kept `set` whose source object has no instance this
+// benchcut (change flowend r30, GO 11-01; bench only): a kept `set` whose source object has no instance this
 // frame (ut_flowey's keeps that put the heart on a SOUL's ACT button, once that button is gone: up to 12 such keeps
 // a frame by the fight's end) failed in evaluate's firstInstanceOf with no write done, then formatted an error twice
 // (vsnprintf into a buffer, vsnprintf again and a strdup) that BenchScript_tick freed unread. The same test is made

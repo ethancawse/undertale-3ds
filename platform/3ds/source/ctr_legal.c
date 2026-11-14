@@ -797,3 +797,14 @@ __asm__(".pushsection .text.late.noticescroll,\"ax\",%progbits\n"
         ".size CtrNoticescroll_clear,.-CtrNoticescroll_clear\n.popsection\n");
 #endif
 #endif
+
+#if defined(ENABLE_WAD16) && !defined(ENABLE_WAD17)
+#include "ctr_noticescroll_cache.inc"
+#ifdef __3DS__
+_Static_assert(sizeof(nsDocument) == 60, "noticescroll record cache uses 60 B paid data, no .bss");
+__asm__(".pushsection .text.late.noticescroll_cache,\"ax\",%progbits\n"
+        ".balign 4\n.global CtrNoticescroll_openOriginal\n.type CtrNoticescroll_openOriginal,%function\n"
+        "CtrNoticescroll_openOriginal:\n b luiOpen\n"
+        ".size CtrNoticescroll_openOriginal,.-CtrNoticescroll_openOriginal\n.popsection\n");
+#endif
+#endif

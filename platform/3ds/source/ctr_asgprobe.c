@@ -1,6 +1,6 @@
-// asgprobe (build argument asgprobe, default off, test only, utasgore): hardware attribution of the step and draw
+// asgprobe (build argument asgprobe, default off, test only, change utasgore): hardware attribution of the step and draw
 // time of busy frames (UNDERTALE's Asgore flame helix) with the ARM11 performance counters, read through Luma3DS's
-// svcControlPerformanceCounter (SVC 0x3E; the stub is icsim's). Nothing in the normal text changes: the link sends
+// svcControlPerformanceCounter (SVC 0x3E; the stub is change icsim's). Nothing in the normal text changes: the link sends
 // main.c's Runner_step and Runner_drawViews calls to the wrappers here (late text), and the drawSprite entry of the
 // renderer's own vtable (the bottom of every table chain) is wrapped at the first draw.
 //
@@ -8,8 +8,8 @@
 // and around Runner_drawViews. Every other round of six frames also reads the counters around every 4th drawSprite
 // call, which splits the draw into the sprite calls and the rest (those frames are summed apart: the reads cost time).
 // Frames are grouped by how many drawSprite calls they made (bucket edges 64, 192, 320, 448). Every 300 frames each
-// (bucket, set, sampled) group with frames logs its running sums as an "[asgprobe]" line; an analysis
-// script (not included) reads them.
+// (bucket, set, sampled) group with frames logs its running sums as an "[asgprobe]" line; change utasgore's
+// host probe reads them.
 //
 // Without counters (Azahar, or a refusal) it still counts frames and sprites and logs zeros for the events.
 #ifdef CTRPORT_ASG_PROBE

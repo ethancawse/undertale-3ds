@@ -24,7 +24,9 @@
 #                              of the sound feeder or the pack fails; separate directory)
 #                              [audio-convert] (private DSP-ADPCM objects and SD indexes; runtime adapter selection pending)
 #                              [surfcensus] (logs how every game surface is made, bound and drawn out; separate build directory)
-#                              [offdraw] (offdraw: instance census and offdraw.txt kill/hash-skip experiments; separate build directory)
+#                              [vramcensus] (per-bank VRAM free and largest gap at the bench's own samples, diag/
+#                              ctr_vram_census.c; separate build directory, never a release)
+#                              [offdraw] (change offdraw: instance census and offdraw.txt kill/hash-skip experiments; separate build directory)
 #                              [halfcensus] (logs the largest scale each texture item is drawn at in one room; test only,
 #                              separate build directory)
 #                              [pklindiag] (UNDERTALE o3ds: logs a linear free-block census and the linear copies' accounting at
@@ -66,6 +68,8 @@
 #                              separate build directory, never a release)
 #                              [bfprobe] (main-thread waits in a sweep, [bfprobe] log lines; ctr_benchmark.c's end;
 #                              separate build directory, never a release)
+#                              [dimlightdiag] (UT sandboxed Options/FPS/late faults and optical markers;
+#                              separate build directory, never a release)
 #                              [arenalog] (UNDERTALE o3ds: the audio arena with peak, fallback and heap-lock census lines;
 #                              separate build directory, never a release)
 #                              [asgprobe] (UNDERTALE test only: ARM11 counters and per-frame drawSprite ticks, source/ctr_asgprobe.c;
@@ -74,12 +78,15 @@
 #                              tile loads, written to frametrace.txt after the window; source/z_frametrace.c;
 #                              separate build directory, never a release)
 #                              [flowdiag] (UNDERTALE: every draw-time tile load and floor guard decision with free
-#                              linear and heap memory and plan membership; source/z_flowdiag.c; flowstream round 3;
+#                              linear and heap memory and plan membership; source/z_flowdiag.c; change flowstream round 3;
 #                              separate build directory, never a release)
 #                              [titandiag] (per-frame Step/Draw/other split and the costliest events of slow bench frames,
 #                              in log.txt as [td] lines; source/z_titandiag.c; separate build directory, never a release)
 #                              [exittrail] (the exit's steps after the last log line, each in labboot.txt with its thread;
 #                              source/z_exittrail.c; o2DS kernel panic diagnosis, separate build directory, never a release)
+#                              [ballast] (UNDERTALE: --ini ballast_* keys hold the second-screen features' heap, linear,
+#                              CPU and GPU budget; source/z_ballast.c, dsplan B10.2; separate build directory, test builds
+#                              only, never a release)
 #                              [nowriterfront|writerfront-fallback|writerfront-count] (UNDERTALE Old: the dialogue writer's
 #                              hand front off, every Draw through its fallback, or front/fallback counts in the log;
 #                              source/z_writerfront.c; separate build directories, test builds only)
@@ -107,10 +114,21 @@
 # build/3ds-<game>-<target>-rosalow<word>/.
 # "utfadeprobe" (UNDERTALE, tests only) writes the game screen's picture during each room change's load to the game
 # folder (source/z_utfade.c), and builds into build/3ds-<game>-<target>-utfadeprobe/; never a Release build.
+# "bsplace" (UNDERTALE, tests only): L switches the split battle's preset A between the box centred with the whole
+# bottom (b) and the box centred with the HP line and buttons left at the bottom (c) (source/z_battlesplit.c), and
+# builds into build/3ds-<game>-<target>-bsplace/; never a Release build.
+# "labcrash" (UNDERTALE, tests only; 11-11, devdiet): labguard's own fault injection, --labguard-crash=<kind> and
+# --lab-crash stall-<step> (source/z_labguard.c's LG_CRASHTEST), for labguard's console tests; the plain dev build has
+# neither. Builds into build/3ds-<game>-<target>-labcrash/; never a Release build (no labguard there).
 # "bubblecheck" (UNDERTALE, with smalltext) logs every Crisp line, any font, that comes closer to its bubble's or the
 # battle box's right edge than PC's ink allows, leaves the screen where PC's stays on it, or comes closer to the line
 # below it than PC's (source/z_smalltext.c; tools/analysis/bubblecheck_report.py makes the table), for tours and
 # benches, and builds into build/3ds-<game>-<target>-bubblecheck/; never a Release build.
+# "touchtest" (UNDERTALE, tests only; source/z_battletouch.c): touchscript.txt in the game folder drives the stylus in
+# battles ("<frame> pen <x> <y>" / "<frame> up", frames from the battle's first), even during a test, and each stylus
+# frame goes to the log as a [touch] line; builds into build/3ds-<game>-<target>-touchtest/; never a Release build.
+# "touchqueue" enables touchtest with packaged RomFS scene/tape reads, for self-contained shared-queue rows.
+# "nametrace" opts naming campaigns into per-frame naming records; general touchtest/queue builds omit them.
 # The room plan (tools/roomplan/build_plan.py): each room's first tiles, from the committed records resolved against the
 # game data, go into the RomFS (romfs:/roomplan/undertale.dtp; DELTARUNE: <chapter folder>.dtp for each chapter with a
 # record). Without game data or a record for it the build goes on without one. "roomplan=off" builds without it into build/3ds-<game>-<target>-noplan/.
@@ -185,11 +203,12 @@ adpcmpack=     # ON, OFF, or empty: the default (ON in UNDERTALE Old, OFF elsewh
 adpcmfault=0   # TEST ONLY: 1 tail, 2 seam, 3 pool, 4 ring (the allocation that fails)
 audio_convert=OFF
 surfcensus=OFF
+vramcensus=OFF
 offdraw=OFF
 halfcensus=OFF
 pklindiag=OFF
 pklinstress=OFF
-halfart=        # point, box or balanced: the half-resolution art prototype (flowhalf)
+halfart=        # point, box or balanced: the half-resolution art prototype (change flowhalf)
 natsurf6wide=OFF
 cia80=OFF
 knightnew_history=   # ON, OFF, or empty: the default (ON in DELTARUNE New, no effect elsewhere)
@@ -227,7 +246,12 @@ shots=OFF
 rosaprobe=OFF
 rosalow=
 utfadeprobe=OFF
+bsplace=OFF
+labcrash=OFF
 bubblecheck=OFF
+touchtest=OFF
+touchqueue=OFF
+nametrace=OFF
 roomplan=ON
 roomplan_rec=OFF
 phase_layout= # opt-in audited linker script, empty: standard toolchain layout
@@ -244,12 +268,14 @@ uttc_mode=     # uttc (change uthunt T1, test words): empty, OFF (uttc=off) or F
 dprank_mode=   # dprank (change uthunt, test words): empty, OFF (dprank=off: always the scan) or DIAG (dprank-diag)
 testpage=OFF   # testpage: one more 4 KiB page of UNDERTALE late code (measurement builds only, never a release)
 bfprobe=OFF
+dimlightdiag=OFF
 arenalog=OFF
 frametrace=OFF
 asgprobe=OFF
 flowdiag=OFF
 titandiag=OFF
 exittrail=OFF
+ballast=OFF
 writerfront=ON
 repack_test= # test builds: a folder of <data.win folder>/ repack files for the RomFS (ctr_repack.inc)
 repack_plans=OFF # repackplans: with repacktest, the plans leave out the tiles repack remaps (measured option A)
@@ -290,6 +316,7 @@ for arg in "$@"; do
         adpcmfault=ring) adpcmfault=4 ;;
         audio-convert) audio_convert=ON ;;
         surfcensus) surfcensus=ON ;;
+        vramcensus) vramcensus=ON ;;
         offdraw) offdraw=ON ;;
         halfcensus) halfcensus=ON ;;
         pklindiag) pklindiag=ON ;;
@@ -331,7 +358,12 @@ for arg in "$@"; do
         rosaprobe) rosaprobe=ON ;;
         rosalow=*) rosalow=${arg#rosalow=} ;;
         utfadeprobe) utfadeprobe=ON ;;
+        bsplace) bsplace=ON ;;
+        labcrash) labcrash=ON ;;
         bubblecheck) bubblecheck=ON ;;
+        touchtest) touchtest=ON ;;
+        touchqueue) touchtest=ON; touchqueue=ON ;;
+        nametrace) touchtest=ON; nametrace=ON ;;
         pacer-observe) pacer_observe=ON ;;
         pacer) pacer_observe=ON; pacer_rule=ON ;;
         pacer-csv-diag) pacer_csv_diag=ON ;;
@@ -353,12 +385,14 @@ for arg in "$@"; do
         dprank=off) dprank_mode=OFF ;;
         dprank-diag) dprank_mode=DIAG ;;
         bfprobe) bfprobe=ON ;;
+        dimlightdiag) dimlightdiag=ON ;;
         arenalog) arenalog=ON ;;
         frametrace) frametrace=ON ;;
         asgprobe) asgprobe=ON ;;
         flowdiag) flowdiag=ON ;;
         titandiag) titandiag=ON ;;
         exittrail) exittrail=ON ;;
+        ballast) ballast=ON ;;
         nowriterfront) writerfront=OFF ;;
         writerfront-fallback) writerfront=FALLBACK ;;
         writerfront-count) writerfront=COUNT ;;
@@ -564,6 +598,9 @@ fi
 if [ "$surfcensus" = ON ]; then
     build="$build-surfcensus"
 fi
+if [ "$vramcensus" = ON ]; then
+    build="$build-vramcensus"
+fi
 if [ "$offdraw" = ON ]; then
     build="$build-offdraw"
 fi
@@ -634,8 +671,27 @@ fi
 if [ "$utfadeprobe" = ON ]; then
     build="$build-utfadeprobe"
 fi
+if [ "$bsplace" = ON ]; then
+    build="$build-bsplace"
+fi
+if [ "$labcrash" = ON ]; then
+    if [ "$game" != undertale ] || [ -n "${CTRPORT_RELEASE_SOURCE_URL:-}" ] || [ "$exittrail" = ON ]; then
+        echo "ERROR: labcrash is an UNDERTALE test build: never a release (CTRPORT_RELEASE_SOURCE_URL) or with exittrail" >&2
+        exit 2
+    fi
+    build="$build-labcrash"
+fi
 if [ "$bubblecheck" = ON ]; then
     build="$build-bubblecheck"
+fi
+if [ "$touchtest" = ON ]; then
+    build="$build-touchtest"
+fi
+if [ "$touchqueue" = ON ]; then
+    build="$build-touchqueue"
+fi
+if [ "$nametrace" = ON ]; then
+    build="$build-nametrace"
 fi
 if [ "$roomplan" = OFF ]; then
     build="$build-noplan"
@@ -668,6 +724,13 @@ fi
 if [ "$bfprobe" = ON ]; then
     build="$build-bfprobe"
 fi
+if [ "$dimlightdiag" = ON ]; then
+    if [ "$game" != undertale ]; then
+        echo "ERROR: dimlightdiag requires undertale" >&2
+        exit 2
+    fi
+    build="$build-dimlightdiag"
+fi
 if [ "$arenalog" = ON ]; then
     build="$build-arenalog"
 fi
@@ -682,6 +745,13 @@ if [ "$titandiag" = ON ]; then
 fi
 if [ "$exittrail" = ON ]; then
     build="$build-exittrail"
+fi
+if [ "$ballast" = ON ]; then
+    if [ "$game" != undertale ] || [ -n "${CTRPORT_RELEASE_SOURCE_URL:-}" ] || [ "$dimlightdiag" = ON ]; then
+        echo "ERROR: ballast is an UNDERTALE test build: never a release (CTRPORT_RELEASE_SOURCE_URL) or with dimlightdiag" >&2
+        exit 2
+    fi
+    build="$build-ballast"
 fi
 if [ "$flowdiag" = ON ]; then
     build="$build-flowdiag"
@@ -760,6 +830,17 @@ if [ "$game" = undertale ]; then
     data_size=$(printf '%s' "$data_size" | tr -d '\r')
     if [ "$rc" = 3 ]; then data_size=
     elif [ "$rc" != 0 ]; then exit "$rc"
+    fi
+    # hitcheck: UT omits the PC region specialization. FUNC covers every GM1.4
+    # builtin call, including interpreted code; stop if future data needs it.
+    region_args=()
+    if [ -n "$data_dir" ]; then region_args+=(--data "$(native_path "$data_dir")"); fi
+    set +e
+    "${python[@]}" -X utf8 -I "$(native_path "$repo/tools/aot/hitcheck_guard.py")" "${region_args[@]}"
+    rc=$?
+    set -e
+    if [ "$rc" = 0 ]; then :
+    elif [ "$rc" != 3 ]; then exit "$rc";
     fi
 fi
 # prepare.py checks the same version table before using even an up-to-date AOT
@@ -874,6 +955,8 @@ if [ -n "${python:-}" ]; then
     if [ -f "$art" ]; then loadscreen_art=$art; fi
 fi
 
+# Frame is withdrawn from 1.0: no private area art or SAVE metadata is derived.
+
 # Approved Crisp battle art, generated from verified game files only (never committed). Release kits intentionally
 # omit the derivation script and its numpy/Pillow dependencies, and build with the base art. Where the script is here
 # (this repository), the shipping game needs the art: if its tools don't import (the message names the import and the
@@ -902,7 +985,7 @@ if [ "$game" = deltarune ] && [ -f "$repo/tools/analysis/crispart_pack.py" ]; th
     fi
 fi
 
-# The half-resolution art prototype (halfart=point|box|balanced, flowhalf; tools/analysis/halfart_pack.py): the
+# The half-resolution art prototype (halfart=point|box|balanced, change flowhalf; tools/analysis/halfart_pack.py): the
 # sprites listed in tools/analysis/halfart/<game>.txt (balanced: the frames <game>-balanced.txt lists, box filter) at half resolution, in romfs:/halfart/<game>.dthr, and the room plan
 # below made for their new places. The lists hold hashes of the sprite names, matched against this data.win. The
 # .pages file beside the patch holds the patched pages for the release builder's texture preparation on the PC
@@ -1051,6 +1134,28 @@ if [ "$roomplan" = ON ] && [ "$game" = undertale ] && [ -n "${python:-}" ]; then
     fi
 fi
 
+# The scene table (UNDERTALE, change layout S3; tools/layout/build_scenes.py): the committed names-only spec
+# (tools/layout/undertale-scenes.json) resolved against the player's data.win, as romfs:/layout/undertale.lst. Exit 3:
+# no game data, or an every-room name this data.win lacks; the build goes on without (every battle Original).
+layout_scenes_file=
+if [ "$game" = undertale ] && [ -n "${python:-}" ]; then
+    scenes_out="$repo/build/layout-$game/$game.lst"
+    scenes_args=(--out "$(native_path "$scenes_out")")
+    if [ -n "$data_dir" ]; then scenes_args+=(--data "$(native_path "$data_dir")"); fi
+    set +e
+    "${python[@]}" -X utf8 -I "$(native_path "$repo/tools/layout/build_scenes.py")" "${scenes_args[@]}"
+    rc=$?
+    set -e
+    if [ "$rc" = 0 ]; then
+        layout_scenes_file=$scenes_out
+    elif [ "$rc" = 3 ]; then
+        echo "Scene table: none for this game data; building without one (every battle Original)" >&2
+    else
+        echo "Scene table: tools/layout/build_scenes.py failed (exit $rc)" >&2
+        exit "$rc"
+    fi
+fi
+
 if [ "$audio_convert" = ON ]; then
     if [ -z "$data_dir" ] || [ -z "${python:-}" ]; then
         echo "audio-convert needs the player's data folder and the builder's Python" >&2
@@ -1185,7 +1290,7 @@ cmake -S "$here" -B "$build" -G "Unix Makefiles" \
     -DCTRPORT_ADPCM_TEST_UNKNOWN_MTIME="$adpcmtestmtime" \
     -DCTRPORT_ADPCM_SFXPACK="$adpcmpack" \
     -DCTRPORT_ADPCM_FAULT="$adpcmfault" \
-    -DCTRPORT_SURFACE_CENSUS="$surfcensus" \
+    -DCTRPORT_SURFACE_CENSUS="$surfcensus" -DCTRPORT_VRAM_CENSUS="$vramcensus" \
     -DCTRPORT_OFFDRAW="$offdraw" \
     -DCTRPORT_HALF_CENSUS="$halfcensus" -DCTRPORT_HALFART_FILE="$halfart_file" \
     -DCTRPORT_PKLIN_DIAG="$pklindiag" -DCTRPORT_PKLIN_STRESS="$pklinstress" \
@@ -1207,15 +1312,18 @@ cmake -S "$here" -B "$build" -G "Unix Makefiles" \
     -DCTRPORT_AOT_STRESS="$aot_stress" \
     -DCTRPORT_VIDEO_OPENH264="$openh264" \
     -DCTRPORT_REACH_GATE="$reachgate" \
-    -DCTRPORT_PLAYER_SHOTS="$shots" -DCTRPORT_ROSALINA_PROBE="$rosaprobe" -DCTRPORT_ROSALOW_TEST="$rosalow" -DCTRPORT_UTFADE_PROBE="$utfadeprobe" -DCTRPORT_BUBBLE_CHECK="$bubblecheck" \
+    -DCTRPORT_PLAYER_SHOTS="$shots" -DCTRPORT_ROSALINA_PROBE="$rosaprobe" -DCTRPORT_ROSALOW_TEST="$rosalow" -DCTRPORT_UTFADE_PROBE="$utfadeprobe" -DCTRPORT_BS_PLACESWITCH="$bsplace" -DCTRPORT_LABCRASH="$labcrash" -DCTRPORT_BUBBLE_CHECK="$bubblecheck" -DCTRPORT_TOUCH_TEST="$touchtest" \
+    -DCTRPORT_TOUCH_QUEUE="$touchqueue" \
+    -DCTRPORT_TOUCH_NAME_TRACE="$nametrace" \
     -DCTRPORT_PACER_OBSERVE="$pacer_observe" -DCTRPORT_PACER_R2R3A="$pacer_rule" \
     -DCTRPORT_PACER_CSV_DIAG="$pacer_csv_diag" \
-    -DCTRPORT_ROOMPLAN_FILE="$roomplan_file" -DCTRPORT_SFXPLAN_FILE="$sfxplan_file" -DCTRPORT_PHASEPLAN_FILE="$phaseplan_file" -DCTRPORT_ROOMPLAN_DIR="$roomplan_dir" -DCTRPORT_ROOMPLAN_RECORDER="$roomplan_rec" \
+    -DCTRPORT_ROOMPLAN_FILE="$roomplan_file" -DCTRPORT_SFXPLAN_FILE="$sfxplan_file" -DCTRPORT_LAYOUT_SCENES_FILE="$layout_scenes_file" -DCTRPORT_PHASEPLAN_FILE="$phaseplan_file" -DCTRPORT_ROOMPLAN_DIR="$roomplan_dir" -DCTRPORT_ROOMPLAN_RECORDER="$roomplan_rec" \
     -DCTRPORT_PHASE_LAYOUT="$phase_layout" \
     -DCTRPORT_HOMEAUDIO_PROBE="$homeaudioprobe" -DCTRPORT_SPIKEREC="$spikerec" -DCTRPORT_TITANDIAG="$titandiag" -DCTRPORT_FREEWINS="$freewins" \
     -DCTRPORT_UTTC_MODE="$uttc_mode" -DCTRPORT_DPRANK_MODE="$dprank_mode" -DCTRPORT_TEST_LATE_PAGE="$testpage" \
     -DCTRPORT_BENCHFIX_PROBE="$bfprobe" -DCTRPORT_PACER_ARENA_LOG="$arenalog" -DCTRPORT_FRAMETRACE="$frametrace" -DCTRPORT_ASG_PROBE="$asgprobe" -DCTRPORT_FLOWSTREAM_DIAG="$flowdiag" \
-    -DCTRPORT_EXITTRAIL="$exittrail" -DCTRPORT_WRITERFRONT_MODE="$writerfront" \
+    -DCTRPORT_EXITTRAIL="$exittrail" -DCTRPORT_BALLAST="$ballast" -DCTRPORT_WRITERFRONT_MODE="$writerfront" \
+    -DCTRPORT_DIMLIGHT_DIAG="$dimlightdiag" \
     -DCTRPORT_FLOWERHW_TPROF="$towerprof" -DCTRPORT_FLOWERHW_FORCE="$towerforce" \
     -DCTRPORT_FLOWERHW_L2="$ppl2" -DCTRPORT_FLOWERHW_PPFORCE="$ppforce" \
     "${input_cmake[@]}" \

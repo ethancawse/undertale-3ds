@@ -128,7 +128,7 @@ PRODUCTS = {
         {}, 230.0),
 }
 
-# Release setting, off for now (decided 2026-10-26): UNDERTALE's Old 3DS build with Omega Flowey's over-resolution art
+# Release setting, off for now (maintainer, 2026-10-26): UNDERTALE's Old 3DS build with Omega Flowey's over-resolution art
 # stored at half resolution (build.sh halfart, tools/analysis/halfart_pack.py, platform/3ds/source/ctr_halfart.c), the
 # fallback if the full-resolution set doesn't fit by release. On: the UNDERTALE o3ds build gets "halfart"
 # (pipeline.build_argv), and texture preparation on the PC also writes that build's own cache folder, cache_lt_<n>

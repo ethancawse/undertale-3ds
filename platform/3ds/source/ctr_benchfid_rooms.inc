@@ -104,7 +104,7 @@ static void __attribute__((optimize("Os"))) HIDDEN_LATE benchfidRoomsReport(void
 #undef HIDDEN_LATE
 #undef HIDDEN_CONST
 
-// ===== Presentation v1 (utflames, 10-25), in sections of its own (late_reserve.ld, last in each list) so that
+// ===== Presentation v1 (change utflames, 10-25), in sections of its own (late_reserve.ld, last in each list) so that
 // no late code or data already linked moves. benchfidRooms* above are unchanged; the bench calls these wrappers.
 #define SHOWN_LATE __attribute__((noinline, noclone, no_reorder, optimize("Os"), section(".text.benchshown_late")))
 #define SHOWN_CONST(name, value) static const char name[] __attribute__((section(".text.benchshown_late.constants"))) = value

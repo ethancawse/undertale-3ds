@@ -14,6 +14,10 @@
 #define CODE __attribute__((noinline, section(".text.late.inputlate")))
 #define BSS __attribute__((section(".bss.late.inputlate")))
 #define RO __attribute__((section(".rodata.inputlate_in_text")))
+// The next beginFrame link (ctr_wrap_chain.h: battlesplit's); the real one where none is set (the host test).
+#ifndef CTR_BEGINFRAME_AFTER_INPUTLATE
+#define CTR_BEGINFRAME_AFTER_INPUTLATE __real_CtrRenderer_beginFrame
+#endif
 
 static Runner* game BSS;
 static Renderer* gameRenderer BSS;
@@ -95,7 +99,7 @@ CODE void __wrap_CtrRenderer_beginFrame(Renderer* renderer) {
         menuWasOpen = menuOpen;
         benchWasActive = CtrBench_pickerOpen() || CtrBench_running();
     }
-    __real_CtrRenderer_beginFrame(renderer);
+    CTR_BEGINFRAME_AFTER_INPUTLATE(renderer);
 }
 
 CODE void __wrap_CtrRenderer_endFrame(Renderer* renderer) {
@@ -180,7 +184,7 @@ CODE void CTR_WATCHDOGSTOP_INPUTLATE(void) {
 }
 CODE const char* CTR_HBLDR_INPUTLATE(const char* path, const char* const* args, int count) {
     // Lab recovery cannot join a possibly faulted thread or wait for its lock.
-    CtrInput_requestStop();
+    CtrInput_stopForTarget(path, args, count);
     return CTR_HBLDR_AFTER_INPUTLATE(path, args, count);
 }
 

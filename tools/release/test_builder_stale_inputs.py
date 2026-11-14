@@ -1,5 +1,7 @@
 """A changed game file with the same size and date must never reuse old build inputs or generated code.
 Outside audit DEEP-09 and scour SCOURT7-001 (2026-11-04). Invented bytes only."""
+import contextlib
+import importlib.util
 import os
 from pathlib import Path
 import sys
@@ -8,10 +10,30 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-sys.path[:0] = [str(HERE / 'builder'), str(HERE.parent / 'aot')]
-import prepare
+sys.path[:0] = [str(HERE / 'builder')]
 import products
 import verify_game
+
+
+@contextlib.contextmanager
+def aot_prepare(directory):
+    """tools/aot/prepare.py loaded by path, and 'prepare' only inside the block. In one pytest process over every
+    tool, tools/audio/prepare.py can already be sys.modules['prepare'] or come first on sys.path, so a bare import may
+    not be this file. sys.modules and sys.path are put back afterwards."""
+    missing = object()
+    old, path = sys.modules.get('prepare', missing), sys.path[:]
+    spec = importlib.util.spec_from_file_location('prepare', os.path.join(directory, 'prepare.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['prepare'] = module
+    try:
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        sys.path[:] = path
+        if old is missing:
+            sys.modules.pop('prepare', None)
+        else:
+            sys.modules['prepare'] = old
 
 UT = products.PRODUCTS['undertale']
 STAMP = 1_700_000_000_000_000_000  # ns
@@ -82,7 +104,8 @@ class GeneratedCodeTests(unittest.TestCase):
         os.utime(self.data, ns=(STAMP + offset_ns, STAMP + offset_ns))
         argv = ['prepare.py', '--game', 'undertale', '--target', 'o3ds', '--out', str(self.out),
                 '--data', str(self.data.parent)]
-        with mock.patch.object(prepare, 'run_gmlaot', side_effect=self.generate), \
+        with aot_prepare(HERE.parent / 'aot') as prepare, \
+                mock.patch.object(prepare, 'run_gmlaot', side_effect=self.generate), \
                 mock.patch.object(prepare, 'padrefs_file', return_value=None, create=True):
             self.assertEqual(prepare.main(argv), 0)
 

@@ -220,7 +220,7 @@ COLFLIP14_LATE void Colflip14_registerAll(VMContext* ctx) {
     colflip14Previous.collisionRectangleList = colflip14Replace(ctx, colflip14NameCollisionRectangleList, builtin_collision_rectangle_list_gm14);
 }
 #if defined(__3DS__) && !defined(ENABLE_WAD17)
-// UNDERTALE's late-text reclaim (argcheck): collision_compat.c's code is not linked (UNDERTALE registers the
+// UNDERTALE's late-text reclaim (change argcheck): collision_compat.c's code is not linked (UNDERTALE registers the
 // builtins itself above, and its scan is GMS 1.4's), so --gc-sections drops it. Its late constants and statics leave
 // with it; these take their exact places (platform/3ds/late_reserve.ld, KEEP), so no late rodata or bss moves and the
 // heap starts where it did. The constants keep their bytes: the five names, then the 18-byte switch table.

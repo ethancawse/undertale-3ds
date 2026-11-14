@@ -68,7 +68,7 @@ def run(args):
     return subprocess.run(args, stdin=subprocess.DEVNULL, timeout=1800).returncode
 
 def check_selectors(script, command):
-    """Require exactly one linker input per tagged application selector."""
+    """Require exactly one linker input per tagged application selector (and per dev-only object selector)."""
     def expand(arguments, active=()):
         result = []
         for arg in arguments:
@@ -95,7 +95,42 @@ def check_selectors(script, command):
         if len(matches) != 1:
             raise ValueError('AAC selector %s(%s) matches %d linker objects; expected 1'
                              % (pattern, kind, len(matches)))
-    return len(selectors)
+    return len(selectors) + check_devonly(text, objects, {pattern for pattern, _ in selectors})
+
+
+def check_devonly(text, objects, prefix_patterns):
+    """Dev builds' dev-only AAC inputs (aacout.cmake, CTRPORT_DEVONLY_AAC): each object selector names exactly one
+    linker object, which no application-prefix selector may also take, and every dev-only line sits between its
+    kind's dev-only start and end markers. A release script has none of these lines or markers."""
+    tag = '/* aacout devonly */'
+    count = 0
+    for kind in ('text', 'rodata'):
+        start = '__aacout_%s_devonly_start = ABSOLUTE(.);' % kind
+        end = '__aacout_%s_devonly_end = ABSOLUTE(.);' % kind
+        if text.count(start) != text.count(end) or text.count(start) > 1:
+            raise ValueError('AAC %s: malformed dev-only markers' % kind)
+        if not text.count(start):
+            continue
+        body = text[text.index(start):text.index(end)]
+        lines = [line.strip() for line in body.splitlines() if tag in line]
+        if not lines:
+            raise ValueError('AAC %s: dev-only markers without inputs' % kind)
+        for line in lines:
+            match = re.fullmatch(re.escape(tag) + r' INPUT_SECTION_FLAGS \([^)]*\) (\S+?)\(([^()]+)\)', line)
+            if not match or match[1].startswith('KEEP'):
+                raise ValueError('malformed dev-only AAC selector: ' + line)
+            count += 1
+            if match[1] == '*':
+                continue
+            matches = [obj for obj in objects if fnmatch.fnmatchcase(obj, match[1])]
+            if len(matches) != 1:
+                raise ValueError('dev-only AAC selector %s(%s) matches %d linker objects; expected 1'
+                                 % (match[1], match[2], len(matches)))
+            if match[1] in prefix_patterns:
+                raise ValueError('dev-only AAC object %s is also an application-prefix selector' % match[1])
+    if text.count(tag) != count:
+        raise ValueError('dev-only AAC selector outside its markers')
+    return count
 
 
 def main(args):

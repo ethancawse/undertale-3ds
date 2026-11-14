@@ -1216,3 +1216,20 @@ SAVEGUARD_CODE void CtrSaveguard_labAppend(char* buffer, size_t size, const char
 }
 #endif
 #endif
+
+#ifdef ENABLE_WAD16
+// homesave: report names, never file contents. Card I/O runs outside this lock.
+// Do not start another lock wait after the handoff deadline. If contended, the
+// callback's count is still logged; a progressing writer may already be done.
+void CtrHomesave_logPending(FileSystem* fs, const char* format);
+#if !defined(__clang__)
+__attribute__((noclone, optimize("Os")))
+#endif
+__attribute__((noinline, section(".homesave_code")))
+void CtrHomesave_logPending(FileSystem* fs, const char* format) {
+    CtrFileSystem* cfs = (CtrFileSystem*) fs;
+    if (LightLock_TryLock(&cfs->lock) != 0) return;
+    for (ptrdiff_t i = 0; i < arrlen(cfs->queue); i++) logInfo(format, cfs->queue[i].key);
+    LightLock_Unlock(&cfs->lock);
+}
+#endif

@@ -51,7 +51,7 @@
 
 RValue UtFlowey_pipeDraw(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) UTW_LATE;
 
-#if defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS) || defined(ENABLE_VM_GML_PROFILER) || defined(__FAST_MATH__)
+#if !defined(CTRPORT_AOT) || defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS) || defined(ENABLE_VM_GML_PROFILER) || defined(__FAST_MATH__)
 // Tracing, stress and GML profiler builds run the generated code itself (it logs, tests or times each builtin call),
 // and so does any build with fast math (the non-3DS engine's Release flags): the body is exact only without it.
 RValue UtFlowey_pipeDraw(VMContext* ctx, uint32_t k, AotFn generated, const int32_t* a) { (void) k; (void) a; return generated(ctx); }

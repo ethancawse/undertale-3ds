@@ -27,7 +27,7 @@
 // .text_snowkick_ops. No statics, no constants outside the code.
 #include "wad_versions.h"
 
-#if defined(ENABLE_WAD16)
+#if defined(ENABLE_WAD16) && defined(CTRPORT_AOT)
 
 #include "aot/vm_aot.h"
 #include "collision.h"

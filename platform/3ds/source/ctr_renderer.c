@@ -2767,11 +2767,28 @@ static void makeCommandRoom(CtrRenderer* r);
 
 // Whether batches are drawn by drawProphecyBatch, drawTexScrollBatch or
 // drawHologramBatch, which sample textures by where the vertices land.
+#if defined(ENABLE_WAD16) && defined(__3DS__) && defined(NDEBUG) && !defined(CTRPORT_RENDER_TIMING)
+// battlesplit22 (the Split's top margin, this file's end): the body is CtrRenderer_bsProphecy22's, which also keeps
+// a split frame's batches that reach above the view; padded to its old size there, so nothing moves. Its callers
+// see what they saw: a leaf that reads *r and changes r0, r2 and r3 (the call keeps every other
+// register the caller may hold across it, VFP d0-d7 too), so the compiler builds them as before.
+static __attribute__((noinline)) bool prophecyBatches(const CtrRenderer* r) {
+    register const CtrRenderer* a __asm__("r0") = r;
+    register uint32_t p __asm__("r0");
+    __asm__("push {r1, r3, ip, lr}\n\tvpush {d0-d7}\n\tbl CtrRenderer_bsProphecy22\n\tvpop {d0-d7}\n\tpop {r1, r3, ip, lr}"
+            : "=r"(p)
+            : "0"(a), "m"(*r)
+            : "r2", "r3", "cc");
+    return (bool) p;
+}
+#else
 static bool prophecyBatches(const CtrRenderer* r) {
     return (r->shaderFx == SHADER_FX_PROPHECY || r->shaderFx == SHADER_FX_LEGEND || r->shaderFx == SHADER_FX_TEXSCROLL ||
             r->shaderFx == SHADER_FX_HOLOGRAM) &&
            !r->fxSuspended && !r->plainTexEnv && r->texgenProgram != nullptr && r->layer.mode == 0;
 }
+#endif
+#line 2775
 static void makeVertexRoom(CtrRenderer* r, uint32_t count);
 
 #ifdef CTRPORT_RENDER_TIMING
@@ -4993,7 +5010,7 @@ static bool smartEmitAveraged(CtrRenderer* r, CtrPage* page, float sx0, float sy
 // nothing after the function moves. The asm sits in a function of its own
 // (never called), emitted after smartEmitAveraged, so smartEmitAveraged's
 // code is the same as without it (an asm inside would be a scheduling
-// barrier). On UNDERTALE the direct tile path (smartcut) took another
+// barrier). On UNDERTALE the direct tile path (change smartcut) took another
 // 416 bytes out (into smartColoursAxes and smartEmitTile, late).
 #if defined(__3DS__) && defined(NDEBUG) && !defined(CTRPORT_RENDER_TIMING)
 static void __attribute__((used, noinline, section(".text.late.smartbatch"))) smartEmitSlot(void) {
@@ -10207,7 +10224,7 @@ static void fps75Configure(CtrRenderer* r);
 #line 9789
 WAD17_ONLY(static void screensConfigure(CtrRenderer* r);)
 static void __attribute__((noinline)) configureScreens(CtrRenderer* r) {
-    __asm__ volatile("push {r0, r1, r2, r3, ip, lr}\n\tbl CtrGsfix_preConfigure\n\tpop {r0, r1, r2, r3, ip, lr}\n\tb 1f\n\t.space 688\n1:"); // gsfix (file end): r0 = r
+    __asm__ volatile("push {r0, r1, r2, r3, ip, lr}\n\tbl CtrScreens_preConfigure\n\tpop {r0, r1, r2, r3, ip, lr}\n\tb 1f\n\t.space 688\n1:"); // gsfix, layout (file end): r0 = r
     fps75Configure(r);
 }
 
@@ -18980,7 +18997,7 @@ static void skipDrawOp(CtrRenderer* r, const CtrSkipRec* rec, const CtrSkipOp* o
         ctrDrawTriangleFan(rr, f[0], f[1], (const float*) (rec->data + i[6]), (const float*) (rec->data + i[7]), i[1], c[0], c[1], f[2]);
         break;
     case SR_LINES: ctrDrawLines(rr, (const float*) (rec->data + i[6]), i[1], f[0], c[0], f[1]); break;
-    case SR_TEXT: ctrDrawText(rr, (const char*) (rec->data + i[6]), f[0], f[1], f[2], f[3], f[4], f[5]); break;
+    case SR_TEXT: ABQ_TEXT_REPLAY(rr, (const char*) (rec->data + i[6]), f[0], f[1], f[2], f[3], f[4], f[5]); break;
     case SR_TEXT_COLOR:
         ctrDrawTextColor(rr, (const char*) (rec->data + i[6]), f[0], f[1], f[2], f[3], f[4], (int32_t) c[0], (int32_t) c[1], (int32_t) c[2],
                          (int32_t) c[3], f[5], f[6]);
@@ -19884,24 +19901,24 @@ E5X_DECLARE
     X(drawSprite, BP_DRAWSPRITE, BP_SKIP_DRAWSPRITE)                                                                                                 \
     X(drawSpritePart, BP_DRAWSPRITEPART, BP_SKIP_DRAWSPRITEPART)                                                                                     \
     X(drawSpritePartColor, BP_DRAWSPRITEPARTCOLOR, BP_SKIP_DRAWSPRITEPARTCOLOR)                                                                      \
-    X(drawSpritePos, e5xDrawSpritePos, skipDrawSpritePos)                                                                                            \
+    X(drawSpritePos, e5xDrawSpritePos, ABQ(skipDrawSpritePos))                                                                                       \
     X(drawRectangle, BP_DRAWRECTANGLE, BP_SKIP_DRAWRECTANGLE)                                                                                        \
-    X(drawRectangleColor, e5xDrawRectangleColor, skipDrawRectangleColor)                                                                             \
+    X(drawRectangleColor, e5xDrawRectangleColor, ABQ(skipDrawRectangleColor))                                                                        \
     X(drawLine, BP_DRAWLINE, BP_SKIP_DRAWLINE)                                                                                                       \
     X(drawLineColor, BP_DRAWLINECOLOR, BP_SKIP_DRAWLINECOLOR)                                                                                        \
-    X(drawTriangle, e5xDrawTriangle, skipDrawTriangle)                                                                                               \
-    X(drawTriangleFan, e5xDrawTriangleFan, skipDrawTriangleFan)                                                                                      \
-    X(drawLines, KGL_CHKS(ctrDrawLines), skipDrawLines)                                                                                              \
+    X(drawTriangle, e5xDrawTriangle, ABQ(skipDrawTriangle))                                                                                          \
+    X(drawTriangleFan, e5xDrawTriangleFan, ABQ(skipDrawTriangleFan))                                                                                 \
+    X(drawLines, KGL_CHKS(ABQ(ctrDrawLines)), ABQ(skipDrawLines))                                                                                    \
     X(rectOutsideView, ctrRectOutsideView, skipRectOutsideView)                                                                                      \
-    X(drawText, e5xDrawText, skipDrawText)                                                                                                           \
-    X(drawTextColor, e5xDrawTextColor, skipDrawTextColor)                                                                                            \
+    X(drawText, e5xDrawText, ABQ(skipDrawText))                                                                                                      \
+    X(drawTextColor, e5xDrawTextColor, ABQ(skipDrawTextColor))                                                                                       \
     X(primitiveEnd, KGL_CHKS(ctrPrimitiveEnd), skipPrimitiveEnd)                                                                                     \
     X(drawVertexBuffer, KGL_CHKS(ctrDrawVertexBuffer), skipDrawVertexBuffer)                                                                         \
     X(clearScreen, KGL_CHKS(ctrClearScreen), skipClearScreen)                                                                                        \
-    X(drawSpriteTiled, e5xDrawSpriteTiled, skipDrawSpriteTiled)                                                                                      \
-    X(drawSurface, KGL_CHKS(ctrDrawSurface), skipDrawSurface)                                                                                        \
-    X(drawSurfaceColor, KGL_CHKS(ctrDrawSurfaceColor), skipDrawSurfaceColor)                                                                         \
-    X(drawSurfaceTiled, KGL_CHKS(ctrDrawSurfaceTiled), skipDrawSurfaceTiled)                                                                         \
+    X(drawSpriteTiled, e5xDrawSpriteTiled, ABQ(skipDrawSpriteTiled))                                                                                 \
+    X(drawSurface, KGL_CHKS(ABQ(ctrDrawSurface)), ABQ(skipDrawSurface))                                                                              \
+    X(drawSurfaceColor, KGL_CHKS(ABQ(ctrDrawSurfaceColor)), ABQ(skipDrawSurfaceColor))                                                               \
+    X(drawSurfaceTiled, KGL_CHKS(ABQ(ctrDrawSurfaceTiled)), ABQ(skipDrawSurfaceTiled))                                                               \
     X(surfaceCopy, KGL_CHKS(ctrSurfaceCopy), skipSurfaceCopy)                                                                                        \
     X(createSpriteFromSurface, KGL_CHKS(ctrCreateSpriteFromSurface), skipCreateSpriteFromSurface)                                                    \
     X(surfaceGetTexture, ctrSurfaceGetTexture, skipSurfaceGetTexture)
@@ -20820,14 +20837,14 @@ static void dlgSetShown(CtrRenderer* r, bool shown) {
     // While dialogue shows, the magnifier rests, and the target is cleared
     // by presentDialogue rather than at the frame's start. Afterwards the
     // magnifier sends the blank screen first, from the target cleared here;
-    // with the backlight off it is sent now, so the last line isn't what
-    // shows when the backlight next comes on. The consoles clear their own
-    // buffer (main.c).
+    // the other modes send it now, so the last panel does not linger while
+    // the console waits to reclaim its buffer in the blank (main.c), or
+    // show when the backlight next comes on.
     r->magnifier.active = false;
     r->magnifier.blankSent = shown ? 2 : 0;
     if (!shown) {
         C3D_RenderTargetClear(r->bottomTarget, C3D_CLEAR_ALL, 0x000000FF, 0);
-        if (r->display.bottomMode == BOTTOM_MODE_OFF) bindTarget(r, r->bottomTarget, -1);
+        if (__builtin_expect(r->display.bottomMode == BOTTOM_MODE_OFF || r->display.bottomMode == BOTTOM_MODE_CONSOLE, 1)) bindTarget(r, r->bottomTarget, -1);
     }
     applyBottomBacklight(r);
 }
@@ -22728,7 +22745,7 @@ Renderer* CtrRenderer_create(FileSystem* fileSystem, int32_t appW, int32_t appH,
     ctrVtable.drawLine = BP_DRAWLINE;
     ctrVtable.drawTriangle = e5xDrawTriangle;
     ctrVtable.drawTriangleFan = e5xDrawTriangleFan;
-    ctrVtable.drawLines = KGL_CHK(ctrDrawLines);
+    ctrVtable.drawLines = KGL_CHK(ABQ(ctrDrawLines));
     ctrVtable.rectOutsideView = ctrRectOutsideView;
     ctrVtable.drawLineColor = BP_DRAWLINECOLOR;
     ctrVtable.drawText = e5xDrawText;
@@ -22737,7 +22754,7 @@ Renderer* CtrRenderer_create(FileSystem* fileSystem, int32_t appW, int32_t appH,
     ctrVtable.primitiveBegin = KGL_CHK(ctrPrimitiveBegin);
     ctrVtable.primitiveBeginTexture = KGL_CHK(ctrPrimitiveBeginTexture);
     ctrVtable.primitiveEnd = KGL_CHK(ctrPrimitiveEnd);
-    ctrVtable.drawVertex = KGL_CHK(ctrDrawVertex);
+    ctrVtable.drawVertex = KGL_CHK(ABQ(ctrDrawVertex));
     ctrVtable.drawVertexBuffer = KGL_CHK(ctrDrawVertexBuffer);
     ctrVtable.flush = KGL_CHK(ctrFlush);
     ctrVtable.clearScreen = KGL_CHK(ctrClearScreen);
@@ -22764,9 +22781,9 @@ Renderer* CtrRenderer_create(FileSystem* fileSystem, int32_t appW, int32_t appH,
     ctrVtable.ensureApplicationSurface = KGL_CHK(ctrEnsureApplicationSurface);
     ctrVtable.getSurfaceWidth = ctrGetSurfaceWidth;
     ctrVtable.getSurfaceHeight = ctrGetSurfaceHeight;
-    ctrVtable.drawSurface = KGL_CHK(ctrDrawSurface);
-    ctrVtable.drawSurfaceColor = KGL_CHK(ctrDrawSurfaceColor);
-    ctrVtable.drawSurfaceTiled = KGL_CHK(ctrDrawSurfaceTiled);
+    ctrVtable.drawSurface = KGL_CHK(ABQ(ctrDrawSurface));
+    ctrVtable.drawSurfaceColor = KGL_CHK(ABQ(ctrDrawSurfaceColor));
+    ctrVtable.drawSurfaceTiled = KGL_CHK(ABQ(ctrDrawSurfaceTiled));
     ctrVtable.surfaceResize = KGL_CHK(ctrSurfaceResize);
     ctrVtable.surfaceFree = KGL_CHK(ctrSurfaceFree);
     ctrVtable.surfaceCopy = KGL_CHK(ctrSurfaceCopy);
@@ -23005,7 +23022,7 @@ bool CtrRenderer_selfTest(Renderer* renderer, const char* name) {
 // layout and vertex emission. Text at alpha 0 is never tracked for the magnifier (isDimText), so nothing else
 // sees it either. Surface draws keep their seen/touched bookkeeping and go through as before.
 // These wrappers sit in the vtable in front of the unchanged draws, in late code (late_reserve.ld), so the warm
-// text keeps its place (the layout rules); the alpha test is inline and only alpha 0 calls e5xNoop. Each draw is called
+// text keeps its place (RULES.md); the alpha test is inline and only alpha 0 calls e5xNoop. Each draw is called
 // through E5X_OPAQUE, so GCC can't inline it here: the small ones (ctrDrawLine, ctrDrawText, ...) keep their
 // own bodies at main's addresses. The prototypes come from E5X_DECLARE (ctr_renderer.h), so no line above the warm
 // functions moves.
@@ -23018,72 +23035,72 @@ static bool E5X_LATE e5xNoop(const Renderer* renderer) {
 static void E5X_LATE e5xDrawSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale,
                                    float angleDeg, uint32_t color, float alpha) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(UTK_DRAW_SPRITE)(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+    E5X_OPAQUE(ABQ(UTK_DRAW_SPRITE))(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
 }
 
 static void E5X_LATE e5xDrawSpritePart(Renderer* renderer, int32_t tpagIndex, float srcOffX, float srcOffY, float srcW, float srcH, float x, float y,
                                        float xscale, float yscale, float angleDeg, float pivotX, float pivotY, uint32_t color, float alpha) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(partDrawSprite)(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x, y, xscale, yscale, angleDeg, pivotX, pivotY, color, alpha);
+    E5X_OPAQUE(ABQ(partDrawSprite))(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x, y, xscale, yscale, angleDeg, pivotX, pivotY, color, alpha);
 }
 
 static void E5X_LATE e5xDrawSpritePartColor(Renderer* renderer, int32_t tpagIndex, float srcOffX, float srcOffY, float srcW, float srcH, float x,
                                             float y, float xscale, float yscale, float angleDeg, float pivotX, float pivotY, uint32_t color1,
                                             uint32_t color2, uint32_t color3, uint32_t color4, float alpha) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(ctrDrawSpritePartColor)(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x, y, xscale, yscale, angleDeg, pivotX, pivotY, color1, color2, color3, color4, alpha);
+    E5X_OPAQUE(ABQ(ctrDrawSpritePartColor))(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x, y, xscale, yscale, angleDeg, pivotX, pivotY, color1, color2, color3, color4, alpha);
 }
 
 static void E5X_LATE e5xDrawSpritePos(Renderer* renderer, int32_t tpagIndex, float x1, float y1, float x2, float y2, float x3, float y3, float x4,
                                       float y4, float alpha) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(ctrDrawSpritePos)(renderer, tpagIndex, x1, y1, x2, y2, x3, y3, x4, y4, alpha);
+    E5X_OPAQUE(ABQ(ctrDrawSpritePos))(renderer, tpagIndex, x1, y1, x2, y2, x3, y3, x4, y4, alpha);
 }
 
 static void E5X_LATE e5xDrawRectangle(Renderer* renderer, float x1, float y1, float x2, float y2, uint32_t color, float alpha, bool outline) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(ctrDrawRectangle)(renderer, x1, y1, x2, y2, color, alpha, outline);
+    E5X_OPAQUE(ABQ(ctrDrawRectangle))(renderer, x1, y1, x2, y2, color, alpha, outline);
 }
 
 static void E5X_LATE e5xDrawRectangleColor(Renderer* renderer, float x1, float y1, float x2, float y2, uint32_t color1, uint32_t color2,
                                            uint32_t color3, uint32_t color4, float alpha, bool outline) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(ctrDrawRectangleColor)(renderer, x1, y1, x2, y2, color1, color2, color3, color4, alpha, outline);
+    E5X_OPAQUE(ABQ(ctrDrawRectangleColor))(renderer, x1, y1, x2, y2, color1, color2, color3, color4, alpha, outline);
 }
 
 static void E5X_LATE e5xDrawLine(Renderer* renderer, float x1, float y1, float x2, float y2, float width, uint32_t color, float alpha) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(ctrDrawLine)(renderer, x1, y1, x2, y2, width, color, alpha);
+    E5X_OPAQUE(ABQ(ctrDrawLine))(renderer, x1, y1, x2, y2, width, color, alpha);
 }
 
 static void E5X_LATE e5xDrawLineColor(Renderer* renderer, float x1, float y1, float x2, float y2, float width, uint32_t color1, uint32_t color2,
                                       float alpha) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(ctrDrawLineColor)(renderer, x1, y1, x2, y2, width, color1, color2, alpha);
+    E5X_OPAQUE(ABQ(ctrDrawLineColor))(renderer, x1, y1, x2, y2, width, color1, color2, alpha);
 }
 
 static void E5X_LATE e5xDrawTriangle(Renderer* renderer, float x1, float y1, float x2, float y2, float x3, float y3, uint32_t color1, uint32_t color2,
                                      uint32_t color3, float alpha, bool outline) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(ctrDrawTriangle)(renderer, x1, y1, x2, y2, x3, y3, color1, color2, color3, alpha, outline);
+    E5X_OPAQUE(ABQ(ctrDrawTriangle))(renderer, x1, y1, x2, y2, x3, y3, color1, color2, color3, alpha, outline);
 }
 #include "ctr_fanquads.inc"
 static void E5X_LATE e5xDrawTriangleFan(Renderer* renderer, float cx, float cy, const float* xs, const float* ys, int32_t pointCount,
                                         uint32_t centerColor, uint32_t edgeColor, float alpha) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(E5X_FAN)(renderer, cx, cy, xs, ys, pointCount, centerColor, edgeColor, alpha);
+    E5X_OPAQUE(ABQ(E5X_FAN))(renderer, cx, cy, xs, ys, pointCount, centerColor, edgeColor, alpha);
 }
 
 static void E5X_LATE e5xDrawText(Renderer* renderer, const char* text, float x, float y, float xscale, float yscale, float angleDeg,
                                  float lineSeparation) {
     if (makeColor(0, renderer->drawAlpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(ctrDrawText)(renderer, text, x, y, xscale, yscale, angleDeg, lineSeparation);
+    E5X_OPAQUE(ABQ(ctrDrawText))(renderer, text, x, y, xscale, yscale, angleDeg, lineSeparation);
 }
 
 static void E5X_LATE e5xDrawTextColor(Renderer* renderer, const char* text, float x, float y, float xscale, float yscale, float angleDeg, int32_t c1,
                                       int32_t c2, int32_t c3, int32_t c4, float alpha, float lineSeparation) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(ctrDrawTextColor)(renderer, text, x, y, xscale, yscale, angleDeg, c1, c2, c3, c4, alpha, lineSeparation);
+    E5X_OPAQUE(ABQ(ctrDrawTextColor))(renderer, text, x, y, xscale, yscale, angleDeg, c1, c2, c3, c4, alpha, lineSeparation);
 }
 
 // Knight GPU d2 (DELTARUNE New only): tiled draws go through kgDrawSpriteTiled (this file's end).
@@ -23099,7 +23116,7 @@ kgDrawSpriteTiled(Renderer* renderer, int32_t tpagIndex, float originX, float or
 static void E5X_LATE e5xDrawSpriteTiled(Renderer* renderer, int32_t tpagIndex, float originX, float originY, float x, float y, float xscale,
                                         float yscale, bool tileX, bool tileY, float roomW, float roomH, uint32_t color, float alpha) {
     if (makeColor(0, alpha).a == 0 && e5xNoop(renderer)) return;
-    E5X_OPAQUE(KG_TILED_DRAW)(renderer, tpagIndex, originX, originY, x, y, xscale, yscale, tileX, tileY, roomW, roomH, color, alpha);
+    E5X_OPAQUE(ABQ(KG_TILED_DRAW))(renderer, tpagIndex, originX, originY, x, y, xscale, yscale, tileX, tileY, roomW, roomH, color, alpha);
 }
 
 // ===[ The game on either screen: the entry points (screens-port, late) ]===
@@ -23189,7 +23206,7 @@ SCREENS_LATE void __wrap_CtrRenderer_setDisplay(Renderer* renderer, const CtrDis
 // written back for the LCD here too (main.c's flushBottomScreen writes back the bottom screen's).
 SCREENS_LATE __attribute__((optimize("Os"))) void __wrap_CtrRenderer_yieldBottomScreen(Renderer* renderer, bool yield) {
     CtrRenderer* r = (CtrRenderer*) renderer;
-    uint32_t onTop; __asm__ volatile("ldr %0, 2f\n\tb 1f\n2:\t.word CtrOptmenu_onTop\n\t.space 4\n1:\tldrb %0, [%0]" : "=r"(onTop)); if (onTop) CtrScreens_otherOff = yield = false; void gsfixYield(Renderer*, bool) __asm__("CtrGsfix_yieldAlias"); gsfixYield(renderer, yield); // gsfix (file end): __real_ first; optmenu: the menu on the top screen, the game kept on the bottom one, Off held off (restored before the next setDisplay)
+    uint32_t onTop; __asm__ volatile("ldr %0, 2f\n\tb 1f\n2:\t.word CtrOptmenu_onTop\n\t.space 4\n1:\tldrb %0, [%0]" : "=r"(onTop)); if (onTop) CtrScreens_otherOff = yield = false; void gsfixYield(Renderer*, bool) __asm__("CtrScreens_yieldHook"); gsfixYield(renderer, yield); // gsfix, layout (file end): __real_ first; optmenu: the menu on the top screen, the game kept on the bottom one, Off held off (restored before the next setDisplay)
     bool below = CtrScreens_game == 1 && CtrScreens_gameBelow();
     if (!r->inFrame && (below && !r->bottomYielded) != CtrScreens_onBottom) screensConfigureKeepBottom(r);
     if (CtrScreens_noticeShown) CtrScreens_screenshotNotice(true);
@@ -24463,9 +24480,19 @@ _Static_assert(SMART_ITEM_MAX <= CTR_TILE_MAX, "a fine item must meet at most 2 
 #define ASG_ROOM_VERTICES (ASG_ROOM_TILES * (6 + 3))
 // Each tile's flush draws one plain batch: well under 512 words (one in depth mode takes some 150).
 #define ASG_ROOM_WORDS (ASG_ROOM_TILES * 512)
+#if defined(ENABLE_WAD16)
+static void asrCommandRoom(CtrRenderer* r);
+#endif
+#line 22374
 static void __attribute__((noinline, section(".text.late.asgroom"))) asgRoomSlow(CtrRenderer* r) {
     // What is held or pending is drawn first, under its own state.
     flushBatch(r);
+#if defined(ENABLE_WAD16) && defined(__3DS__) && defined(NDEBUG) && !defined(__OPTIMIZE_SIZE__) && !defined(CTRPORT_RENDER_TIMING) && !defined(CTRPORT_DEBUG_RECORD_FAIL_AFTER)
+    // Retain the 628 B slot without no_reorder (which reorders pooled strings).
+    // One branch skips the old command-path space, on this slow path only.
+    __asm__ volatile("b 1f\n.space 264\n1:");
+#endif
+#line 22377
     if (r->vertexCount + ASG_ROOM_VERTICES > r->vertexLimit) {
         // makeVertexRoom's steps, in a frame.
         flushVertexCache(r);
@@ -24483,6 +24510,9 @@ static void __attribute__((noinline, section(".text.late.asgroom"))) asgRoomSlow
         r->batchStart = 0;
         r->vertexFlushed = 0;
     }
+#if defined(ENABLE_WAD16)
+    asrCommandRoom(r);
+#else
     if (gpuCmdBuf == nullptr || gpuCmdBufOffset + CMDBUF_RESERVE_WORDS + ASG_ROOM_WORDS <= gpuCmdBufSize) return;
     // makeCommandRoom's steps: go on at the ring's start when the frame before
     // is done with it and the GX queue has room (gxQueueNearlyFull, then
@@ -24509,7 +24539,9 @@ static void __attribute__((noinline, section(".text.late.asgroom"))) asgRoomSlow
     CtrSuspendedFrame suspended;
     endFrameEarly(r, &suspended);
     resumeFrame(r, &suspended);
+#endif
 }
+#line 22421
 static inline __attribute__((always_inline)) void asgRoom(CtrRenderer* r) {
     if (r->inFrame && (r->vertexCount + ASG_ROOM_VERTICES > r->vertexLimit ||
                        (gpuCmdBuf != nullptr && gpuCmdBufOffset + CMDBUF_RESERVE_WORDS + ASG_ROOM_WORDS > gpuCmdBufSize)))
@@ -25099,8 +25131,8 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawSprit
     // Before the full way, which keeps its tail call: a kept draw that goes it then never proves plain (utkRun.used).
     if (utkRun.state != 0) utkRun.used = r->vertexUsed;
     if (full) ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
-} static __attribute__((noinline, section(".text.late.utasgore"))) void utaFineSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale, float angleDeg, uint32_t color, float alpha);
-// (utasgore) Whether a fine sprite goes to utaFineSprite rather than straight to ctrDrawSprite: a held run of fine
+} static __attribute__((noinline, used, section(".text.late.utasgore"))) void utaFineSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale, float angleDeg, uint32_t color, float alpha); static __attribute__((noinline, section(".text_asgorelong"))) void aslFineSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale, float angleDeg, uint32_t color, float alpha);
+// (change utasgore) Whether a fine sprite goes to utaFineSprite rather than straight to ctrDrawSprite: a held run of fine
 // draws open in this frame (utaHeldSteady's first tests; nothing utaFineDraw does before them changes anything), in a
 // frame after one with at least UTA_GATE_CALLS such calls. On Old a call into utaFineSprite's late page costs about
 // 1.3 us even when it only jumps on (o3ds utasgore9h: +0.16 ms in Asgore), and where few of a frame's fine draws can
@@ -25150,7 +25182,7 @@ static __attribute__((noinline, section(".text.late.utkill"))) void utkDrawSprit
     const CtrRenderer* r = (const CtrRenderer*) renderer;
     if (0 > tpagIndex || (uint32_t) tpagIndex >= r->originalTpagCount ||
         (r->smart.active && r->smart.itemState != nullptr && (r->smart.itemState[tpagIndex] & ITEM_FINE) != 0) || !utkPlainState(r)) {
-        if (utaTakes(r)) utaFineSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+        if (utaTakes(r)) aslFineSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
         else ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
         return;
     }
@@ -25524,7 +25556,7 @@ void Smalltext_drawTexture(Renderer* renderer, C3D_Tex* tex, float sx, float sy,
 // The renderer's two text draws in both forms (shown frame, frame skip), for z_smalltext.c: a table whose text entry is
 // one of them is a plain copy, which setSkipWrappers may have left behind (z_smalltext.c then calls ctrVtable's own).
 const void* const Smalltext_textDraws[4] __attribute__((aligned(4), section(".rodata.krsharp_in_text"))) = {
-    (const void*) e5xDrawText, (const void*) skipDrawText, (const void*) e5xDrawTextColor, (const void*) skipDrawTextColor,
+    (const void*) e5xDrawText, (const void*) ABQ(skipDrawText), (const void*) e5xDrawTextColor, (const void*) ABQ(skipDrawTextColor),
 };
 
 // ctr_krsharp.c's verdicts (smart.itemState), made zeroed as itemVerdict makes them if no draw has yet; nullptr only
@@ -25558,7 +25590,7 @@ const uint32_t Symverdict_layout[3] __attribute__((aligned(4), section(".rodata.
 };
 #endif
 #ifdef ENABLE_WAD16
-// ===[ Smart smoothing's tile quads, straight into the batch (smartcut) ]===
+// ===[ Smart smoothing's tile quads, straight into the batch (change smartcut) ]===
 
 // smartEmitAveraged's quads on one tile, as its quad loop and smartTileEnd
 // made them, without the SmartQuad copies in between: the same quads, in the
@@ -25712,7 +25744,7 @@ static void __attribute__((noinline, section(".text.late.smartdirect"))) smartDi
 #endif // SMART_DIRECT
 #endif // ENABLE_WAD16
 
-// ===[ Smart smoothing's item verdicts from the build (smartcut) ]===
+// ===[ Smart smoothing's item verdicts from the build (change smartcut) ]===
 //
 // source/z_itemverdict.c fills smart.itemState and smart.itemInk from the
 // build's table at the first room change (see there); itemVerdict then finds
@@ -25727,7 +25759,7 @@ const uint32_t Smartiv_layout[10] __attribute__((aligned(4), section(".rodata.it
     __builtin_offsetof(CtrRenderer, display.smoothing), SMOOTHING_SMART,
 };
 
-// ===[ Fine sprites outside the view and in steady runs (utasgore) ]===
+// ===[ Fine sprites outside the view and in steady runs (change utasgore) ]===
 //
 // A fine sprite (smartSpriteFine) that follows another, with nothing drawn between them, continues the held run of
 // fine draws (asgBegin, asgEnd). When it is wholly outside the view, emitPageRegionDirect drops its quad, so its whole
@@ -26404,7 +26436,7 @@ static __attribute__((noinline, section(".text.late.utasgore"))) void utaFineSpr
 }
 #endif
 
-// UNDERTALE's waving sprite rows in one call (utkill): late code only.
+// UNDERTALE's waving sprite rows in one call (change utkill): late code only.
 #if defined(ENABLE_WAD16)
 #include "ctr_utkill_waver.inc"
 #endif
@@ -26642,7 +26674,7 @@ const void* const Smalltext_textDraws[4] __attribute__((aligned(4), section(".ro
 };
 #endif
 #line 23365
-// ===[ Turned sprites far outside the view (utflowey) ]===
+// ===[ Turned sprites far outside the view (change utflowey) ]===
 // Mettaton's opera (room_fire_operatest) makes an obj_cherrypetal every frame: no Draw event, a random image_angle
 // that turns every step, gravity toward the bottom right, and no Outside Room event or anything else that destroys it,
 // so the petals that have fallen out of the view stay until the room ends (Azahar census: 286 instances in the first
@@ -26712,7 +26744,7 @@ bool utflOffView(CtrRenderer* r, const UtkPlain* d, float x, float y) {
 }
 #endif
 
-// ===[ Turned runs' later draws (utflowey) ]===
+// ===[ Turned runs' later draws (change utflowey) ]===
 // runner.c's turned runs (utflTurnBatch): CtrUtk_plainAt's way but never steady or fast (a turned run's armed draw has
 // an angle, so utkRun.fast is off), with the instance's own angle in the run's UtkPlain. False: nothing done yet, the
 // draw goes the full way.
@@ -26734,7 +26766,7 @@ __attribute__((noinline, section(".text.late.utflpk"))) bool CtrUtk_turnedAt(Ren
 }
 #endif
 
-// ===[ Turned runs' pre-culled draws kept (utflowey, the opera's draw tail) ]===
+// ===[ Turned runs' pre-culled draws kept (change utflowey, the opera's draw tail) ]===
 // In Mettaton's opera most of the turned run's 800 petals are outside the view, and each took CtrUtk_turnedAt's
 // checks, utkEmit's entry and the whole of utflOffView. utflOffView's answer depends on the petal's position and
 // angle and on what stays the same between two draws of one batch (utflTurnBatch) when neither drew anything: the
@@ -26871,7 +26903,7 @@ void Utold_continueBlack(Renderer* renderer) {
 // drawing"): its first half-view size of bytes. The rest of the texture (1456 KB of 1952 for 640x480) waits for the
 // frames drawn in full, and meanwhile nothing uses it. DELTARUNE Chapter 3's Roaring Knight keeps up to eleven 640x480
 // afterimages, each a native 512x256 texture redrawn every frame; VRAM holds one, so the rest
-// spill and pay a GPU copy in and one out per frame each (0.42-0.78 ms each on the New 3DS, knightgpu).
+// spill and pay a GPU copy in and one out per frame each (0.42-0.78 ms each on the New 3DS, change knightgpu).
 //
 // While the surface draws native, that memory is lent in slots of the half view's size: a spilled surface drawn on in
 // the frames before moves into a slot and keeps its own target there, as if VRAM had had room for it. Its pixels are
@@ -26971,7 +27003,7 @@ static bool KG_LATE kgBoundInSlot(CtrRenderer* r) {
 // Everything in a slot back to linear memory; nothing is lent after. It runs in a frame (KnightGpu_beginFrame after the
 // real one, and __wrap_C3D_FrameBufClear inside bindSurface's clear of the application surface), or outside one
 // (__wrap_C3D_TexDelete while no frame is begun: a Step's reclaimVram, the deferred frees that begin a frame, ctrDestroy;
-// or in a frame ended early, suspendFrame's, which __wrap_C3D_TexDelete runs as outside one: knightldrev's F2). Its
+// or in a frame ended early, suspendFrame's, which __wrap_C3D_TexDelete runs as outside one: change knightldrev's F2). Its
 // copies and releaseIdleScratches then go without a frame. Every scratch is released, those over a slot too, so none is
 // left over the lender's memory once it goes. One bound is stored and unbound first, as a surface in a slot that is bound
 // (knightldrev's F1). Only in a frame ended early can either be bound here: beginFrame resets spillBound, binding the
@@ -27013,7 +27045,7 @@ static void KG_LATE kgGiveBack(CtrRenderer* r) {
         CtrSurface* s = &r->surfaces[i];
         // A parked one keeps only a stale pointer (its pixels are in the heap). One without a target is being freed
         // (deferSurfaceFree, which leaves it used): ctrDestroy's, at a chapter's end, or a resize's. Moved out, its new
-        // linear texture would be lost (arglcreview's review: up to 496 KB a slot at every chapter change).
+        // linear texture would be lost (change arglcreview's review: up to 496 KB a slot at every chapter change).
         if (!s->used || s->spilled || s->recorded || s->parked != nullptr || s->target == nullptr ||
             !kgIn(s->tex.data, slots, kg.slots * kg.slotSize)) continue;
         if (r->boundTarget == s->target) {
@@ -27091,7 +27123,7 @@ static bool KG_LATE kgSlotFree(CtrRenderer* r, const uint8_t* at) {
 // A spilled surface drawn on in the frame before (and the one before that), to move into VRAM, while another in use
 // (touched within SCRATCH_IDLE_FRAMES) stays spilled. In the Knight's scenes those are all afterimages of one size: the
 // one left keeps the scratch they share in use, so a new one spills into it. With none left the scratch is released,
-// and the next one scratchFor makes moves a surface out of a slot (knightgpu's Azahar run of ch3_roar: every third
+// and the next one scratchFor makes moves a surface out of a slot (change knightgpu's Azahar run of ch3_roar: every third
 // afterimage made did, a copy out and one back in each time; counting only those drawn in the last two frames left
 // nine). An idle one (L-B's) keeps no scratch in use.
 static int32_t KG_LATE kgCandidate(CtrRenderer* r) {
@@ -27255,9 +27287,9 @@ static int32_t KG_LATE kgCreateSurface(Renderer* renderer, int32_t width, int32_
 // The clear of the application surface's whole full-resolution texture, the slots too: its first bind once it draws at
 // full resolution again (bindSurface, needsClear from updateAppResolution: the 3D slider up, Smoothing Full, Drawing
 // Full, wide, the magnifier). What is still in the slots goes back to linear memory first, the copies queued ahead of
-// the clear (demoteSurface in the frame). Giving them back after the real beginFrame copied the clear (
+// the clear (demoteSurface in the frame). Giving them back after the real beginFrame copied the clear (change
 // arglcreview's review). Not sooner, at the frame begin: beginFrame's remakeNativeSurfaces moves the native-scale ones
-// out of the slots itself, made full, and giving them back first cost it the memory to (knightgpu's Azahar run of
+// out of the slots itself, made full, and giving them back first cost it the memory to (change knightgpu's Azahar run of
 // ch3_roar with Drawing Full at frame 599: a draw dropped and the application surface shown lost). Those left are
 // full-scale ones, or ones it had no memory to make full.
 void __real_C3D_FrameBufClear(C3D_FrameBuf* fb, C3D_ClearBits clearBits, u32 clearColor, u32 clearDepth);
@@ -27293,7 +27325,7 @@ void KnightGpu_beginFrame(Renderer* renderer) {
     // number starts over): its tables are all copied anew from ctrVtable, which CtrRenderer_create fills afresh, so none
     // holds the wrappers. The tables they went into may be out of its chain for good while still holding them
     // (smalltext's st.outer with Crisp text off in the next chapter; the state hash's after it ends), which would keep
-    // them out of every later chapter (arglcreview's review).
+    // them out of every later chapter (change arglcreview's review).
     if (kg.r != r || kg.frame >= r->frame) {
         kg.table = nullptr;
         kg.ctable = nullptr;
@@ -27742,9 +27774,9 @@ void __wrap_C3D_TexDelete(C3D_Tex* tex) {
         // In a frame ended early (reclaimVram, remakeNativeSurfaces or a probe: the application surface resized while
         // VRAM is full, the deferred frees run) the GPU has run everything so far (C3D_RenderTargetDelete waited for
         // it), so the slots go back as outside a frame: copies run at once, and releaseIdleScratches stores without
-        // stopping a frame that is stopped already (knightldrev's F2). The lender's VRAM is then free for what
+        // stopping a frame that is stopped already (change knightldrev's F2). The lender's VRAM is then free for what
         // the reclaim is for, as without lending: kept, the application surface found no room for its new texture and
-        // was made anew, which game state saw (knightgpu's Azahar test, kg_rsz_a-c). In a frame going on (no such
+        // was made anew, which game state saw (change knightgpu's Azahar test, kg_rsz_a-c). In a frame going on (no such
         // delete is known) the lender is kept, its memory and the slots in it as they are, until the next
         // KnightGpu_beginFrame gives them back (it no longer lends what the application surface draws in) and frees it
         // at the begin after.
@@ -27790,7 +27822,7 @@ void __wrap_C3D_TexDelete(C3D_Tex* tex) {
 #if defined(UTX_SHADOW)
 static uint32_t utxsFast, utxsOut, utxsFull, utxsBad __attribute__((section(".bss.utext_late")));
 #endif
-// utxEmitPageRegion's per-glyph view test goes to cdGlyphOutside (creddodge, at the end of the file); only its
+// utxEmitPageRegion's per-glyph view test goes to cdGlyphOutside (change creddodge, at the end of the file); only its
 // call target changes.
 static __attribute__((pure)) bool cdGlyphOutside(CtrRenderer* r, const float* px, const float* py);
 static inline __attribute__((always_inline)) bool cdQuadOutsideView(CtrRenderer* r, const float* px, const float* py) {
@@ -28002,7 +28034,7 @@ __asm__(".pushsection .text.utext_late, 1\n"
 #line 24293
 #undef quadOutsideView
 #if defined(ENABLE_WAD16) && !defined(CTRPORT_RENDER_TIMING)
-// ===[ Glyph view test with integer compares (creddodge) ]===
+// ===[ Glyph view test with integer compares (change creddodge) ]===
 // The credits dodger (room 284) draws up to 80 names a frame, each glyph through utxEmitPageRegion's
 // quadOutsideView. That makes 4 float compares a corner, and on the VFP11 every one stalls the core on the move of
 // the flags (vmrs). The usual game projection is affine with w = 1 (row 3 = 0, 0, 0, 1), so reach is exactly 1:
@@ -28155,7 +28187,7 @@ const CtrUtWindowBlit CtrUtWindow_originalBlit __attribute__((section(".rodata.u
 #endif
 
 #ifdef CTRPORT_ASG_PROBE
-// asgprobe (test build only, asgore30): the frame's draw calls so far, vertices, and the open batch's texture,
+// asgprobe (test build only, change asgore30): the frame's draw calls so far, vertices, and the open batch's texture,
 // for its draw-sequence dump (ctr_asgprobe.c).
 __attribute__((noinline, section(".text.late.utasgore.probe"))) uint32_t CtrRenderer_probeCalls(Renderer* renderer, uint32_t* vertices,
                                                                                                const void** tex) {
@@ -30304,6 +30336,9 @@ static void SEAM_TEXT seamEmitRegion(CtrRenderer* r, CtrPage* page, float sx0, f
 // branch of onBottom (three copies; test_scanout_move.py checks every copy is in range and keepBottom is longer).
 #define SCANOUT_KEEP_CALL_WITHIN 0x400u
 void CtrScreens_pacerWaitShown(gfxScreen_t screen, bool nextEvent);
+// The carry's copy goes through layout (z_layout.c, commit D: memcpy's arguments and result), which with the move up
+// that took the SOUL flight's lend of the top target carries that target's last frame instead of the bottom's.
+void* CtrLayout_carry18(void* out, const void* in, size_t n);
 
 // Until the screen shows what was presented to it last (taken at one of its vblanks; no held flip).
 SCANOUT_MOVE static void scanoutLanded(gfxScreen_t screen) {
@@ -30354,7 +30389,7 @@ SCANOUT_MOVE static bool scanoutMove(CtrRenderer* r, bool onBottom) {
         memset(spare, 0, SCREENS_CARRY_AT);
         memset(out + SCREENS_CARRY_BYTES, 0, gameBytes - SCREENS_CARRY_AT - SCREENS_CARRY_BYTES);
     }
-    memcpy(out, in, SCREENS_CARRY_BYTES);
+    CtrLayout_carry18(out, in, SCREENS_CARRY_BYTES);
     GSPGPU_FlushDataCache(spare, gameBytes);
     gfxSetScreenFormat(game, GSP_BGR8_OES);
     CtrScreens_pacerShow(game); // libctru's current buffer becomes the spare, shown BGR8 at the next vblank
@@ -30502,7 +30537,7 @@ static void BONEPULSE_TEXT bpSkipDrawSpritePart(Renderer* renderer, int32_t tpag
                                                 uint32_t color, float alpha) {
     float dx = bonePieceDx(renderer);
     float dy = bonePieceDyNow;
-    E5X_OPAQUE(skipDrawSpritePart)(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x + dx, y + dy, xscale, yscale, angleDeg, pivotX, pivotY,
+    E5X_OPAQUE(ABQ(skipDrawSpritePart))(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x + dx, y + dy, xscale, yscale, angleDeg, pivotX, pivotY,
                                    color, alpha);
 }
 
@@ -30521,7 +30556,7 @@ static void BONEPULSE_TEXT bpSkipDrawSpritePartColor(Renderer* renderer, int32_t
                                                      float alpha) {
     float dx = bonePieceDx(renderer);
     float dy = bonePieceDyNow;
-    E5X_OPAQUE(skipDrawSpritePartColor)(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x + dx, y + dy, xscale, yscale, angleDeg, pivotX,
+    E5X_OPAQUE(ABQ(skipDrawSpritePartColor))(renderer, tpagIndex, srcOffX, srcOffY, srcW, srcH, x + dx, y + dy, xscale, yscale, angleDeg, pivotX,
                                         pivotY, color1, color2, color3, color4, alpha);
 }
 
@@ -30535,7 +30570,7 @@ static void BONEPULSE_TEXT bpSkipDrawRectangle(Renderer* renderer, float x1, flo
                                                bool outline) {
     float dx = bonePieceDx(renderer);
     float dy = bonePieceDyNow;
-    E5X_OPAQUE(skipDrawRectangle)(renderer, x1 + dx, y1 + dy, x2 + dx, y2 + dy, color, alpha, outline);
+    E5X_OPAQUE(ABQ(skipDrawRectangle))(renderer, x1 + dx, y1 + dy, x2 + dx, y2 + dy, color, alpha, outline);
 }
 
 static void BONEPULSE_TEXT bpDrawSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale,
@@ -30549,7 +30584,7 @@ static void BONEPULSE_TEXT bpSkipDrawSprite(Renderer* renderer, int32_t tpagInde
                                             float yscale, float angleDeg, uint32_t color, float alpha) {
     float dx = bonePieceDx(renderer);
     float dy = bonePieceDyNow;
-    E5X_OPAQUE(skipDrawSprite)(renderer, tpagIndex, x + dx, y + dy, originX, originY, xscale, yscale, angleDeg, color, alpha);
+    E5X_OPAQUE(ABQ(skipDrawSprite))(renderer, tpagIndex, x + dx, y + dy, originX, originY, xscale, yscale, angleDeg, color, alpha);
 }
 
 static void BONEPULSE_TEXT bpDrawLine(Renderer* renderer, float x1, float y1, float x2, float y2, float width, uint32_t color, float alpha) {
@@ -30561,7 +30596,7 @@ static void BONEPULSE_TEXT bpDrawLine(Renderer* renderer, float x1, float y1, fl
 static void BONEPULSE_TEXT bpSkipDrawLine(Renderer* renderer, float x1, float y1, float x2, float y2, float width, uint32_t color, float alpha) {
     float dx = bonePieceDx(renderer);
     float dy = bonePieceDyNow;
-    E5X_OPAQUE(skipDrawLine)(renderer, x1 + dx, y1 + dy, x2 + dx, y2 + dy, width, color, alpha);
+    E5X_OPAQUE(ABQ(skipDrawLine))(renderer, x1 + dx, y1 + dy, x2 + dx, y2 + dy, width, color, alpha);
 }
 
 static void BONEPULSE_TEXT bpDrawLineColor(Renderer* renderer, float x1, float y1, float x2, float y2, float width, uint32_t color1,
@@ -30575,7 +30610,7 @@ static void BONEPULSE_TEXT bpSkipDrawLineColor(Renderer* renderer, float x1, flo
                                                uint32_t color2, float alpha) {
     float dx = bonePieceDx(renderer);
     float dy = bonePieceDyNow;
-    E5X_OPAQUE(skipDrawLineColor)(renderer, x1 + dx, y1 + dy, x2 + dx, y2 + dy, width, color1, color2, alpha);
+    E5X_OPAQUE(ABQ(skipDrawLineColor))(renderer, x1 + dx, y1 + dy, x2 + dx, y2 + dy, width, color1, color2, alpha);
 }
 #endif // ENABLE_WAD16 (bonepulse)
 
@@ -30642,4 +30677,1970 @@ u8* CtrQuitblack_present(CtrTextureCache* cache) {
 
 #ifdef CTRPORT_DLGWHITE_HELPER
 #include "ctr_dlgwhite.inc"
+#endif
+
+#if defined(ENABLE_WAD16)
+// popbot's later steps (z_popbot2.c) also read dlgRedirecting's kept answer: the instance it is for, and the answer.
+// In their own section, appended after every other late input, and at the end of this file, so nothing before it
+// moves.
+const uint32_t Popbot2_layout[2] __attribute__((used, section(".rodata.popbot2_in_text"))) = {
+    __builtin_offsetof(CtrRenderer, dlg.lastInst), __builtin_offsetof(CtrRenderer, dlg.lastAnswer),
+};
+#endif
+
+// ===[ battlesplit (change battlesplit, UNDERTALE): the split battle layout's arena layer ]===
+// In a battle room with native drawing, the application surface's
+// half view uses the first 491,520 bytes of its full texture; the arena layer is a second half view in the bytes
+// after it (4 KiB aligned), so the layer costs no VRAM. Draws route between the two by swapping the surface's
+// target (z_battlesplit.c decides which); present shows rows 0..band-1 of the first on the top screen and the
+// layer on the bottom. Only the bottom screen's target, when the player's bottom mode keeps none, is new VRAM.
+// Appended at the file's end: no earlier line moves. Own sections; no constants or switches here.
+#if defined(ENABLE_WAD16)
+#include "ctr_battlesplit.h"
+#define BS_CODE __attribute__((noinline, noipa, section(".text_battlesplit")))
+typedef struct {
+    C3D_Tex tex;                  // the arena layer
+    C3D_RenderTarget* target;     // its target
+    C3D_RenderTarget* appTarget;  // the half view's own target, which the surface holds outside drawViews
+    void* appData;                // the half view's memory the layer was made beside
+    C3D_RenderTarget* ownBottom;  // the bottom screen's target made for the split (none in the player's mode)
+    // battlesplit17 (CtrRenderer_bsClip17, appended): while the band cut holds the scissor fields, the game's own.
+    bool clip17;                  // the cut is in the fields now
+    bool clipWasOn17;
+    CtrRect clipWas17;
+} BsGpu;
+static BsGpu* bsGpu __attribute__((section(".data_battlesplit"))) = nullptr;
+
+// The application surface if it is drawn native into a plain VRAM half view with room for the layer after it.
+static BS_CODE CtrSurface* bsApp(CtrRenderer* r) {
+    Runner* runner = r->base.runner;
+    if (runner == nullptr) return nullptr;
+    int32_t id = runner->applicationSurfaceId;
+    if (0 > id || (uint32_t) id >= r->surfaceCount) return nullptr;
+    CtrSurface* s = &r->surfaces[id];
+    if (!s->used || s->shift != 1 || s->target == nullptr || s->recorded || s->spilled || s->windowed || s->parked != nullptr) return nullptr;
+    if (r->appView.target == nullptr || r->appView.shift != 0 || r->appView.surface != id) return nullptr;
+    if (s->tex.data == nullptr || s->tex.data != r->appView.tex.data || 4 > s->tex.width) return nullptr;
+    uint32_t off = (s->tex.size + 0xFFFu) & ~0xFFFu;
+    if ((uint64_t) off + (uint64_t) s->tex.size > (uint64_t) r->appView.tex.size) return nullptr;
+    return s;
+}
+
+// Whether this frame may be split: native drawing at the standard top size with frame skip off.
+BS_CODE bool CtrRenderer_bsAllowed(Renderer* renderer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    return r->display.drawing == DRAWING_NATIVE && r->display.topMode == TOP_MODE_STANDARD && r->topW == TOP_SCREEN_W &&
+           r->display.smoothing != SMOOTHING_FULL && r->skip.max == 0 && !r->skip.half && r->topTarget != nullptr;
+}
+
+static BS_CODE void bsDropLayer(CtrRenderer* r, BsGpu* g) {
+    if (g->target == nullptr) return;
+    for (uint32_t i = 0; r->surfaceCount > i; i++) {
+        if (r->surfaces[i].target == g->target) r->surfaces[i].target = g->appTarget;
+    }
+    C3D_RenderTargetDelete(g->target);
+    g->target = nullptr;
+    g->appTarget = nullptr;
+    g->appData = nullptr;
+}
+
+// Outside a frame, before the real beginFrame: the layer (and the bottom target) made, kept or dropped. 1 when the
+// frame is split.
+BS_CODE int32_t CtrRenderer_bsPrepare(Renderer* renderer, bool on) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    BsGpu* g = bsGpu;
+    if (g != nullptr && g->ownBottom != nullptr && r->bottomTarget != g->ownBottom) g->ownBottom = nullptr;
+    if (!on) {
+        if (g == nullptr) return 0;
+        bsDropLayer(r, g);
+        if (g->ownBottom != nullptr) {
+            r->bottomTarget = nullptr;
+            { void CtrLayout_returnBottom(C3D_RenderTarget*); CtrLayout_returnBottom(g->ownBottom); } // layout keeps a held target (ctr_layout.h)
+        }
+        free(g);
+        bsGpu = nullptr;
+        // The bottom screen goes back to the player's mode (log, magnifier, off) the way any display change does.
+        r->dlg.shown = false;
+        r->displayDirty = true;
+        return 0;
+    }
+    // A pending display change first, so it can't delete the bottom target made below in this frame's beginFrame.
+    if (r->displayDirty) configureScreens(r);
+    // The magnifier rests in a split room, so this frame's beginFrame draws the application surface native.
+    r->magnifier.active = false;
+    if (g != nullptr && g->ownBottom != nullptr && r->bottomTarget != g->ownBottom) g->ownBottom = nullptr;
+    CtrSurface* s = bsApp(r);
+    if (s == nullptr) {
+        if (g != nullptr) bsDropLayer(r, g);
+        return 0;
+    }
+    if (g == nullptr) {
+        g = (BsGpu*) calloc(1, sizeof(BsGpu));
+        if (g == nullptr) return 0;
+        bsGpu = g;
+    }
+    if (g->target != nullptr && (s->tex.data != g->appData || (s->target != g->appTarget && s->target != g->target))) bsDropLayer(r, g);
+    if (g->target != nullptr && s->target == g->target) s->target = g->appTarget;
+    if (g->target == nullptr) {
+        C3D_Tex t = s->tex;
+        uint32_t off = (s->tex.size + 0xFFFu) & ~0xFFFu;
+        t.data = (uint8_t*) s->tex.data + off;
+        C3D_RenderTarget* target = C3D_RenderTargetCreateFromTex(&t, GPU_TEXFACE_2D, 0, -1);
+        if (target == nullptr) return 0;
+        target->frameBuf.height = (u16) (t.size / ((uint32_t) t.width * 4u)); // its rows, as makeHalfView's
+        g->tex = t;
+        g->target = target;
+        g->appTarget = s->target;
+        g->appData = s->tex.data;
+    }
+    if (r->bottomTarget == nullptr && !r->bottomYielded) {
+        C3D_RenderTarget* CtrLayout_lendBottom(int, int, int, int); C3D_RenderTarget* b = CtrLayout_lendBottom(TOP_SCREEN_H, BOTTOM_SCREEN_W, GPU_RB_RGBA8, -1); // the held one, lent: never a third (ctr_layout.h)
+        if (b == nullptr) {
+            bsDropLayer(r, g);
+            return 0;
+        }
+        C3D_RenderTargetSetOutput(b, GFX_BOTTOM, GFX_LEFT, BOTTOM_TRANSFER_FLAGS);
+        r->bottomTarget = b;
+        g->ownBottom = b;
+    }
+    return 1;
+}
+
+// After the real beginFrame: the split owns the bottom screen this frame (main.c's consoles stay off, the magnifier
+// rests, the backlight is on). False if the half view changed in beginFrame: the frame is then drawn as today.
+BS_CODE bool CtrRenderer_bsBegun(Renderer* renderer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    BsGpu* g = bsGpu;
+    if (g == nullptr || g->target == nullptr) return false;
+    if (g->ownBottom != nullptr && r->bottomTarget != g->ownBottom) g->ownBottom = nullptr;
+    CtrSurface* s = bsApp(r);
+    if (s == nullptr || s->tex.data != g->appData || s->target != g->appTarget) return false;
+    r->dlg.shown = true;
+    r->magnifier.active = false;
+    r->magnifier.blankSent = 2;
+    applyBottomBacklight(r);
+    return true;
+}
+
+// Whether draws land on the application surface now (not on a game surface).
+BS_CODE bool CtrRenderer_bsAppBound(Renderer* renderer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    return r->base.runner != nullptr && r->boundSurface == r->base.runner->applicationSurfaceId;
+}
+
+// The layer cleared to black, as the frame's drawing starts.
+BS_CODE void CtrRenderer_bsClearLayer(Renderer* renderer) {
+    (void) renderer;
+    BsGpu* g = bsGpu;
+    if (g != nullptr && g->target != nullptr) C3D_RenderTargetClear(g->target, C3D_CLEAR_ALL, 0x000000FF, 0);
+}
+
+// Draws from here on go to the application surface's own half view (0) or the arena layer (1). Nothing samples
+// either while the other is drawn, so the switch needs no frame split.
+BS_CODE void CtrRenderer_bsLayer(Renderer* renderer, int32_t layer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    BsGpu* g = bsGpu;
+    if (g == nullptr || g->target == nullptr || r->base.runner == nullptr) return;
+    int32_t id = r->base.runner->applicationSurfaceId;
+    if (0 > id || (uint32_t) id >= r->surfaceCount) return;
+    CtrSurface* s = &r->surfaces[id];
+    if (s->target != g->appTarget && s->target != g->target) return;
+    C3D_RenderTarget* want = layer != 0 && s->tex.data == g->appData ? g->target : g->appTarget;
+    s->target = want;
+    if (r->inFrame && r->boundSurface == id && r->boundTarget != nullptr && r->boundTarget != want) {
+        flushBatch(r);
+        r->boundTarget = want;
+        // Present samples both: leaving the surface splits the frame first, as after any draw on it.
+        r->boundTargetDrawn = true;
+        r->clearedTarget = nullptr;
+        C3D_FrameDrawOn(want);
+        applyViewport(r);
+        if (r->gameProjection) uploadProjection(r, &r->projection);
+    }
+}
+
+// In place of present: rows 0..band-1 of the frame on the top screen from row topDy, centred across as today; the
+// layer on the bottom screen from row bottomDy. present() is then skipped (skipPresent).
+BS_CODE void CtrRenderer_bsPresent(Renderer* renderer, int32_t band, int32_t topDy, int32_t bottomDy) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    BsGpu* g = bsGpu;
+    if (!r->inFrame || r->skipPresent || r->skip.active || g == nullptr || g->target == nullptr || r->base.runner == nullptr) return;
+    CtrSurface* s = bsApp(r);
+    if (s == nullptr || s->tex.data != g->appData || s->target != g->appTarget) return;
+    int32_t w = s->width / 2, h = s->height / 2;
+    if (0 >= band || band > h) band = h;
+    if (0 > topDy || topDy + band > TOP_SCREEN_H) topDy = 0;
+    flushBatch(r);
+    float dst[4];
+    dst[0] = floorf(((float) r->topW - (float) w) * 0.5f);
+    dst[1] = (float) topDy;
+    dst[2] = (float) w;
+    dst[3] = (float) band;
+    C3D_Tex* tex = surfaceTexture(r, r->base.runner->applicationSurfaceId);
+    bindTarget(r, r->topTarget, -1);
+    blitApp(r, tex, 0.0f, 0.0f, (float) w, (float) band, 0.0f, 0.0f, dst, false);
+    if (r->stereoActive && r->topRightTarget != nullptr) {
+        bindTarget(r, r->topRightTarget, -1);
+        blitApp(r, tex, 0.0f, 0.0f, (float) w, (float) band, 0.0f, 0.0f, dst, false);
+    }
+    if (r->bottomTarget != nullptr && !r->bottomYielded) {
+        int32_t y0 = 0 > -bottomDy ? 0 : -bottomDy, y1 = BOTTOM_SCREEN_H - bottomDy;
+        if (y1 > h) y1 = h;
+        if (bottomDy != 0 || w < BOTTOM_SCREEN_W) C3D_RenderTargetClear(r->bottomTarget, C3D_CLEAR_ALL, 0x000000FF, 0);
+        bindTarget(r, r->bottomTarget, -1);
+#ifdef CTRPORT_BS_PLACESWITCH
+        // (c), test builds only (z_battlesplit.c): the rows above the seam move up, the HP line and buttons stay.
+        extern int32_t CtrRenderer_bsSeam;
+        int32_t seam = CtrRenderer_bsSeam;
+        if (seam > y0 && y1 > seam && 0 > bottomDy) {
+            dst[0] = 0.0f;
+            dst[1] = (float) (y0 + bottomDy);
+            dst[2] = (float) w;
+            dst[3] = (float) (seam - y0);
+            blitApp(r, &g->tex, 0.0f, (float) y0, (float) w, (float) (seam - y0), 0.0f, 0.0f, dst, false);
+            int32_t y2 = BOTTOM_SCREEN_H > h ? h : BOTTOM_SCREEN_H;
+            dst[1] = (float) seam;
+            dst[3] = (float) (y2 - seam);
+            if (y2 > seam) blitApp(r, &g->tex, 0.0f, (float) seam, (float) w, (float) (y2 - seam), 0.0f, 0.0f, dst, false);
+            y1 = y0;
+        }
+#endif
+        if (y1 > y0) {
+            dst[0] = 0.0f;
+            dst[1] = (float) (y0 + bottomDy);
+            dst[2] = (float) w;
+            dst[3] = (float) (y1 - y0);
+            blitApp(r, &g->tex, 0.0f, (float) y0, (float) w, (float) (y1 - y0), 0.0f, 0.0f, dst, false);
+        }
+    }
+    r->presentScale = 0.5f;
+    r->nativeFrames++;
+    r->skipPresent = true;
+}
+
+// Stylus with an Original battle (z_battlesplit.c), before the real beginFrame: the game goes to the screen
+// CtrScreens_gameBelow() now names in this frame's configureScreens. The display is narrowed (going below) or put
+// back (saved: what going below returned) as __wrap_CtrRenderer_setDisplay would have it, so main's setDisplay later
+// in the frame changes nothing more. Returns the fields as they were, packed.
+BS_CODE uint32_t CtrRenderer_bsMoveGame(Renderer* renderer, bool below, uint32_t saved) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    CtrDisplaySettings* d = &r->display;
+    uint32_t was = ((uint32_t) d->topMode & 1u) | ((uint32_t) d->stereoMode & 3u) << 1 | ((uint32_t) d->bottomMode & 3u) << 3 |
+                   (d->dialogueBottom ? 1u << 5 : 0u);
+    if (below) {
+        d->topMode = TOP_MODE_STANDARD;
+        d->stereoMode = STEREO_NORMAL;
+        d->bottomMode = BOTTOM_MODE_CONSOLE;
+        d->dialogueBottom = false;
+    } else {
+        d->topMode = (CtrTopMode) (saved & 1u);
+        d->stereoMode = (CtrStereoMode) (saved >> 1 & 3u);
+        d->bottomMode = (CtrBottomMode) (saved >> 3 & 3u);
+        d->dialogueBottom = (saved & 1u << 5) != 0;
+    }
+    r->displayDirty = true;
+    return was;
+}
+
+// Placement (c), the split default (z_battlesplit.c's CtrBattlesplit_seam; design section 20). CtrRenderer_bsPresent
+// draws the top and, for one piece, the bottom; with a seam it draws the top only (the bottom yielded for the call)
+// and the bottom is drawn here in two pieces: layer rows from the lift to the seam at the top of the screen, the rows
+// from the seam down where they are, black between. Appended (.text_battlesplit5), so CtrRenderer_bsPresent keeps its
+// size and nothing before it moves.
+#define BS_CODE5 __attribute__((noinline, noipa, section(".text_battlesplit5")))
+BS_CODE5 void CtrRenderer_bsPresent5(Renderer* renderer, int32_t band, int32_t topDy, int32_t bottomDy) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    int32_t seam = CtrBattlesplit_seam();
+    bool yielded = r->bottomYielded, before = r->skipPresent;
+    bool two = seam > 0 && 0 > bottomDy && seam > -bottomDy && r->bottomTarget != nullptr && !yielded;
+    if (two) r->bottomYielded = true;
+    CtrRenderer_bsPresent(renderer, band, topDy, bottomDy);
+    r->bottomYielded = yielded;
+    if (!two || before || !r->skipPresent) return; // not drawn (CtrRenderer_bsPresent's checks)
+    BsGpu* g = bsGpu;
+    CtrSurface* s = bsApp(r);
+    if (g == nullptr || s == nullptr) return;
+    int32_t w = s->width / 2, h = s->height / 2, y0 = -bottomDy, y2 = BOTTOM_SCREEN_H > h ? h : BOTTOM_SCREEN_H;
+    C3D_RenderTargetClear(r->bottomTarget, C3D_CLEAR_ALL, 0x000000FF, 0);
+    bindTarget(r, r->bottomTarget, -1);
+    float dst[4] = { 0.0f, 0.0f, (float) w, (float) (seam - y0) };
+    blitApp(r, &g->tex, 0.0f, (float) y0, (float) w, (float) (seam - y0), 0.0f, 0.0f, dst, false);
+    if (y2 > seam) {
+        dst[1] = (float) seam;
+        dst[3] = (float) (y2 - seam);
+        blitApp(r, &g->tex, 0.0f, (float) seam, (float) w, (float) (y2 - seam), 0.0f, 0.0f, dst, false);
+    }
+}
+#endif
+
+#ifdef ENABLE_WAD16
+extern void dimlightScreensTop(CtrRenderer*, bool) __asm__("screensTopBacklight");
+void CtrDimlight_queueTop(bool off);
+__attribute__((noinline, noipa, section(".text.late.dimlight")))
+void CtrDimlight_topBacklight(void* renderer, bool off) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    bool effective = off && !CtrScreens_sharedBacklight && r->displayCaps.wide;
+    dimlightScreensTop(r, off);
+    if (effective != CtrScreens_topBacklightOff) CtrDimlight_queueTop(effective);
+}
+#endif
+
+// (change asgorelong) utaFineDraw plans an ember's tile switch. utaFineDraw refused (UTA_NO 40) any fine sprite whose
+// tile's texture wasn't the held batch's, so in Asgore's helix about 46 of the 90 embers a frame went the full Smart
+// path. Here aslPlan and aslLinear plan that switch as the full path makes it (aslSwitch). aslFineSprite takes
+// utaFineSprite's place in utkDrawSprite: these are utasgore's utaPlan, utaCommit, utaLinear, utaFineDraw and
+// utaFineSprite with the switch added, appended here so that no earlier late code moves (growing them where they sit
+// would shift every later change's late code: review D2). The originals stay where they were, unchanged
+// and unused (utaFineSprite is kept by its declaration's `used`); the helpers, the plan keys and the shadow check's
+// statics are theirs. Exact by construction; the UTA_SHADOW build checks every planned draw against the full path.
+#if !defined(ENABLE_WAD17) && !defined(CTRPORT_RENDER_TIMING)
+#if ASG_FORCE_SPLIT == 0
+#define ASL_LATE __attribute__((noinline, section(".text_asgorelong")))
+// A fine sprite's draw in view, worked out ahead: its quads as smartEmitAveraged and smartTileEnd would put them in
+// the batch, and what is noted of it.
+typedef struct {
+    SmartQuad q[9];
+    int32_t n;
+    uint32_t count; // vertices
+    float px[4], py[4]; // where it is drawn (on the grid)
+    uint32_t pixels;
+    bool averaged; // smartEmitAveraged's quads (else emitPageRegionVisible's fallback: aslLinear)
+    C3D_Tex* tex; // nullptr: the vertices join the run's last held batch; else they start a held batch of this texture
+    uint32_t pad; // with tex: vertices skipped first, so a batch of quads starts at a multiple of four
+    bool quads; // with tex: the new batch is one of quads
+} AslPlan;
+
+// (change asgorelong) A draw whose tile's texture isn't the held run's batch's (Asgore's embers: three cache tiles, not
+// the flames'), as the full path makes it: asgBegin takes the run's last held batch back, reserveBatch can't join it
+// (batchUnitFor: asgBegin cleared batchMultiOk), so its addHoldClose holds that batch again exactly as it was, and the
+// new texture's batch starts, quad-aligned where quad indices fit its n quads; asgEnd then holds that batch too. What
+// utaHeldSteady leaves to look at: room for one more held batch (else asgEnd ends the run), the padding, and the room
+// test reserveBatch makes after it. count: the vertices. False where the full path would do anything else.
+static inline __attribute__((always_inline)) bool aslSwitch(const CtrRenderer* r, C3D_Tex* tex, uint32_t n, AslPlan* plan,
+                                                            uint32_t* count) {
+    if (r->addHold.count >= ADD_HOLD_BATCHES) return false;
+    uint32_t pad = (4u - (r->vertexCount & 3u)) & 3u;
+    bool fits = r->quadIndices != nullptr && r->quadIndexOk && r->vertexLimit >= r->vertexCount + pad + 4u * n;
+    if (!fits) pad = 0;
+    *count = (fits ? 4u : 6u) * n;
+    if (r->vertexCount + pad + *count > r->vertexLimit) return false;
+    plan->tex = tex;
+    plan->pad = pad;
+    plan->quads = fits;
+    return true;
+}
+
+// emitPageRegionVisible's draw of the fine sprite px/py (a data page's item tpagIndex, in the colour c) continuing the
+// held run, worked out without changing anything: false where the full path would do anything else, or anything this
+// can't tell for sure.
+static ASL_LATE bool aslPlan(CtrRenderer* r, CtrPage* page, int32_t tpagIndex, const TexturePageItem* tpag, const float* px, const float* py,
+                             CtrColor c, AslPlan* plan, bool* turnedDown) {
+    if (0 > r->boundSurface || drawingBothEyes(r) || r->palNextB != nullptr || !r->inFrame || r->boundTarget == nullptr || r->spillLoadPending) {
+        return UTA_NO(1);
+    }
+    CtrSurface* s = &r->surfaces[r->boundSurface];
+    if (s->shift <= 0 || s->pattern.version == s->version || s->skipRec != nullptr || s->lazy != nullptr) return UTA_NO(2);
+    // gridSnapQuad.
+    memcpy(plan->px, px, sizeof(plan->px));
+    memcpy(plan->py, py, sizeof(plan->py));
+    if (r->gridHold == 0) {
+        if (r->gridMap.surface != r->boundSurface) return UTA_NO(3);
+        if (r->gridMap.on && quadUpright(px, py)) {
+            if (0 <= r->snapItem.tpag) return UTA_NO(4);
+            float dx, dy;
+            // gridDelta, written out: one more call of it and GCC makes it a function in .text.
+            dx = -gridExcess(r->gridMap.kx * px[0] + r->gridMap.ox) * r->gridMap.invKx;
+            dy = -gridExcess(r->gridMap.ky * py[0] + r->gridMap.oy) * r->gridMap.invKy;
+            float sw = (float) tpag->sourceWidth, sh = (float) tpag->sourceHeight;
+            if (!((floatBits(dx) | floatBits(dy)) << 1 == 0 || (r->gridMap.x && !utaGridDoubled((px[1] - px[0]) * r->gridMap.kx, sw)) ||
+                  (r->gridMap.y && !utaGridDoubled((py[2] - py[0]) * r->gridMap.ky, sh)))) {
+                for (int32_t i = 0; 4 > i; i++) {
+                    plan->px[i] = px[i] + dx;
+                    plan->py[i] = py[i] + dy;
+                }
+            }
+        }
+    }
+    px = plan->px;
+    py = plan->py;
+    // smartEmitAveraged, at half resolution (nativeSpans). Where it surely answers false (*turnedDown), px/py are
+    // gridSnapQuad's quad.
+    const C3D_Mtx* m = &r->projection;
+    if (!r->gameProjection || m->r[0].y != 0.0f || m->r[1].x != 0.0f || m->r[3].x != 0.0f || m->r[3].y != 0.0f || m->r[3].w != 1.0f) {
+        return *turnedDown = true, UTA_NO(5);
+    }
+    if (px[0] != px[3] || px[1] != px[2] || py[0] != py[1] || py[2] != py[3]) return *turnedDown = true, UTA_NO(6);
+    float vw = (float) r->viewport.w, vh = (float) r->viewport.h;
+    float kx = utaKeep(utaKeep(m->r[0].x * 0.5f) * vw), ky = utaKeep(utaKeep(m->r[1].y * -0.5f) * vh);
+    if (kx == 0.0f || ky == 0.0f) return *turnedDown = true, UTA_NO(7);
+    float ox = utaKeep((float) r->viewport.x + utaKeep(utaKeep(vw + utaKeep(m->r[0].w * vw)) * 0.5f));
+    float oy = utaKeep((float) r->viewport.y + utaKeep(utaKeep(1.0f - m->r[1].w) * utaKeep(vh * 0.5f)));
+    float sx0 = (float) tpag->sourceX, sy0 = (float) tpag->sourceY;
+    float sx1 = sx0 + (float) tpag->sourceWidth, sy1 = sy0 + (float) tpag->sourceHeight;
+    float x0 = utaKeep(ox + utaKeep(px[0] * kx)), x1 = utaKeep(ox + utaKeep(px[1] * kx));
+    float y0 = utaKeep(oy + utaKeep(py[0] * ky)), y1 = utaKeep(oy + utaKeep(py[2] * ky));
+    float tx0 = sx0, tx1 = sx1, ty0 = sy0, ty1 = sy1;
+    uint8_t flip = (uint8_t) ((px[0] > px[1] ? 2 : 0) | (py[0] > py[2] ? 8 : 0));
+    if (x0 > x1) {
+        float t = x0; x0 = x1; x1 = t;
+        t = tx0; tx0 = tx1; tx1 = t;
+        flip |= 1;
+    }
+    if (y0 > y1) {
+        float t = y0; y0 = y1; y1 = t;
+        t = ty0; ty0 = ty1; ty1 = t;
+        flip |= 4;
+    }
+    float xw = utaKeep(x1 - x0), yh = utaKeep(y1 - y0);
+    // Its size test (within 0.01 of the texels): scaled further, surely turned down; close to the edge, left to it.
+    float ex = fabsf(xw - fabsf(tx1 - tx0)), ey = fabsf(yh - fabsf(ty1 - ty0));
+    if (ex > 0.02f || ey > 0.02f) return *turnedDown = true, UTA_NO(8);
+    if (ex > 0.005f || ey > 0.005f) return UTA_NO(9);
+    bool ok = true;
+    int32_t ax0 = utaFloor(utaKeep(x0 + 0.5f), &ok), ay0 = utaFloor(utaKeep(y0 + 0.5f), &ok);
+    int32_t aw = utaFloor(utaKeep(xw + 0.5f), &ok), ah = utaFloor(utaKeep(yh + 0.5f), &ok);
+    if (!ok || 0 >= aw || 0 >= ah) return UTA_NO(10);
+    // The draw's key, and what it gives.
+    if (!utaKeysInit) {
+        for (int32_t i = 0; UTA_KEYS > i; i++) utaKeys[i].tpag = -1;
+        utaKeysInit = 1;
+    }
+    uint32_t color;
+    memcpy(&color, &c, sizeof(color));
+    uint8_t parity = (uint8_t) ((ax0 & 1) | (ay0 & 1) << 1);
+    UtaKey* k = &utaKeys[((uint32_t) tpagIndex ^ parity) & (UTA_KEYS - 1)];
+    if (k->tpag != tpagIndex || k->color != color || k->aw != aw || k->ah != ah || k->parity != parity || k->flip != flip ||
+        k->page != page || k->tileW != page->tileW || k->tileH != page->tileH || k->tilesX != page->tilesX || k->tilesY != page->tilesY ||
+        k->tx0 != tx0 || k->tx1 != tx1 || k->ty0 != ty0 || k->ty1 != ty1) { // whole numbers from the item: never NaN or -0
+        k->tpag = tpagIndex;
+        k->color = color;
+        k->aw = aw;
+        k->ah = ah;
+        k->parity = parity;
+        k->flip = flip;
+        k->page = page;
+        k->tileW = page->tileW;
+        k->tileH = page->tileH;
+        k->tilesX = page->tilesX;
+        k->tilesY = page->tilesY;
+        k->tx0 = tx0;
+        k->tx1 = tx1;
+        k->ty0 = ty0;
+        k->ty1 = ty1;
+        if (!utaFill(k, page, c, ax0, ay0, tx0, tx1, ty0, ty1)) {
+            k->tpag = -1;
+            return UTA_NO(11);
+        }
+    }
+    // smartTileBegin's ensureTiles leaves a tile already used this frame (and recorded, while recording) as it was;
+    // the full path draws the first of a tile's draws in a frame.
+    CtrTile* tile = &page->tiles[k->ty * page->tilesX + k->tx];
+    const CtrTextureCache* cache = &r->textures;
+    if (tile->lastUsedFrame != cache->frame || !tile->valid || (0 <= cache->recordRoom && tile->seenVisit != cache->recordVisit)) return UTA_NO(12);
+    // reserveBatch tests the room for 6 vertices a quad (makeVertexRoom) before quad indices cut that to 4.
+    if (r->vertexCount + 6u * (uint32_t) k->n > r->vertexLimit) return UTA_NO(14);
+    // reserveBatch, joining the run's own batch (asgBegin took it back): its texture, unit 0, no padding; or another
+    // texture's batch (aslSwitch).
+    uint32_t count;
+    C3D_Tex* tex = CtrTextures_drawTex(tile);
+    plan->tex = nullptr;
+    if (tex == r->batchTex) {
+        const CtrHeldBatch* b = &r->addHold.batches[r->addHold.count - 1];
+        count = (b->quads ? 4u : 6u) * (uint32_t) k->n;
+    } else if (!aslSwitch(r, tex, (uint32_t) k->n, plan, &count)) {
+        return UTA_NO(13);
+    }
+    // The positions: smartAxes' q0 and q1 of each span, then each quad's corners (quadPosition on a tile's part).
+    float bx = utaKeep(ox + 0.5f), by = utaKeep(oy + 0.5f), rkx = utaKeep(1.0f / kx), rky = utaKeep(1.0f / ky);
+    float xq[3][2], yq[3][2];
+    for (int32_t i = 0; k->nx > i; i++) {
+        float q0 = utaKeep(utaKeep((float) (ax0 + k->xr[i][0]) - bx) * rkx), q1 = utaKeep(utaKeep((float) (ax0 + k->xr[i][1]) - bx) * rkx);
+        xq[i][0] = k->xswap[i] ? q1 : q0;
+        xq[i][1] = k->xswap[i] ? q0 : q1;
+    }
+    for (int32_t j = 0; k->ny > j; j++) {
+        float q0 = utaKeep(utaKeep((float) (ay0 + k->yr[j][0]) - by) * rky), q1 = utaKeep(utaKeep((float) (ay0 + k->yr[j][1]) - by) * rky);
+        yq[j][0] = k->yswap[j] ? q1 : q0;
+        yq[j][1] = k->yswap[j] ? q0 : q1;
+    }
+    for (int32_t n = 0; k->n > n; n++) {
+        int32_t i = k->qi[n], j = k->qj[n];
+        float qx[4] = { xq[i][0], xq[i][1], xq[i][1], xq[i][0] }, qy[4] = { yq[j][0], yq[j][0], yq[j][1], yq[j][1] };
+        SmartQuad* q = &plan->q[n];
+        if (k->whole) {
+            memcpy(q->x, qx, sizeof(q->x));
+            memcpy(q->y, qy, sizeof(q->y));
+        } else {
+            const float* xs = k->xs[i];
+            const float* ys = k->ys[j];
+            utaQuadPosition(qx, qy, xs[0], ys[0], &q->x[0], &q->y[0]);
+            utaQuadPosition(qx, qy, xs[1], ys[0], &q->x[1], &q->y[1]);
+            utaQuadPosition(qx, qy, xs[1], ys[1], &q->x[2], &q->y[2]);
+            utaQuadPosition(qx, qy, xs[0], ys[1], &q->x[3], &q->y[3]);
+        }
+        q->u0 = k->uv[n][0];
+        q->v0 = k->uv[n][1];
+        q->u1 = k->uv[n][2];
+        q->v1 = k->uv[n][3];
+        q->c = k->cc[n];
+    }
+    plan->n = k->n;
+    plan->count = count;
+    plan->pixels = (uint32_t) (aw * ah);
+    plan->averaged = true;
+    return true;
+}
+
+// The plan's draw: what reserveBatch, smartTileEnd, smartEmitAveraged's notes and asgEnd's held path would leave.
+static inline __attribute__((always_inline)) void aslCommit(CtrRenderer* r, const AslPlan* plan, CtrVertex* v) {
+    CtrHeldBatch* b;
+    if (plan->tex != nullptr) {
+        // aslSwitch: the run's batch held again as it was, the padding, then the new texture's batch, held by asgEnd
+        // with the batch textures reserveBatch's resetBatchTextures left (only the first changes).
+        r->vertexCount += plan->pad;
+        r->vertexUsed += plan->pad;
+        r->batchTex = plan->tex;
+        r->batchTexes[0] = plan->tex;
+        b = &r->addHold.batches[r->addHold.count++];
+        b->start = r->vertexCount;
+        b->count = 0;
+        memcpy(b->texes, r->batchTexes, sizeof(b->texes));
+        b->texCount = 1;
+        b->quads = plan->quads;
+        b->plainOnly = false;
+    } else {
+        b = &r->addHold.batches[r->addHold.count - 1];
+    }
+    bool quads = b->quads;
+    r->vertexCount += plan->count;
+    r->vertexUsed += plan->count;
+    r->boundTargetDrawn = true;
+    r->clearedTarget = nullptr;
+    r->drawnSinceSplit = true;
+    r->surfaces[r->boundSurface].drawnSinceSplit = true;
+    r->surfaces[r->boundSurface].version = ++r->contentSerial;
+    if (0 <= r->spillBound) r->spillDirty = true;
+    r->vertexZ = 0.0f; // depthDisparity with one eye, at unit 0
+    float z = r->vertexZ;
+    const SmartQuad* q = plan->q;
+    for (int32_t i = 0; plan->n > i; i++, q++) {
+        setVertex(&v[0], q->x[0], q->y[0], z, q->u0, q->v0, q->c);
+        setVertex(&v[1], q->x[1], q->y[1], z, q->u1, q->v0, q->c);
+        setVertex(&v[2], q->x[2], q->y[2], z, q->u1, q->v1, q->c);
+        if (quads) {
+            setVertex(&v[3], q->x[3], q->y[3], z, q->u0, q->v1, q->c);
+            v += 4;
+        } else {
+            setVertex(&v[3], q->x[0], q->y[0], z, q->u0, q->v0, q->c);
+            setVertex(&v[4], q->x[2], q->y[2], z, q->u1, q->v1, q->c);
+            setVertex(&v[5], q->x[3], q->y[3], z, q->u0, q->v1, q->c);
+            v += 6;
+        }
+    }
+    int32_t before = r->smart.count;
+    UTA_STAMP(3);
+    smartNoteGate(r, plan->px, plan->py, 4);
+    UTA_STAMP(4);
+    if (plan->averaged) {
+        if (r->smart.count == before) r->smart.merged++;
+        r->smart.pixels += plan->pixels;
+    }
+    b->count += plan->count;
+    r->batchStart = r->vertexCount;
+    asgRun.endVertex = r->vertexCount;
+}
+
+// emitPageRegionVisible's fallback for a fine sprite smartEmitAveraged turns down (scaled, as Asgore's embers are),
+// worked out without changing anything, from gridSnapQuad's quad in plan->px/py (which smartNote notes): half a
+// surface pixel up and left, the colour premultiplied, then emitPageTiles' quad of the one tile it meets and emitQuad's
+// vertices, with regionTilePart's and quadPosition's arithmetic in the order emitPageTiles' compiled code does it
+// (reciprocals of the sizes, products rounded before each add). False where the full path would do anything else.
+// A copy: tests/test_utasgore_drift.py holds the source of what it follows, and a change there needs the UTA_SHADOW
+// check rerun.
+static ASL_LATE bool aslLinear(CtrRenderer* r, CtrPage* page, const TexturePageItem* tpag, CtrColor c, AslPlan* plan) {
+    // gridActive would update the map; emitQuad leaves out a draw of alpha 0.
+    if (r->gridMap.surface != r->boundSurface || c.a == 0) return UTA_NO(20);
+    float px[4], py[4];
+    memcpy(px, plan->px, sizeof(px));
+    memcpy(py, plan->py, sizeof(py));
+    if (r->gridMap.on) {
+        float dx = utaKeep(r->smart.vertical ? 0.0f : -0.5f * r->gridMap.invKx), dy = utaKeep(r->gridMap.y ? -0.5f * r->gridMap.invKy : 0.0f);
+        for (int32_t i = 0; 4 > i; i++) {
+            px[i] = utaKeep(plan->px[i] + dx);
+            py[i] = utaKeep(plan->py[i] + dy);
+        }
+    }
+    uint32_t a = c.a;
+    CtrColor pc = { (uint8_t) ((c.r * a + 127u) / 255u), (uint8_t) ((c.g * a + 127u) / 255u), (uint8_t) ((c.b * a + 127u) / 255u), c.a };
+    // emitPageTiles. Tile sizes are powers of two, so dividing by them is exact however it is compiled.
+    uint32_t tw = (uint32_t) page->tileW, th = (uint32_t) page->tileH;
+    if (tw == 0 || th == 0 || (tw & (tw - 1)) != 0 || (th & (th - 1)) != 0) return UTA_NO(21);
+    float tileW = (float) tw, tileH = (float) th;
+    float sx0 = (float) tpag->sourceX, sy0 = (float) tpag->sourceY;
+    float sx1 = sx0 + (float) tpag->sourceWidth, sy1 = sy0 + (float) tpag->sourceHeight;
+    SmartQuad* q = &plan->q[0];
+    int32_t index = 0;
+    if (page->tilesX == 1 && page->tilesY == 1) {
+        q->u0 = sx0 / tileW, q->v0 = sy0 / tileH, q->u1 = sx1 / tileW, q->v1 = sy1 / tileH;
+        memcpy(q->x, px, sizeof(q->x));
+        memcpy(q->y, py, sizeof(q->y));
+    } else {
+        // One tile, and its part (regionTilePart): w and h are positive, so the bounds are sx0..sx1 and sy0..sy1.
+        float w = sx1 - sx0, h = sy1 - sy0;
+        int32_t tx = (int32_t) (sx0 / tileW), ty = (int32_t) (sy0 / tileH);
+        if (tx != (int32_t) (utaKeep(sx1 - 0.001f) / tileW) || ty != (int32_t) (utaKeep(sy1 - 0.001f) / tileH) || 0 > tx || 0 > ty ||
+            tx >= page->tilesX || ty >= page->tilesY) {
+            return UTA_NO(22);
+        }
+        // Whole numbers, exact in any order.
+        float ox = (float) tx * tileW, oy = (float) ty * tileH;
+        float cx0 = sx0 > ox ? sx0 : ox, cx1 = ox + tileW > sx1 ? sx1 : ox + tileW;
+        float cy0 = sy0 > oy ? sy0 : oy, cy1 = oy + tileH > sy1 ? sy1 : oy + tileH;
+        if (cx0 >= cx1 || cy0 >= cy1) return UTA_NO(23);
+        float rw = utaKeep(1.0f / w), rh = utaKeep(1.0f / h), rtw = utaKeep(1.0f / tileW), rth = utaKeep(1.0f / tileH);
+        float s0 = utaKeep((cx0 - sx0) * rw), s2 = utaKeep((cx1 - sx0) * rw);
+        float s1 = utaKeep((cy0 - sy0) * rh), s3 = utaKeep((cy1 - sy0) * rh);
+        float bx = sx0 - ox, by = sy0 - oy;
+        q->u0 = utaKeep(utaKeep(bx + utaKeep(w * s0)) * rtw);
+        q->u1 = utaKeep(utaKeep(bx + utaKeep(w * s2)) * rtw);
+        q->v0 = utaKeep(utaKeep(by + utaKeep(h * s1)) * rth);
+        q->v1 = utaKeep(utaKeep(by + utaKeep(h * s3)) * rth);
+        // quadPosition at (s0, s1), (s2, s1), (s2, s3), (s0, s3).
+        float dxt = utaKeep(px[1] - px[0]), dyt = utaKeep(py[1] - py[0]), dxb = utaKeep(px[2] - px[3]), dyb = utaKeep(py[2] - py[3]);
+        float tx0 = utaKeep(px[0] + utaKeep(s0 * dxt)), tx2 = utaKeep(px[0] + utaKeep(s2 * dxt));
+        float ty0 = utaKeep(py[0] + utaKeep(s0 * dyt)), ty2 = utaKeep(py[0] + utaKeep(s2 * dyt));
+        float bx0 = utaKeep(px[3] + utaKeep(s0 * dxb)), bx2 = utaKeep(px[3] + utaKeep(s2 * dxb));
+        float by0 = utaKeep(py[3] + utaKeep(s0 * dyb)), by2 = utaKeep(py[3] + utaKeep(s2 * dyb));
+        float ex0 = utaKeep(bx0 - tx0), ex2 = utaKeep(bx2 - tx2), ey0 = utaKeep(by0 - ty0), ey2 = utaKeep(by2 - ty2);
+        q->x[0] = utaKeep(tx0 + utaKeep(s1 * ex0)), q->y[0] = utaKeep(ty0 + utaKeep(s1 * ey0));
+        q->x[1] = utaKeep(tx2 + utaKeep(s1 * ex2)), q->y[1] = utaKeep(ty2 + utaKeep(s1 * ey2));
+        q->x[2] = utaKeep(tx2 + utaKeep(s3 * ex2)), q->y[2] = utaKeep(ty2 + utaKeep(s3 * ey2));
+        q->x[3] = utaKeep(tx0 + utaKeep(s3 * ex0)), q->y[3] = utaKeep(ty0 + utaKeep(s3 * ey0));
+        index = ty * page->tilesX + tx;
+    }
+    q->c = pc;
+    // ensureTiles(But) leaves a tile already used this frame (and recorded, while recording) as it was; palTileTex
+    // (no palette) draws the tile's own texture, which reserveBatch joins to the run's batch at unit 0, without padding.
+    CtrTile* tile = &page->tiles[index];
+    const CtrTextureCache* cache = &r->textures;
+    if (tile->lastUsedFrame != cache->frame || !tile->valid || (0 <= cache->recordRoom && tile->seenVisit != cache->recordVisit)) return UTA_NO(24);
+    // emitQuad's reserveBatch tests the room for 6 vertices (makeVertexRoom) before quad indices cut that to 4.
+    if (r->vertexCount + 6u > r->vertexLimit) return UTA_NO(26);
+    uint32_t count;
+    C3D_Tex* tex = CtrTextures_drawTex(tile);
+    plan->tex = nullptr;
+    if (tex == r->batchTex) {
+        count = r->addHold.batches[r->addHold.count - 1].quads ? 4u : 6u;
+    } else if (!aslSwitch(r, tex, 1, plan, &count)) {
+        return UTA_NO(25);
+    }
+    plan->n = 1;
+    plan->count = count;
+    plan->pixels = 0;
+    plan->averaged = false;
+    return true;
+}
+
+// ctrDrawSprite's draw of a sprite smart smoothing knows is fine, when it is nothing (out of view) or continues the held
+// run with the quads aslPlan works out: true when done. Before either answer it has stamped only the page's use (as
+// acquireTpagPage does first).
+static ASL_LATE bool aslFineDraw(CtrRenderer* r, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale,
+                                 float angleDeg, uint32_t color, float alpha) {
+    DataWin* dw = r->base.dataWin;
+    UTA_STAMP(0);
+    if (0 > tpagIndex || (uint32_t) tpagIndex >= r->originalTpagCount || dw->tpag.count <= (uint32_t) tpagIndex) return false;
+    uint8_t known = r->smart.itemState != nullptr ? r->smart.itemState[tpagIndex] : 0;
+    if ((known & (ITEM_KNOWN | ITEM_FINE | ITEM_CLEAN)) != (ITEM_KNOWN | ITEM_FINE | ITEM_CLEAN) || r->smart.itemInk == nullptr) return UTA_COUNT(0), false;
+    TexturePageItem* tpag = &dw->tpag.items[tpagIndex];
+    if (0 > tpag->texturePageId || r->textures.pageCount <= (uint32_t) tpag->texturePageId) return false;
+    CtrPage* page = &r->textures.pages[tpag->texturePageId];
+    if (!page->layoutKnown) return false;
+    if (!utaHeldSteady(r)) return UTA_COUNT(1), false;
+    if (recordingSurface(r) != nullptr) return UTA_COUNT(2), false;
+    page->lastUsedFrame = r->textures.frame;
+    // aslPlan and aslLinear both end on the same test of the item's tile (smartTileBegin's tile from the texel
+    // rectangle, emitPageTiles' from the source rectangle: one tile, at sourceX / tileW, sourceY / tileH), with nothing
+    // but their arithmetic and the plan cache before it. Made first, before the draw's transform, an item drawn from a
+    // tile not drawn yet this frame goes the full way without that work, utaFine's or the transform's (any draw may go
+    // the full way: it is what the plan copies; one out of view is nothing there too). On Old the refused draws' code
+    // shares the instruction cache with the full path's, so the less of it they run, the better (o2ds utasgore7). Only
+    // where that tile is surely in the page's grid; a draw over more tiles is refused by both anyway.
+    if (page->tileW > 0 && page->tileH > 0) {
+        int32_t tx = page->tilesX == 1 && page->tilesY == 1 ? 0 : (int32_t) ((float) tpag->sourceX / (float) page->tileW);
+        int32_t ty = page->tilesX == 1 && page->tilesY == 1 ? 0 : (int32_t) ((float) tpag->sourceY / (float) page->tileH);
+        if (0 <= tx && tx < page->tilesX && 0 <= ty && ty < page->tilesY) {
+            CtrTile* tile = &page->tiles[ty * page->tilesX + tx];
+            const CtrTextureCache* cache = &r->textures;
+            if (tile->lastUsedFrame != cache->frame || !tile->valid || (0 <= cache->recordRoom && tile->seenVisit != cache->recordVisit)) {
+                return UTA_COUNT(4), UTA_NO(40);
+            }
+        }
+    }
+    float lx0 = (float) tpag->targetX - originX;
+    float ly0 = (float) tpag->targetY - originY;
+    float lx1 = lx0 + (float) tpag->targetWidth;
+    float ly1 = ly0 + (float) tpag->targetHeight;
+    Matrix4f transform;
+    setDrawTransform(&transform, x, y, xscale, yscale, angleDeg);
+    float px[4], py[4];
+    transformPoint(&transform, lx0, ly0, &px[0], &py[0]);
+    transformPoint(&transform, lx1, ly0, &px[1], &py[1]);
+    transformPoint(&transform, lx1, ly1, &px[2], &py[2]);
+    transformPoint(&transform, lx0, ly1, &px[3], &py[3]);
+    if (!utaFine(r, tpagIndex, tpag, px, py, alpha)) return UTA_COUNT(3), false;
+    UTA_STAMP(1);
+    if (quadOutsideView(r, px, py)) return UTA_COUNT(5), true;
+    AslPlan plan;
+    bool turnedDown = false;
+    CtrColor c = utaColor(color, alpha);
+    if (!aslPlan(r, page, tpagIndex, tpag, px, py, c, &plan, &turnedDown) && (!turnedDown || !aslLinear(r, page, tpag, c, &plan))) {
+        return UTA_COUNT(4), false;
+    }
+    if (plan.averaged) UTA_COUNT(6);
+    else UTA_COUNT(7);
+    UTA_STAMP(2);
+#if UTA_SHADOW
+    // The plan's state on a copy, the full draw on the renderer, then the two compared.
+    memcpy(&utaShadowR, r, sizeof(utaShadowR));
+    utaShadowS = r->surfaces[r->boundSurface];
+    uint32_t from = r->vertexCount;
+    CtrSurface* surfaces = utaShadowR.surfaces;
+    utaShadowR.surfaces = (CtrSurface*) ((uintptr_t) &utaShadowS - (uintptr_t) r->boundSurface * sizeof(CtrSurface)); // [boundSurface] = utaShadowS
+    uint32_t endVertex = asgRun.endVertex;
+    aslCommit(&utaShadowR, &plan, utaShadowV);
+    uint32_t endPlanned = asgRun.endVertex;
+    asgRun.endVertex = endVertex;
+    utaShadowR.surfaces = surfaces;
+    ctrDrawSprite(&r->base, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+    utaShadowCount[0]++;
+    if (asgRun.endVertex != endPlanned && utaShadowCount[3]++ < 8) logInfo("[utashadow] run end differs: item %d\n", (int) tpagIndex);
+    if (plan.tex != nullptr) from += plan.pad;
+    if (memcmp(utaShadowV, &r->vertices[from], plan.count * sizeof(CtrVertex)) != 0 && utaShadowCount[1]++ < 8) {
+        logInfo("[utashadow] vertices differ: item %d at %d\n", (int) tpagIndex, (int) from);
+    }
+    const uint8_t* a = (const uint8_t*) &utaShadowR;
+    const uint8_t* b = (const uint8_t*) r;
+    for (uint32_t i = memcmp(a, b, sizeof(CtrRenderer)) != 0 ? 0 : sizeof(CtrRenderer); sizeof(CtrRenderer) > i; i++) {
+        if (a[i] != b[i]) {
+            if (utaShadowCount[2]++ < 16) logInfo("[utashadow] state differs: item %d at byte %u\n", (int) tpagIndex, (unsigned) i);
+            break;
+        }
+    }
+    if (memcmp(&utaShadowS, &r->surfaces[r->boundSurface], sizeof(utaShadowS)) != 0 && utaShadowCount[3]++ < 8) {
+        logInfo("[utashadow] surface differs: item %d\n", (int) tpagIndex);
+    }
+    return true;
+#else
+    aslCommit(r, &plan, &r->vertices[r->vertexCount + (plan.tex != nullptr ? plan.pad : 0)]);
+    UTA_STAMP(5);
+    UTA_TALLY();
+    return true;
+#endif
+}
+
+// The renderer's draw of a fine sprite in a held run of a gated frame (utkDrawSprite's utaTakes said so).
+static ASL_LATE void aslFineSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale,
+                                   float yscale, float angleDeg, uint32_t color, float alpha) {
+    if (aslFineDraw((CtrRenderer*) renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha)) return;
+    ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+}
+#else
+// The forced split's builds (ASG_FORCE_SPLIT, tests): the full path, as utaFineSprite there.
+static __attribute__((noinline, section(".text_asgorelong"))) void aslFineSprite(Renderer* renderer, int32_t tpagIndex, float x, float y,
+                                                                               float originX, float originY, float xscale, float yscale,
+                                                                               float angleDeg, uint32_t color, float alpha) {
+    ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+}
+#endif
+#endif
+
+// battlesplit's split end (playtest1 P6, and c26rev5's F1 on it). Leaving a split while the bottom screen's target
+// is the player's own (a bottom mode or bottom dialogue that keeps one): CtrRenderer_bsPrepare's display change
+// rebuilt the screens on the next beginFrame, which gave up the room's tile copies in VRAM, waited for the GPU and
+// cleared both screens: a held frame at each return to the room. That target never changed, so the bottom screen is
+// handed back as a dialogue box hands it back when it ends: shown, with no frames of hold left, so the next
+// presentDialogue calls dlgSetShown(false) (the target cleared, the magnifier's blank screen first, the backlight as
+// the mode has it, main.c's consoles back). With the split's own bottom target (the player's mode keeps none), the
+// display change stays. A display change already pending stays pending. The box handed back is also left as a fresh
+// box would find it: its row given up (dlg.top past the screen, so presentDialogue centres a box that the first
+// frame back already draws, as after the base's prepare and configure, instead of reusing an old row) and the
+// magnifier at rest with its blank screen counted sent, as dlgSetShown(r, true) leaves them. An empty first frame
+// calls dlgSetShown(false) as before, which sets both again. The backlight stays as the split had it
+// (applyBottomBacklight here would light an Off bottom screen for one frame). z_battlesplit.c's bsLeave8 calls it;
+// declared there, not in ctr_battlesplit.h. Conditions only in statement form, and no signed array index: `bool own
+// = a && b && c` took one more gimplifier temporary name and renumbered this file's two CSWTCH tables (check_layout
+// movers). Appended, own section (.text_battlesplit8). The first version (CtrRenderer_bsLeave6) went in the post-G8
+// move commit.
+#if defined(ENABLE_WAD16)
+void CtrRenderer_bsLeave8(Renderer* renderer, bool on);
+__attribute__((noinline, noipa, section(".text_battlesplit8"))) void CtrRenderer_bsLeave8(Renderer* renderer, bool on) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    BsGpu* g = bsGpu;
+    bool dirty = r->displayDirty;
+    bool foreign = true;
+    if (g != nullptr && g->ownBottom != nullptr && r->bottomTarget == g->ownBottom) foreign = false;
+    CtrRenderer_bsPrepare(renderer, on);
+    if (on || g == nullptr || !foreign || r->bottomTarget == nullptr) return;
+    r->displayDirty = dirty;
+    r->dlg.shown = true;
+    r->dlg.holdFrames = 0;
+    r->dlg.top = (float) BOTTOM_SCREEN_H;
+    r->magnifier.active = false;
+    r->magnifier.blankSent = 2;
+}
+#endif
+
+// layout (z_layout.c): the renderer's fields it reads and writes, as offsets, and the two functions it calls
+// (ctr_layout.h's CtrLayoutRendererLinks). The stylus's answer reads whether the bottom screen shows dialogue and
+// whether the menu or a test has it (popbot's words give the rest). The fixed screen targets (S2) keep the two screen
+// targets in topTarget/bottomTarget's roles. Appended late constants; the only code above that changes is two symbol
+// names in asm (configureScreens' first call and the yield wrapper's gsfix call), which name the entry points below.
+#if defined(ENABLE_WAD16)
+#include "ctr_layout.h"
+const CtrLayoutRendererLinks Layout_renderer __attribute__((used, section(".rodata_layout_in_text"))) = {
+    .bottomYielded = __builtin_offsetof(CtrRenderer, bottomYielded),
+    .topTarget = __builtin_offsetof(CtrRenderer, topTarget),
+    .bottomTarget = __builtin_offsetof(CtrRenderer, bottomTarget),
+    .topW = __builtin_offsetof(CtrRenderer, topW),
+    .inFrame = __builtin_offsetof(CtrRenderer, inFrame),
+    .displayDirty = __builtin_offsetof(CtrRenderer, displayDirty),
+    .textures = __builtin_offsetof(CtrRenderer, textures),
+    .display = __builtin_offsetof(CtrRenderer, display),
+    .displayFlags = DISPLAY_TRANSFER_FLAGS,
+    .keepBottom = (void (*)(void*)) screensConfigureKeepBottom,
+    .scanoutMove = (bool (*)(void*, bool)) scanoutMove,
+};
+// configureScreens' first call and the yield wrapper's real call go to layout's entry points, which call gsfix's (the
+// yield's F8 version, CtrLayout_yield8, in layout's appended pair).
+__asm__("\t.set CtrScreens_preConfigure, CtrLayout_preConfigure\n\t.set CtrScreens_yieldHook, CtrLayout_yield8\n");
+#else
+__asm__("\t.set CtrScreens_preConfigure, CtrGsfix_preConfigure\n\t.set CtrScreens_yieldHook, CtrGsfix_yield\n");
+#endif
+
+#if defined(ENABLE_WAD16)
+#include "ctr_bonegate.inc"
+#endif
+
+// battlesplit's capture of the box (Muffet's fake border; z_battlesplit.c's bsSprite9): sprite_create_from_surface of
+// the application surface on a split frame reads the arena layer when the region reaches below the split (split: the
+// split's place down the surface, 0..1), by giving the surface the layer's memory for the call; *layer says which was
+// read. Her climbs capture a box that starts far above the split (room y 106 to 393), so a region's middle row is not
+// enough: the box always reaches below it. Statement-form conditions only (see CtrRenderer_bsLeave8), and no signed array index: GCC
+// names the index's unsigned conversion after the variable (surfaceID.N), from the same counter as the CSWTCH tables.
+// The surface is found again by its id after the call: making the copy can move the surface array. Appended, own
+// section (.text_battlesplit9).
+#if defined(ENABLE_WAD16)
+int32_t CtrRenderer_bsSpriteFrom9(Renderer* renderer, RendererVtable* inner, float split, int32_t surfaceID, int32_t x, int32_t y, int32_t w,
+                                  int32_t h, bool removeback, bool smooth, int32_t xorig, int32_t yorig, int32_t* layer);
+__attribute__((noinline, noipa, section(".text_battlesplit9"))) int32_t CtrRenderer_bsSpriteFrom9(Renderer* renderer, RendererVtable* inner,
+        float split, int32_t surfaceID, int32_t x, int32_t y, int32_t w, int32_t h, bool removeback, bool smooth, int32_t xorig, int32_t yorig,
+        int32_t* layer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    BsGpu* g = bsGpu;
+    CtrSurface* s = nullptr;
+    *layer = 0;
+    if (g != nullptr && g->target != nullptr) s = bsApp(r);
+    if (s != nullptr && s->tex.data == g->appData && renderer->runner != nullptr && surfaceID == renderer->runner->applicationSurfaceId) {
+        float low = (float) y + (float) h;
+        if (low > split * (float) s->height) *layer = 1;
+    }
+    uint32_t id = (uint32_t) surfaceID;
+    if (*layer != 0) s->tex.data = g->tex.data;
+    int32_t sprite = inner->createSpriteFromSurface(renderer, surfaceID, x, y, w, h, removeback, smooth, xorig, yorig);
+    if (*layer != 0) r->surfaces[id].tex.data = g->appData;
+    return sprite;
+}
+#endif
+
+// boxcache (z_boxcache.c, UNDERTALE Old) reaches these fields by the offsets in z_boxcache_layout.h; checked here.
+// battlesplit18 (z_battlesplit.c's move up): the screens set up for the game's new screen, outside a frame (before the
+// real beginFrame, as CtrRenderer_bsPrepare's own call), so the frame's split check sees the top target's size.
+#if defined(ENABLE_WAD16)
+void CtrRenderer_bsSetUp18(Renderer* renderer);
+__attribute__((noinline, noipa, section(".aacout.text.bsup"))) void CtrRenderer_bsSetUp18(Renderer* renderer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    if (r->displayDirty && !r->inFrame) configureScreens(r);
+}
+#endif // ENABLE_WAD16 (battlesplit18)
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+#include "z_boxcache_layout.h"
+#define BOXCACHE_CHECK(name, member, type, offset)                                                                      \
+    _Static_assert(__builtin_offsetof(CtrRenderer, member) == (offset) &&                                              \
+                       __builtin_types_compatible_p(__typeof__(((CtrRenderer*) 0)->member), type),                    \
+                   "z_boxcache.c: " #name);
+BOXCACHE_FIELDS(BOXCACHE_CHECK)
+#define BOXCACHE_OP_CHECK(member, type, offset)                                                                        \
+    _Static_assert(__builtin_offsetof(CtrRecOp, member) == (offset) &&                                                 \
+                       __builtin_types_compatible_p(__typeof__(((CtrRecOp*) 0)->member), type),                       \
+                   "z_boxcache.c: CtrRecOp." #member);
+BOXCACHE_OP_FIELDS(BOXCACHE_OP_CHECK)
+_Static_assert(sizeof(CtrRecOp) == BOXCACHE_OP_SIZE && __builtin_offsetof(CtrRecOp, zeroFromZero) + 2 == BOXCACHE_OP_SIZE,
+               "z_boxcache.c: CtrRecOp's size, one padding byte");
+_Static_assert(sizeof(CtrSurface) == BOXCACHE_SURFACE_SIZE && __builtin_offsetof(CtrSurface, used) == BOXCACHE_SURFACE_USED &&
+                   __builtin_offsetof(CtrSurface, width) == BOXCACHE_SURFACE_WIDTH &&
+                   __builtin_offsetof(CtrSurface, height) == BOXCACHE_SURFACE_HEIGHT &&
+                   __builtin_types_compatible_p(__typeof__(((CtrSurface*) 0)->used), bool) &&
+                   __builtin_types_compatible_p(__typeof__(((CtrSurface*) 0)->width), int32_t) &&
+                   __builtin_types_compatible_p(__typeof__(((CtrSurface*) 0)->height), int32_t),
+               "z_boxcache.c: CtrSurface");
+_Static_assert(REC_COLOR_PAGE == BOXCACHE_COLOR_PAGE, "z_boxcache.c: constants");
+#endif
+
+// Shared idle-bottom ABI, verified on both targets without a warm helper.
+#if defined(ENABLE_WAD16)
+#include "z_bottompaint_layout.h"
+#define BP_CHECK(name, member, type, offset) \
+    _Static_assert(__builtin_offsetof(CtrRenderer, member) == (offset) && \
+        __builtin_types_compatible_p(__typeof__(((CtrRenderer*) 0)->member), type), "bottompaint: " #name);
+BP_RENDERER_FIELDS(BP_CHECK)
+#endif
+
+// asrsplit: shared UNDERTALE fine-sprite command-room repair, appended for layout (the include is
+// UNDERTALE-only throughout; the guard keeps the file ending on #endif, dv8 merge).
+#if defined(ENABLE_WAD16)
+#include "ctr_asrsplit_room.inc"
+#endif
+
+#if defined(ENABLE_WAD16) && !defined(CTRPORT_RENDER_TIMING)
+// battlesplit11f (z_battlesplit.c, c26rev5's F1): the run's kept draw (CtrUtk_plainReady's), for the place of each
+// later draw of the run: its texture item, and in f its origin, scale and angle. Own section, appended.
+int32_t CtrUtk_bsRunDraw11f(float* f);
+__attribute__((noinline, noipa, section(".text_battlesplit11f"))) int32_t CtrUtk_bsRunDraw11f(float* f) {
+    f[0] = utkRun.originX, f[1] = utkRun.originY, f[2] = utkRun.xscale, f[3] = utkRun.yscale, f[4] = utkRun.angleDeg;
+    return utkRun.tpagIndex;
+}
+#endif
+
+// battlesplit13 (change battlesplit): the split's bottom screen drawn on every split frame. A screenshot sets displayDirty
+// inside beginFrame (and the end of its notice, a second later), after CtrRenderer_bsPrepare made the split's bottom
+// target, so beginFrame's screen set-up ran with the frame's split already prepared. With no bottom mode or bottom
+// dialogue that keeps a target of its own, the set-up took the split's out of the bottom role (lyPlace: the held bottom
+// target is kept, unlinked, and bottomTarget cleared), and CtrRenderer_bsPresent then skipped the bottom: that frame's
+// bottom was never drawn, and the screen kept the frame before (a test run's shots on consecutive frames showed one
+// bottom frame for 16 frames). Here, after the real beginFrame, the split's bottom target is lent again by layout
+// (CtrLayout_lendBottom, as CtrRenderer_bsPrepare borrows it: never a third target, ctr_layout.h's ownership rule),
+// then CtrRenderer_bsBegun as before; false (Original) when layout lends none (no held pair, or the game below). A
+// display change made before bsPrepare (the options menu, a layout change, HOME and sleep) is applied in bsPrepare
+// before it borrows the target, so only a set-up inside beginFrame needs this; each one is logged. z_battlesplit.c
+// calls this in place of CtrRenderer_bsBegun, with the same argument, so the call keeps its size. Statement-form
+// conditions only (see CtrRenderer_bsLeave8).
+// Appended, own sections (.rodata_battlesplit13, .text_battlesplit13).
+#if defined(ENABLE_WAD16)
+static const char bsRemadeLog13[] __attribute__((section(".rodata_battlesplit13"))) =
+    "battlesplit: the bottom target lent again after a screen set-up in the frame's start (frame %d)\n";
+bool CtrRenderer_bsBegun13(Renderer* renderer);
+__attribute__((noinline, noipa, section(".text_battlesplit13"))) bool CtrRenderer_bsBegun13(Renderer* renderer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    BsGpu* g = bsGpu;
+    if (g != nullptr && g->target != nullptr && g->ownBottom != nullptr && r->bottomTarget == nullptr && !r->bottomYielded) {
+        // The set-up took it out of the bottom role (layout still holds it): forgotten first, so a refused lend leaves none.
+        g->ownBottom = nullptr;
+        C3D_RenderTarget* CtrLayout_lendBottom(int, int, int, int);
+        C3D_RenderTarget* b = CtrLayout_lendBottom(TOP_SCREEN_H, BOTTOM_SCREEN_W, GPU_RB_RGBA8, -1);
+        // None lent: false, so this frame is drawn as Original. CtrRenderer_bsBegun alone does not ask for a bottom
+        // target and would arm a split whose bottom is never presented.
+        if (b == nullptr) return false;
+        C3D_RenderTargetSetOutput(b, GFX_BOTTOM, GFX_LEFT, BOTTOM_TRANSFER_FLAGS);
+        r->bottomTarget = b;
+        g->ownBottom = b;
+        int32_t frame = -1;
+        if (r->base.runner != nullptr) frame = r->base.runner->frameCount;
+        logInfo(bsRemadeLog13, (int) frame);
+    }
+    return CtrRenderer_bsBegun(renderer);
+}
+#endif
+
+// (change battlesplit, the close seam: battlesplit14; 14c for c26rev5's F1) The battle grid's strip. On a close seam with
+// a grid mode, z_battlesplit.c's CtrBattlesplit_drawSprite14 draws the grid's rows that sit above room row 0 a second
+// time on the top layer's last rows (rows no screen shows) and puts them on the top screen at once, before any later
+// draw can reach those rows (a later draw low in the room lands there too). CtrRenderer_bsStripClear14, before that
+// draw, makes the rows it reaches black (the frame's earlier draws may sit there; the rows a grid draw of the same frame
+// staged are left); CtrRenderer_bsStripCopy14, after it, copies the strip just above the band, centred across as the
+// band is, on both eyes. The top screens were cleared at the frame's start and CtrRenderer_bsPresent draws rows topDy
+// on, so the strip stays until the frame is shown. Both draw only on the application surface's own half view, bound
+// for the game's projection, in a frame that is shown. Statement-form conditions only (see CtrRenderer_bsLeave8). In
+// the AAC slot (.aacout.text.battlesplit14).
+#if defined(ENABLE_WAD16)
+#define BS_CODE14R __attribute__((noinline, noipa, section(".aacout.text.battlesplit14")))
+// The application surface while the strip may be drawn and copied now, else nullptr.
+static BS_CODE14R CtrSurface* bsStrip14(CtrRenderer* r) {
+    BsGpu* g = bsGpu;
+    if (!r->inFrame) return nullptr;
+    if (r->skipPresent) return nullptr;
+    if (r->skip.active) return nullptr;
+    if (!r->gameProjection) return nullptr;
+    if (g == nullptr) return nullptr;
+    if (g->target == nullptr) return nullptr;
+    if (r->base.runner == nullptr) return nullptr;
+    if (r->boundSurface != r->base.runner->applicationSurfaceId) return nullptr;
+    if (r->boundTarget != g->appTarget) return nullptr;
+    CtrSurface* s = bsApp(r);
+    if (s == nullptr) return nullptr;
+    if (s->tex.data != g->appData) return nullptr;
+    if (s->target != g->appTarget) return nullptr;
+    return s;
+}
+
+// The room rectangle x0..x1, y0..y1 black on the bound half view (the game's projection), whatever it held. False: no
+// strip now.
+bool CtrRenderer_bsStripClear14(Renderer* renderer, float x0, float y0, float x1, float y1);
+BS_CODE14R bool CtrRenderer_bsStripClear14(Renderer* renderer, float x0, float y0, float x1, float y1) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    if (bsStrip14(r) == nullptr) return false;
+    flushBatch(r);
+    copyState(r);
+    r->blendOverridden = true; // written whatever the target held (solidDrawIsNoop), as clearBoundTarget's quad
+    CtrColor black = { 0, 0, 0, 255 };
+    emitRect(r, x0, y0, x1, y1, black);
+    flushBatch(r);
+    r->blendOverridden = false;
+    applyAllState(r);
+    return true;
+}
+
+// The half view's last rows (the strip) on the top screen from row topDy - rows up to topDy, both eyes; then the half
+// view bound again with the game's state.
+void CtrRenderer_bsStripCopy14(Renderer* renderer, int32_t rows, int32_t topDy);
+BS_CODE14R void CtrRenderer_bsStripCopy14(Renderer* renderer, int32_t rows, int32_t topDy) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    CtrSurface* s = bsStrip14(r);
+    if (s == nullptr) return;
+    int32_t w = s->width / 2, h = s->height / 2;
+    if (rows > topDy) rows = topDy;
+    if (rows > h) rows = h;
+    if (0 >= rows) return;
+    float dst[4];
+    dst[0] = floorf(((float) r->topW - (float) w) * 0.5f);
+    dst[1] = (float) (topDy - rows);
+    dst[2] = (float) w;
+    dst[3] = (float) rows;
+    C3D_Tex* tex = surfaceTexture(r, r->base.runner->applicationSurfaceId);
+    C3D_RenderTarget* app = r->boundTarget;
+    int32_t id = r->boundSurface;
+    flushBatch(r);
+    // The strip was just drawn: leaving the half view splits the frame, so the copy reads it.
+    r->boundTargetDrawn = true;
+    bindTarget(r, r->topTarget, -1);
+    blitApp(r, tex, 0.0f, (float) (h - rows), (float) w, (float) rows, 0.0f, 0.0f, dst, false);
+    if (r->stereoActive) {
+        if (r->topRightTarget != nullptr) {
+            bindTarget(r, r->topRightTarget, -1);
+            blitApp(r, tex, 0.0f, (float) (h - rows), (float) w, (float) rows, 0.0f, 0.0f, dst, false);
+        }
+    }
+    bindTarget(r, app, id);
+    applyAllState(r);
+}
+
+// battlesplit17: the arena layer's band clip (z_battlesplit.c's __wrap_CtrRenderer_bsLayer). Row > 0: the scissor
+// keeps the bound layer's rows from row on (layer rows, 240 to the surface), inside the game's own scissor when it has
+// one. The cut goes into the scissor fields themselves, the game's kept in bsGpu, as replaySurface does with its own:
+// every path that applies the state again while the copy's draw is still queued (makeCommandRoom's wrap, a frame run
+// so far, a vertex buffer start-over: resumeState -> applyAllState -> applyViewport) applies the cut, not the game's
+// scissor (c26rev5's LOW on 17). Row 0, after the copy (the switch back to the top layer): the queued draw goes to the
+// GPU under the cut, then the game's fields come back and are applied. The cut is set only on the application
+// surface's own arena target, bound in a frame; taking it back needs none of that. Statement-form conditions only
+// (see CtrRenderer_bsLeave6).
+void CtrRenderer_bsClip17(Renderer* renderer, int32_t row);
+BS_CODE14R void CtrRenderer_bsClip17(Renderer* renderer, int32_t row) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    BsGpu* g = bsGpu;
+    if (g == nullptr) return;
+    if (0 >= row) {
+        if (!g->clip17) return;
+        if (r->inFrame) flushBatch(r);
+        r->scissorEnabled = g->clipWasOn17;
+        r->scissor = g->clipWas17;
+        g->clip17 = false;
+        if (!r->inFrame) return;
+        if (r->boundTarget == nullptr) return;
+        applyViewport(r);
+        return;
+    }
+    if (g->clip17) return;
+    if (!r->inFrame) return;
+    if (r->boundTarget == nullptr) return;
+    if (r->base.runner == nullptr) return;
+    if (r->boundSurface != r->base.runner->applicationSurfaceId) return;
+    CtrSurface* s = bsApp(r);
+    if (s == nullptr) return;
+    // Only the arena layer is cut: a switch that did not bind it leaves the draw whole.
+    if (g->target == nullptr) return;
+    if (r->boundTarget != g->target) return;
+    flushBatch(r);
+    bool wasOn = r->scissorEnabled;
+    CtrRect was = r->scissor;
+    CtrRect cut = { 0, 0, s->width, s->height };
+    if (wasOn) cut = was;
+    int32_t y0 = s->height * row / 240;
+    int32_t y1 = cut.y + cut.h;
+    if (y0 > cut.y) cut.y = y0;
+    cut.h = y1 - cut.y;
+    if (0 > cut.h) cut.h = 0;
+    g->clipWasOn17 = wasOn;
+    g->clipWas17 = was;
+    g->clip17 = true;
+    r->scissorEnabled = true;
+    r->scissor = cut;
+    applyViewport(r);
+}
+#endif
+
+// ballast (z_ballast.c; build.sh's ballast word, UNDERTALE, never a release): quads quads of the bottom screen's size
+// from vertices (z_ballast.c's: linear memory, the 2D program's input layout, clip-space corners), into the screen
+// target the frame drew: the bottom one when the frame uses it, else the top one, and never a target the frame left
+// unused (a skipped frame, or endFrameEarly's, draws none). z_ballast.c calls it in C3D_FrameEnd's place, so it follows
+// the top pass and every bottom draw. The viewport is 240x320 on either target, so a quad costs the same on both.
+// Blended ZERO, ONE: the target keeps its pixels. The next beginFrame sets every state used here again
+// (applyAllState); C3D_FrameEnd's own command list follows. It reads fields only and calls no function of this file,
+// so nothing above it changes. Returns 2 (bottom target), 1 (top) or 0 (none drawn). Appended, in the AAC text slot
+// after every production input (aacout.cmake). ENABLE_WAD16 as well: test_aacslot_shared wants every AAC section under
+// an explicit ENABLE_WAD16 guard (build.sh and CMakeLists.txt already refuse a DELTARUNE ballast build).
+#if defined(CTRPORT_BALLAST)
+#if defined(ENABLE_WAD16)
+int CtrRenderer_ballastQuads(Renderer* renderer, const void* vertices, uint32_t quads);
+__attribute__((noinline, noipa, section(".aacout.text.ballast"))) int CtrRenderer_ballastQuads(Renderer* renderer, const void* vertices,
+                                                                                                  uint32_t quads) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    C3D_RenderTarget* t = r->bottomTarget;
+    int on = 2;
+    if (t == nullptr || !t->used) {
+        t = r->topTarget;
+        on = 1;
+    }
+    if (t == nullptr || !t->used || r->program == nullptr || vertices == nullptr || quads == 0) return 0;
+    C3D_FrameDrawOn(t);
+    C3D_SetViewport(0, 0, TOP_SCREEN_H, BOTTOM_SCREEN_W);
+    C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+    C3D_BindProgram(r->program);
+    C3D_AttrInfo* attr = C3D_GetAttrInfo();
+    AttrInfo_Init(attr);
+    AttrInfo_AddLoader(attr, 0, GPU_FLOAT, 3);
+    AttrInfo_AddLoader(attr, 1, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(attr, 2, GPU_UNSIGNED_BYTE, 4);
+    C3D_BufInfo* buf = C3D_GetBufInfo();
+    BufInfo_Init(buf);
+    BufInfo_Add(buf, vertices, 24, 3, 0x210);
+    C3D_Mtx identity;
+    Mtx_Identity(&identity);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, r->projectionLoc, &identity);
+    for (int i = 1; 6 > i; i++) C3D_TexEnvInit(C3D_GetTexEnv(i));
+    C3D_TexEnv* env = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_Both, GPU_CONSTANT, 0, 0);
+    C3D_TexEnvColor(env, 0);
+    C3D_CullFace(GPU_CULL_NONE);
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ZERO, GPU_ONE, GPU_ZERO, GPU_ONE);
+    C3D_DrawArrays(GPU_TRIANGLES, 0, (int) (quads * 6));
+    r->citroCleanValid = false;
+    return on;
+}
+#endif // ENABLE_WAD16
+#endif
+
+// Dedicated-shop completed-frame crops, admitted by S3 and the existing Text place.
+// Shared preparation/ownership and native blitter; one normal Step/Draw.
+#if defined(ENABLE_WAD16)
+#include "ctr_shopsplit.h"
+#define SS_CODE __attribute__((noinline, noipa, section(".text.late.shopsplit")))
+#define SS_CONST __attribute__((section(".rodata.late.shopsplit")))
+extern uint32_t ctrShopsplitState;
+enum { SS_OWNED = 1, SS_ARMED = 2 };
+static const float ssDst[4] SS_CONST = { 40.0f, 120.0f, 320.0f, 120.0f };
+
+void __real_CtrRenderer_chainBeginFrameBattlesplit(Renderer* renderer);
+void __real_CtrRenderer_chainEndFrameBattlesplit(Renderer* renderer);
+
+SS_CODE void __wrap_CtrRenderer_chainBeginFrameBattlesplit(Renderer* renderer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    bool want = false;
+    if (CtrShopsplit_admitted(renderer, &r->display)) want = CtrRenderer_bsAllowed(renderer);
+    if ((ctrShopsplitState & SS_OWNED) != 0 && !want) CtrRenderer_bsLeave8(renderer, false);
+    ctrShopsplitState = 0;
+    bool prepared = false;
+    if (want) {
+        // Keep partial preparation owned so leaving or disabling the shop
+        // returns shared resources even if preparation did not complete.
+        ctrShopsplitState = SS_OWNED;
+        prepared = CtrRenderer_bsPrepare(renderer, true) > 0;
+    }
+    __real_CtrRenderer_chainBeginFrameBattlesplit(renderer);
+    CtrSurface* app = prepared ? bsApp(r) : nullptr;
+    if (app != nullptr && app->width == 640 && app->height == 480) {
+        if (CtrRenderer_bsBegun(renderer)) ctrShopsplitState |= SS_ARMED;
+    }
+}
+
+static SS_CODE void ssPresent(Renderer* renderer) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    if (!r->inFrame || r->skipPresent || r->skip.active || r->bottomTarget == nullptr || r->bottomYielded) return;
+    CtrSurface* s = bsApp(r);
+    if (s == nullptr || s->width != 640 || s->height != 480) return;
+    flushBatch(r);
+    C3D_Tex* tex = surfaceTexture(r, r->base.runner->applicationSurfaceId);
+    float dst[4];
+    // Volatile reads keep this initializer in our named late constant array,
+    // rather than GCC synthesizing a 16 B pool in the existing ordinary rodata.
+    for (uint32_t i = 0; 4 > i; i++) dst[i] = ((const volatile float*) ssDst)[i];
+    C3D_RenderTargetClear(r->topTarget, C3D_CLEAR_ALL, 0x000000FF, 0);
+    bindTarget(r, r->topTarget, -1);
+    blitApp(r, tex, 0.0f, 0.0f, 320.0f, 120.0f, 0.0f, 0.0f, dst, false);
+    C3D_RenderTargetClear(r->bottomTarget, C3D_CLEAR_ALL, 0x000000FF, 0);
+    bindTarget(r, r->bottomTarget, -1);
+    dst[0] = dst[1] = 0.0f;
+    blitApp(r, tex, 0.0f, 120.0f, 320.0f, 120.0f, 0.0f, 0.0f, dst, false);
+    r->presentScale = 0.5f;
+    r->nativeFrames++;
+    r->skipPresent = true;
+}
+
+SS_CODE void __wrap_CtrRenderer_chainEndFrameBattlesplit(Renderer* renderer) {
+    if ((ctrShopsplitState & SS_ARMED) != 0) {
+        ssPresent(renderer);
+        ctrShopsplitState &= ~SS_ARMED;
+    }
+    __real_CtrRenderer_chainEndFrameBattlesplit(renderer);
+}
+#endif
+
+// battlesplit-rework (change battlesplit, z_battlesplitbsr.c says why; c26rev5 F1, 11-10: appended, in its own
+// late text section .text_bsr, appended last in late_reserve.ld). The renderer's side of a split frame's bottom
+// backlight: op 0 applies it as the display asks (applyBottomBacklight, by its assembler name, so no new call-graph
+// edge), op 1 holds (the cached flag says off while lit: true when it did), op 2 the cached flag says lit again.
+#if defined(ENABLE_WAD16)
+void bsApplyLinkBsr(CtrRenderer* r) __asm__("applyBottomBacklight");
+bool CtrRenderer_bsLitBsr(Renderer* renderer, int32_t op);
+__attribute__((noinline, noipa, section(".text_bsr"))) bool CtrRenderer_bsLitBsr(Renderer* renderer, int32_t op) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    if (r == nullptr) return false;
+    if (op == 0) {
+        bsApplyLinkBsr(r);
+        return false;
+    }
+    if (op == 1) {
+        if (r->bottomBacklightOff) return false;
+        r->bottomBacklightOff = true;
+        return true;
+    }
+    r->bottomBacklightOff = false;
+    return false;
+}
+#endif
+
+// ===[ UNDERTALE's draw alpha byte (change gpuburst C(i)) ]===
+// PC's runner turns a draw's alpha into the byte trunc(float(alpha) * 255) and blends it with rounding; makeColor,
+// utaColor and unitToByte round (alpha * 255 + 0.5), one more on about half of all alphas (the PC reference's
+// gpuburst_alphaprobe scene). The abq_ stubs (ABQ, ctr_renderer.h) stand in front of every draw that takes a float
+// alpha, where its address was taken: ctrVtable's entries (CtrRenderer_create, SKIP_WRAPPERS), the e5x and bonepulse
+// fronts' draws (E5X_OPAQUE), bonegate's frame-skip column, and the two exports other files draw with (--wrap'd,
+// CMakeLists.txt). Each hands its draw the same arguments with alpha q: for 0 < alpha < 1 and k = trunc(alpha * 255),
+// q = float((k + 0.25) / 255), on which every rounding gives k (k + 0.75 here, k + 0.25 in the shader's) and a second
+// stub q again. q is on the game's alpha's side of every value an UNDERTALE draw compares its alpha with, so each such
+// test decides as it did: 0 (0 >= alpha: smart smoothing; k = 0 gives 0.25 / 255, not 0), 1 (alpha >= 1) and
+// isDimText's 0.55 (the magnifier's text tracking): the one byte whose q is 0.55 (k = 140) takes the float below it,
+// still byte 140, when the game's alpha is under 0.55. alpha <= 0, alpha >= 1 and NaN go on bit for bit. The game's own
+// values (draw_get_alpha, image_alpha) are never written: drawText takes its alpha from renderer->drawAlpha, which the
+// text stub sets to q for the call and puts back after; a recorded drawText (SR_TEXT) is drawn again with the
+// drawAlpha of then, through abq_drawTextImpl (ABQ_TEXT_REPLAY, ctr_renderer.h). The float product is never rounded
+// across an integer (tools/analysis/test_alphabyte.py checks every float, on this core's own instructions), so k is
+// trunc of the exact product. Late text of its own, last (late_reserve.ld): Thumb stubs of 4 B, one ARM tail per
+// register the alpha arrives in, one shared core (change gpuburst lists every float-alpha entry and caller).
+#if !defined(ENABLE_WAD17)
+_Static_assert(offsetof(Renderer, drawAlpha) == 12, "the text stub stores drawAlpha at [r0, #12]");
+// The draws, by the s register their alpha arrives in (AAPCS-VFP: the floats before it, in order), T = drawAlpha.
+#define ABQ_TARGETS(X, W)                                                                                             \
+    X(ctrDrawLines, 1) X(skipDrawLines, 1) X(E5X_FAN, 2) X(skipDrawTriangleFan, 2) W(CtrUtk_waverRows, 2)             \
+    X(ctrDrawVertex, 3) X(ctrDrawRectangle, 4) X(ctrDrawRectangleColor, 4) X(skipDrawRectangle, 4)                    \
+    X(skipDrawRectangleColor, 4) X(ctrDrawLine, 5) X(ctrDrawLineColor, 5) X(ctrDrawTextColor, 5) X(ctrDrawSurface, 5) \
+    X(ctrDrawSurfaceColor, 5) X(skipDrawLine, 5) X(skipDrawLineColor, 5) X(skipDrawTextColor, 5) X(skipDrawSurface, 5) \
+    X(skipDrawSurfaceColor, 5) X(ctrDrawTriangle, 6) X(ctrDrawSurfaceTiled, 6) X(skipDrawTriangle, 6)                 \
+    X(skipDrawSurfaceTiled, 6) W(Smalltext_drawTexture, 6) X(UTK_DRAW_SPRITE, 7) X(skipDrawSprite, 7)                 \
+    X(ctrDrawSpritePos, 8) X(KG_TILED_DRAW, 8) X(skipDrawSpritePos, 8) X(skipDrawSpriteTiled, 8)                      \
+    X(partDrawSprite, 11) X(ctrDrawSpritePartColor, 11) X(skipDrawSpritePart, 11) X(skipDrawSpritePartColor, 11)      \
+    X(ctrDrawText, T) X(skipDrawText, T) X(drawTextImpl, 5)
+#define ABQ_REALDECL(fn, reg) extern __typeof__(fn) __real_##fn;
+#define ABQ_NONE(fn, reg)
+ABQ_TARGETS(ABQ_NONE, ABQ_REALDECL)
+#define ABQ_TARGET(fn, reg) (const void*) &fn,
+#define ABQ_TARGETW(fn, reg) (const void*) &__real_##fn,
+// Stub k's draw, which this table also keeps address-taken, as the vtable and E5X_OPAQUE did.
+static const void* const abqTargets[] __attribute__((used, aligned(4), section(".rodata.late.alphabyte"))) = {
+    ABQ_TARGETS(ABQ_TARGET, ABQ_TARGETW)
+};
+#define ABQ_STR_(x) #x
+#define ABQ_STR(x) ABQ_STR_(x)
+// Stub k, at abqStubs + 4k, is Thumb: ip = its address + 4, then its register's tail. Callers reach it by blx (a
+// pointer, or a bl the linker makes a blx).
+#define ABQ_STUB(fn, reg)                                                                                             \
+    "\t.thumb_func\n\t.type " ABQ_STR(ABQ(fn)) ", %function\n" ABQ_STR(ABQ(fn)) ":\n\tmov ip, pc\n\tb abqTail" #reg "\n"
+// A --wrap'd export keeps its 4 B slot k (a local Thumb stub, so the table's index stays k), and its global name is
+// ARM code (ABQ_WRAPARM): ARM callers that tail-call it with b (z_smalltext.c's stBlit) then need no ARM-to-Thumb
+// veneer from ld, which 3dsxtool relocates wrongly and which moves with every later append (integrate21, 11-10).
+#define ABQ_WRAP(fn, reg)                                                                                             \
+    "\t.thumb_func\n\t.type abqW_" #fn ", %function\nabqW_" #fn ":\n\tmov ip, pc\n\tb abqTail" #reg "\nabqWp_" #fn   \
+    ":\n"
+// ip as slot k's Thumb stub sets it (its address + 4), then its register's tail at its ARM entry.
+#define ABQ_WRAPARM(fn, reg)                                                                                          \
+    "\t.global __wrap_" #fn "\n\t.type __wrap_" #fn ", %function\n__wrap_" #fn ":\n\tadr ip, abqWp_" #fn "\n"        \
+    "\tb abqTail" #reg "a\n\t.size __wrap_" #fn ", . - __wrap_" #fn "\n"
+// A register's tail: the alpha to s15 and through the core (which leaves r1-r3, s0-s11 and the stack as they came),
+// back, then on to the draw with every other argument untouched.
+#define ABQ_TAIL(n)                                                                                                   \
+    "\t.balign 4\n\t.thumb\nabqTail" #n ":\n\tbx pc\n\tnop\n\t.arm\nabqTail" #n "a:\n\tvmov.f32 s15, s" #n "\n"      \
+    "\tpush {r0, lr}\n\tbl abqCore\n\tpop {r0, lr}\n\tvmov.f32 s" #n ", s15\n\tbx ip\n"
+#define ABQ_TEXT_SECTION ".text.late.alphabyte" // named as a string, as late-order.json's source check reads it
+__asm__("\t.pushsection " ABQ_TEXT_SECTION ",\"ax\",%progbits\n"
+        "\t.syntax unified\n"
+        "\t.balign 4\n"
+        "\t.thumb\n"
+        "abqStubs:\n" ABQ_TARGETS(ABQ_STUB, ABQ_WRAP)
+        ABQ_TAIL(1) ABQ_TAIL(2) ABQ_TAIL(3) ABQ_TAIL(4) ABQ_TAIL(5) ABQ_TAIL(6) ABQ_TAIL(7) ABQ_TAIL(8) ABQ_TAIL(11)
+        // drawText's alpha is renderer->drawAlpha: q there for the call (r4 = the renderer, r5 = the game's value),
+        // the game's value back after. No stack arguments (r0, r1, s0-s5).
+        "\t.balign 4\n"
+        "\t.thumb\n"
+        "abqTailT:\n"
+        "\tbx pc\n"
+        "\tnop\n"
+        "\t.arm\n"
+        "\tpush {r0, r4, r5, lr}\n"
+        "\tmov r4, r0\n"
+        "\tldr r5, [r0, #12]\n"
+        "\tvmov s15, r5\n"
+        "\tbl abqCore\n"
+        "\tvstr s15, [r4, #12]\n"
+        "\tmov r0, r4\n"
+        "\tblx ip\n"
+        "\tstr r5, [r4, #12]\n"
+        "\tpop {r0, r4, r5, pc}\n"
+        // ip = stub k's address + 4 -> its draw. s15 = alpha -> q (uses s12-s14 and r0 only).
+        "abqCore:\n"
+        "\tldr r0, =abqStubs + 4\n"
+        "\tsub ip, ip, r0\n"
+        "\tldr r0, =abqTargets\n"
+        "\tldr ip, [r0, ip]\n"
+        "\tvcmp.f32 s15, #0\n"
+        "\tvmrs APSR_nzcv, fpscr\n"
+        "\tbxle lr\n" // alpha <= 0 or NaN
+        "\tvldr s14, abqOne\n"
+        "\tvcmp.f32 s15, s14\n"
+        "\tvmrs APSR_nzcv, fpscr\n"
+        "\tbxge lr\n" // alpha >= 1
+        "\tvldr s13, abq255\n"
+        "\tvmul.f32 s14, s15, s13\n"
+        "\tvcvt.u32.f32 s14, s14\n" // toward zero: k
+        "\tvcvt.f32.u32 s14, s14\n"
+        "\tvldr s12, abqQuarter\n"
+        "\tvadd.f32 s14, s14, s12\n"
+        "\tvdiv.f32 s14, s14, s13\n" // q = (k + 0.25) / 255
+        "\tvldr s13, abqDim\n"
+        "\tvcmp.f32 s15, s13\n" // the game's alpha against isDimText's 0.55
+        "\tvmrs APSR_nzcv, fpscr\n"
+        "\tvmov.f32 s15, s14\n"
+        "\tbxpl lr\n" // alpha >= 0.55: q (0.55 or more too)
+        "\tvcmp.f32 s14, s13\n"
+        "\tvmrs APSR_nzcv, fpscr\n"
+        "\tvldrpl s15, abqUnderDim\n" // alpha < 0.55 <= q (k = 140): the float below 0.55
+        "\tbx lr\n"
+        // The --wrap'd exports, ARM (ABQ_WRAPARM).
+        ABQ_TARGETS(ABQ_NONE, ABQ_WRAPARM)
+        "abqOne:\n\t.float 1.0\n"
+        "abq255:\n\t.float 255.0\n"
+        "abqQuarter:\n\t.float 0.25\n"
+        "abqDim:\n\t.float 0.55\n"
+        "abqUnderDim:\n\t.word 0x3f0ccccc\n" // the float below 0.55f, 0.549999952
+        "\t.ltorg\n"
+        "\t.syntax divided\n"
+        "\t.popsection\n");
+#endif
+
+#ifdef CTRPORT_DLGFLASH_HELPER
+#include "ctr_dlgflash.inc"
+#endif
+
+#ifdef CTRPORT_DLGFLASH_HELPER
+#include "ctr_dlgtop.inc"
+#endif
+
+// ===[ The Split's top margin (battlesplit22, change battlesplit; 11-11, maintainer's Toriel damage number) ]===
+// On a split frame the top screen shows the band from row topDy, and the topDy rows above it are black: what the game
+// draws above room row 0 (Toriel's damage number as it bounces up from her head) was cut at the band's top edge,
+// where the PC's window ends it. The ruling is to draw past the PC's edge. Here a split frame's batches that reach
+// above the view are kept as flushBatch draws them, and drawn again at present the way 14c and 14f draw Muffet: 240
+// rows lower, on the half view's last rows (rows no screen shows), over black, then copied above the band on the top
+// screen (CtrRenderer_bsStripClear14 and CtrRenderer_bsStripCopy14).
+// - Kept (CtrRenderer_bsProphecy22, prophecyBatches' body: flushBatch asks it before it draws any batch but a shrink
+//   or layer one): a batch on the half view under the game's projection, of 1-3 texture units (none a surface's or a
+//   scratch), with no palette, shader, fog, alpha test, colour mask, stereo or scissor but the viewport's (bs22Plain),
+//   with a vertex above row 0. Its place in the ring is kept with a hash of its vertices, the textures, citro3d's blend
+//   word and the filter; the frame's first kept batch keeps the projection, and one under another is not kept. A batch
+//   looked again at replaces its record; a draw into another target, symTex moving, or the vertex ring starting over
+//   from 0 (CtrRenderer_bs22Ring) drops the frame's records.
+// - Drawn (in front of CtrRenderer_bsPresent5, its --wrap): under the records' own projection, the one the game drew
+//   them with (a shaking screen's moved view too, which the present's does not have: the margin shakes with the view),
+//   moved down by the view (clip y less 2), and a scissor of the strip's rows, each record with its own blend word and
+//   filter, then the strip copied. Not drawn: a frame whose strip 14c or 14f already copied (Muffet, the grid:
+//   CtrRenderer_bsStripCopy14's --wrap notes it), a state at present that is not plain, stereo, a texture that moved,
+//   vertices that changed in the ring, a ring that would start over from 0. Each batch is kept and drawn on its
+//   own. Room in the ring is made, when needed, by starting it over into the part the frame before used. Room in the
+//   command buffer is made before each record's state goes in (asrCommandRoom), so a recovery never falls between
+//   a record's blend and its draw.
+// - Paused (Options open: the same game frame presented again, nothing drawn): the strip the last present ended with
+//   is copied above the band again (c26rev4's F1): the records' from the half view's last rows (nothing draws there
+//   after present). 14c's and 14f's from the pixels their copy read: CtrRenderer_bsStripCopy14's --wrap has the GPU
+//   queue copy those rows, right after the copy's draw, to the full texture's bytes past the arena layer (the stash),
+//   which nothing else in a split frame writes. A later draw of the frame on the strip's rows (14c's grid: BS22-D1) or
+//   the vertex ring starting over (BS13-F1) then changes nothing paused: the pixels, not the draws, are kept.
+// Not covered: what the game draws wholly outside the view other than above it (left, right, below), the bottom
+// screen, the right eye. Nothing the game reads changes; a frame without a record draws exactly as before.
+// Appended, own sections (.text_bsmargin22, .bss_bsmargin22_late); prophecyBatches' slot padded at the end. Every
+// function here is extern or called only from one: GCC then compiles them after the file's own. A static one it
+// compiled earlier changed asgEnd's code (its reloads after asgState), and the old code must stay byte for byte.
+#if defined(ENABLE_WAD16) && defined(__3DS__) && defined(NDEBUG) && !defined(CTRPORT_RENDER_TIMING)
+#define BS22_CODE __attribute__((noinline, noipa, optimize("Os"), section(".text_bsmargin22")))
+#define BS22_BSS __attribute__((section(".bss_bsmargin22_late,\"aw\",%nobits @")))
+#define BS22_RECORDS 16
+typedef struct {
+    C3D_Tex* tex[3];   // batchTexes: a multi-texture batch's units (a vertex's z says its unit), batchTex first
+    void* texData[3];  // their memory as the batch drew it
+    uint32_t word;     // citro3d's blend function word
+    uint32_t start;    // the batch's first vertex in the ring
+    uint32_t count;
+    uint32_t hash;     // of its vertices (bs22Hash): still in the ring at present, as drawn
+    uint8_t filter;    // FILTER_NEAREST or FILTER_LINEAR
+    uint8_t quads;     // the batch's quads (4 vertices each), else triangles
+    uint8_t units;     // batchTexCount, 1 to 3 (batchTexes has 3; batchUnitFor adds none past them)
+} Bs22Rec;
+static struct {
+    uint32_t frame; // r->frame + 1 of the records, 0 none
+    uint32_t strip; // r->frame + 1 of the last frame CtrRenderer_bsStripCopy14 was called in
+    uint32_t n;
+    uint32_t game;  // the runner's frameCount + 1 at the last present: a paused present shows that game frame again
+    uint32_t shown; // r->frame + 1 of the last present
+    uint32_t used;  // r->vertexUsed after the last --wrap'd strip copy
+    uint32_t ring;  // r->vertexCount - r->vertexUsed at the last record's look (bs22Ring)
+    int16_t rows, top; // the strip copy the last present ended with (rows and topDy), rows 0 none
+    bool replaying;
+#ifdef CTRPORT_BS_MARGIN_CENSUS
+    uint32_t count[8];
+    uint32_t logFrame;
+    int16_t seen[16];
+    uint32_t seenRoom;
+#endif
+    C3D_Tex* sym; // r->symTex at the last record
+    C3D_Mtx proj; // the records' projection
+    Bs22Rec rec[BS22_RECORDS];
+    // The stash of the strip bs22.rows says (CtrRenderer_bs22Stash): the half view's memory it was made from, nullptr
+    // none (the strip is then on the half view's last rows); and the texture a paused copy samples it through.
+    void* stash;
+    C3D_Tex stashTex;
+} bs22 BS22_BSS;
+#ifdef CTRPORT_BS_MARGIN_CENSUS
+// Census (test builds only): 0 records, 1 vertices kept, 2 reaching but refused (state or projection), 3 refused
+// (full), 4 frames drawn, 5 frames skipped (strip copied), 6 skipped (place, projection or state), 7 records not drawn
+// (texture moved, vertices changed, command buffer or ring full).
+#define BS22_COUNT(i) (bs22.count[i]++)
+// Why a batch reaching above the view or a present was refused (the first BS22_DIAG lines): one bit a reason, from
+// bit 0: shaderFx palKind fog alphaTest shoujo colorMask palSurf crt shrink layer tower opAlphaCut fxSuspended
+// plainTexEnv scissor depth stereo plainOnly, then not all colours written, a shader, smart.copy, no citro blend word,
+// not the game projection, a second texture, more than one texture.
+#define BS22_DIAG 400
+#define BS22_STR(x) ({ static const char s22_[] __attribute__((section(".rodata_bsmargin22"))) = x; s22_; })
+static uint32_t bs22DiagLines BS22_BSS, bs22Calls BS22_BSS;
+bool CtrRenderer_bs22Plain(const CtrRenderer* r);
+BS22_CODE static uint32_t bs22Mask(const CtrRenderer* r) {
+    uint32_t m = 0, b = 0;
+#define B22(x) m |= ((x) ? 1u : 0u) << b++;
+    B22(r->shaderFx) B22(r->palKind) B22(r->fogEnable) B22(r->alphaTestEnable) B22(r->shoujoBands) B22(r->colorMask) B22(r->palSurfPass)
+    B22(r->crtPass) B22(r->shrink.batchMode) B22(r->layer.mode) B22(r->towerStrips) B22(r->opAlphaCut) B22(r->fxSuspended) B22(r->plainTexEnv)
+    B22(r->scissorEnabled) B22(r->depth.active) B22(r->stereoActive) B22(r->batchPlainOnly)
+    B22(!(r->colorWrite[0] & r->colorWrite[1] & r->colorWrite[2] & r->colorWrite[3])) B22(r->base.currentShader >= 0) B22(r->smart.copy != nullptr)
+    B22(r->citroBlendAt == 0) B22(!r->gameProjection) B22(r->batchTexB != nullptr) B22(r->batchTexCount > 1)
+#undef B22
+    return m;
+}
+BS22_CODE static void bs22DiagRecord(const CtrRenderer* r) {
+    bs22Calls++;
+    if (bsGpu == nullptr || bsGpu->target == nullptr) return; // a split frame's only
+    uint32_t start = r->batchStart, count = r->vertexCount - start;
+    if (count == 0 || count > r->vertexCount || bs22DiagLines >= BS22_DIAG) return;
+    float yy = r->projection.r[1].y, yw = r->projection.r[1].w;
+    const CtrVertex* v = &r->vertices[start];
+    float ymin = 1.0e9f, cmax = -1.0e9f;
+    for (uint32_t i = 0; count > i; i++) {
+        ymin = v[i].y < ymin ? v[i].y : ymin;
+        float c = yy * v[i].y + yw;
+        cmax = c > cmax ? c : cmax;
+    }
+    static uint32_t negOnly BS22_BSS;
+    if (!(cmax > 1.0f) && (!(ymin < 0.0f) || ++negOnly > 30)) return;
+    BsGpu* g = bsGpu;
+    bs22DiagLines++;
+    logInfo(BS22_STR("bs22diag rec frame %u count %u ymin %.2f clipmax %.4f yy %.6f yw %.6f r1x %.4f g %d target %d bound==app %d bound==layer %d "
+            "replaying %d mask %08x n %u bsframe %u quads %d\n"), (unsigned) r->frame, (unsigned) count, (double) ymin, (double) cmax, (double) yy,
+            (double) yw, (double) r->projection.r[1].x, g != nullptr, g != nullptr && g->target != nullptr, g != nullptr && r->boundTarget == g->appTarget,
+            g != nullptr && r->boundTarget == g->target, bs22.replaying, (unsigned) bs22Mask(r), (unsigned) bs22.n, (unsigned) bs22.frame, r->batchQuads);
+    uint32_t inArr = 0;
+    for (uint32_t k = 0; r->batchTexCount > k; k++) {
+        uintptr_t t = (uintptr_t) r->batchTexes[k];
+        inArr |= (t - (uintptr_t) r->surfaces < r->surfaceCount * sizeof(CtrSurface) ? 1u : 0u) << (3 * k);
+        inArr |= (t - (uintptr_t) r->scratches < (uintptr_t) arrlen(r->scratches) * sizeof(CtrScratch) ? 2u : 0u) << (3 * k);
+        inArr |= (t - (uintptr_t) r->symTex < (uintptr_t) arrlen(r->symTex) * sizeof(C3D_Tex) ? 4u : 0u) << (3 * k);
+    }
+    const CtrSurface* bs = 0 <= r->boundSurface ? &r->surfaces[r->boundSurface] : nullptr;
+    logInfo(BS22_STR("bs22diag rec2 plain %d units %u texB %d viewport %d,%d %dx%d scissor %d %d,%d %dx%d appH %d surf %d %dx%d shift %d native %d "
+                     "inArr %03o tex0 %ux%u filt %d\n"),
+            CtrRenderer_bs22Plain(r), (unsigned) r->batchTexCount, r->batchTexB != nullptr, (int) r->viewport.x, (int) r->viewport.y,
+            (int) r->viewport.w, (int) r->viewport.h, r->scissorEnabled, (int) r->scissor.x, (int) r->scissor.y, (int) r->scissor.w,
+            (int) r->scissor.h, (int) r->appH, (int) r->boundSurface, bs != nullptr ? (int) bs->width : -1, bs != nullptr ? (int) bs->height : -1,
+            bs != nullptr ? (int) bs->shift : -1, bs != nullptr ? (int) bs->nativeScale : -1, (unsigned) inArr, (unsigned) r->batchTex->width,
+            (unsigned) r->batchTex->height, (int) r->filterOverride);
+}
+// Per room (census sweep): split frames with kept batches, the most kept in one frame, frames drawn, crossing batches
+// refused; logged when the room changes.
+static struct {
+    uint32_t room, first, last, frames, maxN, maxCross, drawn, count2, dropped, frameCount2;
+} bs22Room BS22_BSS;
+BS22_CODE static void bs22RoomNote(const CtrRenderer* r, uint32_t n) {
+    Runner* runner = r->base.runner;
+    uint32_t room = runner != nullptr ? (uint32_t) runner->currentRoomIndex + 1 : 0;
+    if (room != bs22Room.room || r->frame > bs22Room.last + 30) { // a room, or a run of split frames (one battle each)
+        if (bs22Room.frames != 0 || bs22Room.count2 != bs22.count[2])
+            logInfo(BS22_STR("bs22room room %d frames %u..%u: frames with kept batches %u, most kept in a frame %u, most crossing in a frame %u, "
+                             "frames drawn %u, crossing refused %u, kept not drawn %u\n"),
+                    (int) bs22Room.room - 1, (unsigned) bs22Room.first, (unsigned) bs22Room.last, (unsigned) bs22Room.frames,
+                    (unsigned) bs22Room.maxN, (unsigned) bs22Room.maxCross, (unsigned) (bs22.count[4] - bs22Room.drawn),
+                    (unsigned) (bs22.count[2] - bs22Room.count2), (unsigned) (bs22.count[7] - bs22Room.dropped));
+        bs22Room.room = room;
+        bs22Room.first = r->frame;
+        bs22Room.frames = bs22Room.maxN = bs22Room.maxCross = 0;
+        bs22Room.drawn = bs22.count[4];
+        bs22Room.count2 = bs22.count[2];
+        bs22Room.dropped = bs22.count[7];
+    }
+    bs22Room.last = r->frame;
+    uint32_t cross = n + (bs22.count[2] - bs22Room.frameCount2);
+    bs22Room.frameCount2 = bs22.count[2];
+    if (n != 0) bs22Room.frames++;
+    if (n > bs22Room.maxN) bs22Room.maxN = n;
+    if (cross > bs22Room.maxCross) bs22Room.maxCross = cross;
+}
+#else
+#define BS22_COUNT(i) ((void) 0)
+#endif
+
+// The state the game's draw is drawn again under: one texture or a multi-texture batch's (no second-texture pair), no
+// palette, shader, fog, alpha test, mask, stereo or depth, all colours written, citro3d's blend word found, the game's
+// projection on a viewport the surface's height (the 240-row move is the whole view), and no scissor but the
+// viewport's own (setViewport's, on every view's draws; the strip's replaces it, and clip space cuts the same columns).
+bool CtrRenderer_bs22Plain(const CtrRenderer* r);
+BS22_CODE bool CtrRenderer_bs22Plain(const CtrRenderer* r) {
+    uint32_t z = r->shaderFx | r->palKind | r->fogEnable | r->alphaTestEnable | r->shoujoBands | r->colorMask | r->palSurfPass | r->crtPass |
+                 r->shrink.batchMode | r->layer.mode | r->towerStrips | r->opAlphaCut | r->fxSuspended | r->plainTexEnv | r->viewport.y |
+                 r->depth.active | r->stereoActive | r->batchPlainOnly;
+    uint32_t write = r->colorWrite[0] & r->colorWrite[1] & r->colorWrite[2] & r->colorWrite[3];
+    return z == 0 && write && r->base.currentShader < 0 && r->smart.copy == nullptr && r->citroBlendAt != 0 && r->gameProjection &&
+           r->batchTexB == nullptr && r->viewport.h == r->appH &&
+           (!r->scissorEnabled || memcmp(&r->scissor, &r->viewport, sizeof(CtrRect)) == 0);
+}
+
+// The words of count vertices from v, hashed.
+uint32_t CtrRenderer_bs22Hash(const CtrVertex* v, uint32_t count);
+BS22_CODE uint32_t CtrRenderer_bs22Hash(const CtrVertex* v, uint32_t count) {
+    const uint32_t* w = (const uint32_t*) v;
+    uint32_t h = count;
+    for (uint32_t i = 0; count * (sizeof(CtrVertex) / 4) > i; i++) h = (h << 5 | h >> 27) ^ w[i];
+    return h;
+}
+
+// The same projection, as numbers: a matrix made again can hold -0 where it held 0 (Toriel's present does).
+bool CtrRenderer_bs22SameProj(const C3D_Mtx* a, const C3D_Mtx* b);
+BS22_CODE bool CtrRenderer_bs22SameProj(const C3D_Mtx* a, const C3D_Mtx* b) {
+    for (uint32_t i = 0; 16 > i; i++)
+        if (a->m[i] != b->m[i]) return false;
+    return true;
+}
+
+// Whether the frame's records still have their vertices in the ring: the ring has not started over from 0 with all of
+// it free since ring (bs22.ring) was taken. Each append adds the same to
+// vertexCount and vertexUsed, a start-over sets vertexCount to 0, so vertexCount - vertexUsed changes at a start-over
+// only. The start-over into the part the frame before used (makeVertexRoom, asgRoomSlow: vertexLimit becomes
+// frameVertexStart, not 0) writes below this frame's first vertex only, and leaves the records be. The other one,
+// after the GPU ran the frame so far, leaves frameVertexStart 0 and vertexLimit the whole ring, and the frame then
+// draws from vertex 0: over the records (c26rev4's F2: a hash alike). No start-over follows it into the part before
+// (that needs count <= frameVertexStart, which is 0).
+bool CtrRenderer_bs22Ring(const CtrRenderer* r, uint32_t ring);
+BS22_CODE bool CtrRenderer_bs22Ring(const CtrRenderer* r, uint32_t ring) {
+    return r->vertexCount - r->vertexUsed == ring || r->frameVertexStart != 0 || r->vertexLimit != VERTEX_CAPACITY;
+}
+
+// The batch from batchStart to vertexCount, as flushBatch draws it, into e if it can be drawn again: the plain state
+// (bs22Plain), no texture of a surface or a scratch. False: not kept (e may be part written).
+bool CtrRenderer_bs22Take(const CtrRenderer* r, Bs22Rec* e);
+BS22_CODE bool CtrRenderer_bs22Take(const CtrRenderer* r, Bs22Rec* e) {
+    if (!CtrRenderer_bs22Plain(r)) return false;
+    uint32_t units = r->batchTexCount;
+    // A surface's texture (or a scratch holding a surface's pixels) can be drawn onto or cleared before present, and
+    // both arrays move (allocSurfaceSlot, scratchFor): a batch sampling one is not kept.
+    for (uint32_t k = 0; units > k; k++) {
+        uintptr_t t = (uintptr_t) r->batchTexes[k];
+        if (t - (uintptr_t) r->surfaces < r->surfaceCount * sizeof(CtrSurface) ||
+            t - (uintptr_t) r->scratches < (uintptr_t) arrlen(r->scratches) * sizeof(CtrScratch))
+            return false;
+    }
+    for (uint32_t k = 0; units > k; k++) {
+        e->tex[k] = r->batchTexes[k];
+        e->texData[k] = r->batchTexes[k]->data;
+    }
+    e->units = (uint8_t) units;
+    e->word = CITRO_WORD(r->citroBlendAt);
+    e->start = r->batchStart;
+    e->count = r->vertexCount - r->batchStart;
+    e->hash = CtrRenderer_bs22Hash(&r->vertices[e->start], e->count);
+    e->quads = r->batchQuads;
+    // (flushBatch draws the white texture and a multi-texture batch nearest whatever this says.)
+    e->filter = (r->filterOverride != 0 ? r->filterOverride == FILTER_LINEAR : r->base.texFilter) ? FILTER_LINEAR : FILTER_NEAREST;
+    return true;
+}
+
+void CtrRenderer_bs22Record(const CtrRenderer* r);
+BS22_CODE void CtrRenderer_bs22Record(const CtrRenderer* r) {
+#ifdef CTRPORT_BS_MARGIN_CENSUS
+    bs22DiagRecord(r);
+#endif
+    BsGpu* g = bsGpu;
+    if (g == nullptr || g->target == nullptr || bs22.replaying) return;
+    if (r->boundTarget != g->appTarget) {
+        // Drawn into a texture other than the two half views: one a kept batch sampled may hold other pixels by
+        // present. The frame's batches so far are not drawn again.
+        if (r->boundTarget != g->target && bs22.frame == r->frame + 1) bs22.n = 0;
+        return;
+    }
+    uint32_t start = r->batchStart, count = r->vertexCount - start;
+    if (count == 0 || count > r->vertexCount) return;
+    uint32_t f = r->frame + 1;
+    if (bs22.frame != f || !CtrRenderer_bs22Ring(r, bs22.ring)) {
+        bs22.frame = f;
+        bs22.n = 0;
+    }
+    bs22.ring = r->vertexCount - r->vertexUsed;
+    uint32_t n = bs22.n;
+    if (n != 0 && bs22.rec[n - 1].start == start) bs22.n = --n;
+    // Clip y = yy * y + yw: the view's top row is +1, a row above it more. A batch with a vertex above the view is
+    // kept whole: drawn again 240 rows lower, the strip's scissor keeps only what lands in the topDy rows above it.
+    float yy = r->projection.r[1].y, yw = r->projection.r[1].w;
+    const CtrVertex* v = &r->vertices[start];
+    uint32_t i = 0;
+    while (count > i && 1.0f >= yy * v[i].y + yw) i++;
+    if (count == i) return;
+    // symTex's halved copies never change, but the array moves when one is added (symMakeCopy): the frame's earlier
+    // batches then point into the old one, and are not drawn again.
+    if (r->symTex != bs22.sym) n = 0;
+    bs22.sym = r->symTex;
+    Bs22Rec* e = &bs22.rec[n];
+    if (n == BS22_RECORDS || (n != 0 && !CtrRenderer_bs22SameProj(&r->projection, &bs22.proj)) || !CtrRenderer_bs22Take(r, e)) goto refused;
+    if (n == 0) bs22.proj = r->projection;
+    bs22.n = n + 1;
+#ifdef CTRPORT_BS_MARGIN_CENSUS
+    BS22_COUNT(0);
+    bs22.count[1] += count;
+    Runner* runner = r->base.runner;
+    if (runner == nullptr) return;
+    const Instance* inst = runner->vmContext != nullptr ? runner->vmContext->currentInstance : nullptr;
+    int32_t obj = inst != nullptr ? inst->objectIndex : -1;
+    if (bs22.seenRoom != (uint32_t) runner->currentRoomIndex + 1) {
+        bs22.seenRoom = (uint32_t) runner->currentRoomIndex + 1;
+        for (uint32_t i = 0; 16 > i; i++) bs22.seen[i] = -2;
+    }
+    for (uint32_t i = 0; 16 > i; i++) {
+        if (bs22.seen[i] == obj) break;
+        if (bs22.seen[i] != -2) continue;
+        bs22.seen[i] = (int16_t) obj;
+        const char* name = 0 <= obj && runner->dataWin != nullptr && runner->dataWin->objt.count > (uint32_t) obj ? runner->dataWin->objt.objects[obj].name : BS22_STR("?");
+        float y0 = 1.0e9f, y1 = -1.0e9f, x0 = 1.0e9f, x1 = -1.0e9f;
+        for (uint32_t c = 0; e->count > c; c++) {
+            const CtrVertex* q = &v[c];
+            y0 = q->y < y0 ? q->y : y0, y1 = q->y > y1 ? q->y : y1, x0 = q->x < x0 ? q->x : x0, x1 = q->x > x1 ? q->x : x1;
+        }
+        logInfo(BS22_STR("bsmargin22: room %d frame %u object %s: a batch of %u %s reaching above the view, room x %d..%d y %d..%d, texture %ux%u, blend %08x\n"),
+                (int) runner->currentRoomIndex, (unsigned) r->frame, name != nullptr ? name : BS22_STR("?"), (unsigned) (e->count / (e->quads ? 4 : 3)),
+                e->quads ? "quads" : "triangles", (int) x0, (int) x1, (int) y0, (int) y1, (unsigned) e->tex[0]->width, (unsigned) e->tex[0]->height,
+                (unsigned) e->word);
+        break;
+    }
+#endif
+    return;
+refused: // this batch is not kept (the frame's earlier records stay, and a later batch can still be kept)
+    bs22.n = n;
+    BS22_COUNT(2);
+}
+
+// prophecyBatches' body, then the record of a batch it says flushBatch draws on another path. Called from
+// prophecyBatches' asm only (which keeps the registers its callers count on).
+bool CtrRenderer_bsProphecy22(const CtrRenderer* r);
+BS22_CODE __attribute__((used)) bool CtrRenderer_bsProphecy22(const CtrRenderer* r) {
+    bool p = (r->shaderFx == SHADER_FX_PROPHECY || r->shaderFx == SHADER_FX_LEGEND || r->shaderFx == SHADER_FX_TEXSCROLL ||
+              r->shaderFx == SHADER_FX_HOLOGRAM) &&
+             !r->fxSuspended && !r->plainTexEnv && r->texgenProgram != nullptr && r->layer.mode == 0;
+    if (!p) CtrRenderer_bs22Record(r);
+    return p;
+}
+
+// The strip a --wrap'd CtrRenderer_bsStripCopy14 just copied (rows and topDy as it clamps them), stashed: its tile rows
+// of the half view (row 0 is memory row 0, 8 rows a tile row), the view's columns, copied by the GPU queue to the same
+// place 2 * off further on (off: the arena layer's, bsPrepare's), past the layer, in the full texture's own memory. The
+// copy's draw went into the queue before (leaving the half view split the frame), so the stash holds what the top
+// screen got; what the frame draws later goes in after it. The half view's memory, or nullptr: no stash (no strip, or
+// no room in the full texture).
+void* CtrRenderer_bs22Stash(CtrRenderer* r, int32_t rows, int32_t topDy);
+BS22_CODE void* CtrRenderer_bs22Stash(CtrRenderer* r, int32_t rows, int32_t topDy) {
+    CtrSurface* s = bsStrip14(r);
+    if (s == nullptr) return nullptr;
+    int32_t h = s->height / 2;
+    if (rows > topDy) rows = topDy;
+    if (rows > h) rows = h;
+    if (0 >= rows) return nullptr;
+    uint32_t off = (s->tex.size + 0xFFFu) & ~0xFFFu;
+    uint32_t stride = (uint32_t) s->tex.width * 32u, line = ((uint32_t) s->width / 2u + 7u) / 8u * 256u; // tile rows, and the view's tiles
+    uint32_t k0 = (uint32_t) (h - rows) / 8u, k1 = ((uint32_t) h + 7u) / 8u;
+    if ((uint64_t) 2u * off + s->tex.size > (uint64_t) r->appView.tex.size || k1 * stride > s->tex.size || line > stride) return nullptr;
+    reserveGxCommands(r, 1);
+    uint8_t* from = (uint8_t*) s->tex.data + k0 * stride;
+    u32 dim = GX_BUFFER_DIM(line >> 4, (stride - line) >> 4);
+    GX_TextureCopy((u32*) from, dim, (u32*) (from + 2u * off), dim, (k1 - k0) * line, GX_TRANSFER_RAW_COPY(1));
+    return s->tex.data;
+}
+
+// A paused present's copy of a stashed strip: CtrRenderer_bsStripCopy14's, sampling the stash. At -O2, not -Os: this
+// file is also compiled a second time with dlgtop added (utwindow_compile.py's helper pass), and only dlgtop's code is
+// taken from that pass. Its calls to bindTarget must name what the first pass emits (bindTarget.part.0, the head
+// inlined). Three more -Os calls to bindTarget made the second pass keep bindTarget out of line, for dlgtop too: an
+// undefined bindTarget at link. -O2 inlines the head here, as in every -O2 caller.
+void CtrRenderer_bs22FromStash(Renderer* renderer, int32_t rows, int32_t topDy);
+__attribute__((noinline, noipa, optimize("O2"), section(".text_bsmargin22")))
+void CtrRenderer_bs22FromStash(Renderer* renderer, int32_t rows, int32_t topDy) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    CtrSurface* s = bsStrip14(r);
+    if (s == nullptr || s->tex.data != bs22.stash) return;
+    int32_t w = s->width / 2, h = s->height / 2;
+    if (rows > topDy) rows = topDy;
+    if (rows > h) rows = h;
+    if (0 >= rows) return;
+    float dst[4];
+    dst[0] = floorf(((float) r->topW - (float) w) * 0.5f);
+    dst[1] = (float) (topDy - rows);
+    dst[2] = (float) w;
+    dst[3] = (float) rows;
+    C3D_Tex* tex = &bs22.stashTex;
+    *tex = s->tex;
+    tex->data = (uint8_t*) s->tex.data + 2u * ((s->tex.size + 0xFFFu) & ~0xFFFu);
+    C3D_RenderTarget* app = r->boundTarget;
+    int32_t id = r->boundSurface;
+    flushBatch(r);
+    bindTarget(r, r->topTarget, -1);
+    blitApp(r, tex, 0.0f, (float) (h - rows), (float) w, (float) rows, 0.0f, 0.0f, dst, false);
+    if (r->stereoActive && r->topRightTarget != nullptr) {
+        bindTarget(r, r->topRightTarget, -1);
+        blitApp(r, tex, 0.0f, (float) (h - rows), (float) w, (float) rows, 0.0f, 0.0f, dst, false);
+    }
+    bindTarget(r, app, id);
+    applyAllState(r);
+}
+
+// In front of CtrRenderer_bsPresent5: the records on the strip, then the strip above the band.
+void __real_CtrRenderer_bsPresent5(Renderer* renderer, int32_t band, int32_t topDy, int32_t bottomDy);
+void __wrap_CtrRenderer_bsPresent5(Renderer* renderer, int32_t band, int32_t topDy, int32_t bottomDy);
+BS22_CODE void __wrap_CtrRenderer_bsPresent5(Renderer* renderer, int32_t band, int32_t topDy, int32_t bottomDy) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    uint32_t f = r->frame + 1;
+    // CtrRenderer_endFrame drew the pending batch before present (a batch drawn after the records are taken here would
+    // not be kept); so does this, whoever calls it.
+    flushBatch(r);
+    Runner* runner = r->base.runner;
+    uint32_t game = runner != nullptr ? (uint32_t) runner->frameCount + 1 : 0;
+    bool again = game == bs22.game && f == bs22.shown + 1;
+    bs22.game = game;
+    bs22.shown = f;
+#ifdef CTRPORT_BS_MARGIN_CENSUS
+    static uint32_t presents BS22_BSS;
+    if (bs22DiagLines < BS22_DIAG && (bs22.frame == f || 40 > presents++)) {
+        bs22DiagLines++;
+        float pyy = r->projection.r[1].y, pyw = r->projection.r[1].w;
+        int32_t pd = -1;
+        for (int32_t i = 0; 16 > i && 0 > pd; i++)
+            if (r->projection.m[i] != bs22.proj.m[i]) pd = i;
+        logInfo(BS22_STR("bs22diag present frame %u bsframe %u n %u strip %u topDy %d band %d palNextB %d quads %d r1x %.4f yy %.6f yw %.6f projeq %d "
+                "projsame %d first differing %d (%.6f vs %.6f) sym %d mask %08x bound==app %d calls %u\n"), (unsigned) r->frame, (unsigned) bs22.frame,
+                (unsigned) bs22.n, (unsigned) bs22.strip, (int) topDy, (int) band, r->palNextB != nullptr, r->batchQuads,
+                (double) r->projection.r[1].x, (double) pyy, (double) pyw, memcmp(&r->projection, &bs22.proj, sizeof(C3D_Mtx)) == 0,
+                CtrRenderer_bs22SameProj(&r->projection, &bs22.proj), (int) pd, (double) (0 > pd ? 0.0f : r->projection.m[pd]),
+                (double) (0 > pd ? 0.0f : bs22.proj.m[pd]), r->symTex == bs22.sym, (unsigned) bs22Mask(r),
+                bsGpu != nullptr && r->boundTarget == bsGpu->appTarget, (unsigned) bs22Calls);
+    }
+#endif
+    // The frame's records, taken once here. Nothing below adds or drops one: bs22.frame is 0 from here and replaying is
+    // set around the replays, so a flushBatch in this present (the strip's clear, each replay) records nothing; and
+    // a replay draws only if its vertices fit below vertexLimit, after a start-over into the part the frame before
+    // used if need be (below), so reserveBatch never starts the ring over in the loop. The strip's clear can: into
+    // that part, and the loop goes on (the ring check holds); from 0, and the loop stops. Command room is made
+    // before each record (below); that moves no vertex, and the loop goes on.
+    uint32_t n = bs22.frame == f && r->symTex == bs22.sym && CtrRenderer_bs22Ring(r, bs22.ring) ? bs22.n : 0;
+#ifdef CTRPORT_BS_MARGIN_CENSUS
+    bs22RoomNote(r, n);
+#endif
+    bs22.frame = 0;
+    if (again) {
+        // Options open (or a test's pause): the game frame before shown again, with nothing drawn since. Its strip goes
+        // above the band again, from the stash or the half view's last rows: through a pause nothing changes on screen
+        // (maintainer).
+        if (bs22.rows != 0) {
+            if (bs22.stash != nullptr) CtrRenderer_bs22FromStash(renderer, bs22.rows, bs22.top);
+            else CtrRenderer_bsStripCopy14(renderer, bs22.rows, bs22.top);
+        }
+        goto present;
+    }
+    if (bs22.strip == f) {
+        // A --wrap'd copy put its strip on the top screen this frame (14c's grid, 14f's Muffet): the records are not
+        // drawn. For a pause it is in the stash; with none, on its rows if nothing was drawn since (14f's, at present).
+        if (n != 0) BS22_COUNT(5);
+        if (bs22.stash == nullptr && r->vertexUsed != bs22.used) bs22.rows = 0;
+        goto present;
+    }
+    bs22.rows = 0;
+    bs22.stash = nullptr;
+    if (n == 0) goto present;
+    // What is drawn on the strip's rows: the records, under their projection moved down by the view (clip y less 2),
+    // then the strip copied. The ring's difference as the records left it (the clear's own look at Record takes
+    // bs22.ring again).
+    uint32_t ring = bs22.ring;
+    int32_t rows = topDy;
+    // CtrRenderer_bsStripClear14 checks the half view is bound for a shown frame; the strip's rows black (under the
+    // projection at present): view rows 240 - rows to 240, clip y -1 to -1 + rows / 120.
+    float yy = r->projection.r[1].y, yw = r->projection.r[1].w;
+    float ya = (-1.0f - yw) / yy, yb = (rows / 120.0f - 1.0f - yw) / yy;
+    if ((uint32_t) rows - 1 >= TOP_SCREEN_H - 1 || r->palNextB != nullptr || r->batchQuads || r->projection.r[1].x != 0.0f ||
+        yy == 0.0f || !CtrRenderer_bs22Plain(r) || !CtrRenderer_bsStripClear14(renderer, -1.0e5f, ya < yb ? ya : yb, 1.0e5f, ya < yb ? yb : ya)) {
+        BS22_COUNT(6);
+        goto present;
+    }
+    // The records under their own projection moved down by the view (240 half-view rows: clip y less 2), inside the
+    // strip. Their projection is where the game drew them on the half view, so they land as the game screen has them.
+    const CtrSurface* app = &r->surfaces[r->boundSurface];
+    CtrRect was = r->scissor;
+    bool wasOn = r->scissorEnabled;
+    int8_t filter = r->filterOverride;
+    C3D_Mtx proj = r->projection;
+    int32_t y = app->height * (TOP_SCREEN_H - rows) / TOP_SCREEN_H;
+    r->scissorEnabled = true;
+    r->scissor = (CtrRect) { 0, y, app->width, app->height - y };
+    r->projection = bs22.proj;
+    r->projection.r[1].w -= 2.0f;
+    bs22.replaying = true;
+    applyAllState(r);
+#ifdef CTRPORT_BS_MARGIN_CENSUS
+    uint32_t drew = 0;
+#endif
+    for (uint32_t i = 0; n > i && CtrRenderer_bs22Ring(r, ring); i++) {
+        const Bs22Rec* e = &bs22.rec[i];
+        // Its vertices as drawn.
+        const CtrVertex* from = &r->vertices[e->start];
+        uint32_t k = 0;
+        while (e->units > k && e->tex[k]->data == e->texData[k]) k++;
+        if (k != e->units || gpuCmdBuf == nullptr || CtrRenderer_bs22Hash(from, e->count) != e->hash) {
+            BS22_COUNT(7);
+            continue;
+        }
+        // Room for them in the ring (a quad batch's padding too): below vertexLimit, else the ring starts over into
+        // the part the frame before used, as makeVertexRoom does when the whole ring is this frame's from
+        // frameVertexStart and the batch fits below it. No record lies there (they lie from frameVertexStart on), and
+        // vertexLimit is then not the whole ring, so the ring check holds. Starting over from 0 (after the GPU ran the
+        // frame so far) would write over the records: not done.
+        if (r->vertexCount + e->count + 3 > r->vertexLimit) {
+            if (r->vertexLimit != VERTEX_CAPACITY || e->count + 3 > r->frameVertexStart) {
+                BS22_COUNT(7);
+                continue;
+            }
+            flushVertexCache(r);
+            CtrGpu_waitIdle();
+            r->vertexLimit = r->frameVertexStart;
+            r->vertexCount = r->batchStart = r->vertexFlushed = 0;
+        }
+        // Room for the record's commands first: a wrap or a run of the frame so far applies the game's state again
+        // (resumeState), which would replace the record's blend if it came between that and the draw. After it,
+        // CMDBUF_RESERVE_WORDS + ASG_ROOM_WORDS are free and the record's flushBatch makes no room of its own.
+        asrCommandRoom(r);
+        uint32_t w = e->word;
+        setBlendFunc(r, (GPU_BLENDEQUATION) (w & 0xFF), (GPU_BLENDEQUATION) (w >> 8 & 0xFF), (GPU_BLENDFACTOR) (w >> 16 & 0xF),
+                     (GPU_BLENDFACTOR) (w >> 20 & 0xF), (GPU_BLENDFACTOR) (w >> 24 & 0xF), (GPU_BLENDFACTOR) (w >> 28));
+        r->filterOverride = (int8_t) e->filter;
+        CtrVertex* v = reserveBatch(r, e->tex[0], e->count, false, e->quads ? e->count / 4u : 0u);
+        if (v == nullptr) break;
+        // Quads without the quad indices (reserveBatch fell back to triangles): nothing drawn. The ring may have
+        // started over into the part the frame before used since the batch (its vertices then lie ahead): memmove.
+        if (e->quads && !r->batchQuads) memset(v, 0, e->count * sizeof(CtrVertex));
+        else memmove(v, from, e->count * sizeof(CtrVertex));
+        // The batch's other units, as batchUnitFor had them (reserveBatch began it with unit 0 alone): flushBatch then
+        // draws it as drawMultiBatch did, each vertex's z naming its unit.
+        for (k = 1; e->units > k; k++) r->batchTexes[k] = e->tex[k];
+        r->batchTexCount = e->units;
+        flushBatch(r);
+#ifdef CTRPORT_BS_MARGIN_CENSUS
+        drew++;
+#endif
+    }
+#ifdef CTRPORT_BS_MARGIN_CENSUS
+    if (drew != 0) BS22_COUNT(4); // frames where a record drew
+#endif
+    r->filterOverride = filter;
+    r->scissorEnabled = wasOn;
+    r->scissor = was;
+    r->projection = proj;
+    bs22.replaying = false;
+    applyAllState(r);
+    // The records' strip above the band.
+    CtrRenderer_bsStripCopy14(renderer, topDy, topDy);
+    bs22.top = (int16_t) topDy;
+    bs22.rows = (int16_t) rows;
+#ifdef CTRPORT_BS_MARGIN_CENSUS
+    if (r->frame >= bs22.logFrame + 300) {
+        bs22.logFrame = r->frame;
+        logInfo(BS22_STR("bsmargin22: frame %u records %u primitives %u refused %u full %u drawn %u strip %u skipped %u dropped %u\n"), (unsigned) r->frame,
+                (unsigned) bs22.count[0], (unsigned) bs22.count[1], (unsigned) bs22.count[2], (unsigned) bs22.count[3], (unsigned) bs22.count[4],
+                (unsigned) bs22.count[5], (unsigned) bs22.count[6], (unsigned) bs22.count[7]);
+    }
+#endif
+present:
+    __real_CtrRenderer_bsPresent5(renderer, band, topDy, bottomDy);
+}
+
+void __real_CtrRenderer_bsStripCopy14(Renderer* renderer, int32_t rows, int32_t topDy);
+void __wrap_CtrRenderer_bsStripCopy14(Renderer* renderer, int32_t rows, int32_t topDy);
+BS22_CODE void __wrap_CtrRenderer_bsStripCopy14(Renderer* renderer, int32_t rows, int32_t topDy) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    bs22.strip = r->frame + 1;
+    __real_CtrRenderer_bsStripCopy14(renderer, rows, topDy);
+    // For a pause: the pixels the copy read, stashed (a later draw of the frame may reach the strip's rows: 14c's).
+    bs22.stash = CtrRenderer_bs22Stash(r, rows, topDy);
+    bs22.used = r->vertexUsed;
+    bs22.rows = (int16_t) rows;
+    bs22.top = (int16_t) topDy;
+}
+
+// prophecyBatches' slot: its old 92 bytes, the stub and padding after it that nothing reaches (smartEmitSlot's way).
+__asm__(".pushsection .text.prophecyBatches, 1\n.space 60\n.popsection");
+#elif defined(ENABLE_WAD16) && defined(__3DS__)
+// Builds without the margin (debug, render timing) keep CMake's two --wraps linking: straight through.
+void __real_CtrRenderer_bsPresent5(Renderer* renderer, int32_t band, int32_t topDy, int32_t bottomDy);
+void __wrap_CtrRenderer_bsPresent5(Renderer* renderer, int32_t band, int32_t topDy, int32_t bottomDy);
+void __wrap_CtrRenderer_bsPresent5(Renderer* renderer, int32_t band, int32_t topDy, int32_t bottomDy) {
+    __real_CtrRenderer_bsPresent5(renderer, band, topDy, bottomDy);
+}
+void __real_CtrRenderer_bsStripCopy14(Renderer* renderer, int32_t rows, int32_t topDy);
+void __wrap_CtrRenderer_bsStripCopy14(Renderer* renderer, int32_t rows, int32_t topDy);
+void __wrap_CtrRenderer_bsStripCopy14(Renderer* renderer, int32_t rows, int32_t topDy) {
+    __real_CtrRenderer_bsStripCopy14(renderer, rows, topDy);
+}
 #endif

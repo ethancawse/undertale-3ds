@@ -1,4 +1,4 @@
-// postkick (pacer, 2026-10-31; UNDERTALE only): the end-of-frame instance pass runs after the GPU has the frame.
+// postkick (change pacer, 2026-10-31; UNDERTALE only): the end-of-frame instance pass runs after the GPU has the frame.
 //
 // main.c ends each frame with UTSW_ROOMCHANGE (Utsw_handleRoomChange: the room-change hook, offkill's early destroy of
 // bullets past the view (z_offkill.c), the swarm's window mark), then CtrRenderer_endFrame, whose C3D_FrameEnd hands

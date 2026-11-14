@@ -175,7 +175,7 @@ void CtrArgui_saveEdits(const CtrDisplaySettings* before, const CtrDisplaySettin
 #define CtrDisplay_saveEdits CtrArgui_saveEdits
 #endif
 
-// freebytes round 3 (freebytes, 2026-10-29): late code that never runs in a played frame (the screens menu, a
+// freebytes round 3 (change freebytes, 2026-10-29): late code that never runs in a played frame (the screens menu, a
 // move of the game between screens) is compiled for size on UNDERTALE Old 3DS only, where late code is the scarce
 // reserve. Every other target compiles it as before. Here, at the header's end, so no line number moves; this header
 // because ctr_screens.c's settings-only host build (tools/analysis/test_display_settings.py) includes it too.

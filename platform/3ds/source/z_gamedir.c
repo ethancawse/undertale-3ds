@@ -1,4 +1,4 @@
-// The game folder's names from one listing, and settings.ini's contents from one read (gamedir, smoothux).
+// The game folder's names from one listing, and settings.ini's contents from one read (gamedir, change smoothux).
 //
 // On an Old 3DS a lookup in the game folder is slow, and slower still for a name that isn't there: the FAT folder is
 // read through to its end (rows utflames13: about 200 ms for a missing name's open, about 400 ms for its stat,
@@ -103,7 +103,7 @@ void __wrap_CtrLog_openFile(const char* path);
 
 static const char gdFolder[] GD_RO = GD_GAME;          // "sdmc:/3ds/<game>-3ds"
 static const char gdSettings[] GD_RO = "settings.ini";
-// Retired with lab mode's borrowing of the old folder (hashfix, 2026-10-27); kept so the late constants after
+// Retired with lab mode's borrowing of the old folder (change hashfix, 2026-10-27); kept so the late constants after
 // them don't move.
 static const char gdOldSettings[] GD_RO __attribute__((used)) = "legacycfg.ini";
 static const char gdRefused[] GD_RO = "\\:*?\"<>|";
@@ -144,7 +144,7 @@ static struct {
     uint32_t* bits;          // the listing, once made
     LightLock lock;
     int8_t state;            // 0 not listed, 1 listed, -1 off
-    uint32_t retired[17];    // lab mode's borrowed old folder, retired (hashfix, 2026-10-27); kept so nothing moves
+    uint32_t retired[17];    // lab mode's borrowed old folder, retired (change hashfix, 2026-10-27); kept so nothing moves
     // settings.ini: its contents while no one writes it through, and the opens served from them
     GdCopy* copy;
     GdCopy* work;            // the contents the open "w"/"a" sessions write (the copy once the last closes)

@@ -325,12 +325,19 @@ static u32 lastTo[3];
 // it orders and compiles the functions above the late code as before.
 #if defined(ENABLE_WAD16)
 bool blankBottomReady(gfxScreen_t screen) __asm__("CtrBlank_bottomReady");
-void blankVblank1Lock(LightLock* lock) __asm__("CtrBlank_vblank1Lock");
+void blankVblank1Lock(LightLock* lock) __asm__("CtrBottomPaint_vblank1Lock");
 #define BLANK_BOTTOM_READY blankBottomReady
 #define BLANK_VBLANK1_LOCK blankVblank1Lock
 #else
 #define BLANK_BOTTOM_READY CtrPacer_screenReady
 #define BLANK_VBLANK1_LOCK LightLock_Lock
+#endif
+#if defined(ENABLE_WAD16) && defined(CTRPORT_HELDSLOW)
+// heldslow's bottom count (change scanout; the file's end): releaseReady asks it, and it asks dlgblank. A declaration
+// only, by assembler name as above, so the functions above the late code compile and order as before.
+bool hsbBottomReady(gfxScreen_t screen) __asm__("CtrHeldslow_bottomReady");
+#undef BLANK_BOTTOM_READY
+#define BLANK_BOTTOM_READY hsbBottomReady
 #endif
 
 // With gateLock held: moves the held-back transfers of every screen ready for
@@ -1765,9 +1772,9 @@ BLANK_TEXT void CtrBlank_yieldBottom(void* renderer, bool yield) {
     blankRealYield(renderer, yield);
 }
 
-// Off on the original 2DS: its backlight stays on, the screen blanked instead. The renderer is told consoles there and so
-// sends no black transfer, and main is told Off and so does not clear: the last box stayed on screen until the next one
-// (o2ds rows, S6 too). Cleared here, when main would have.
+// Off on the original 2DS: its backlight stays on, the screen blanked instead. The renderer uses consoles and now sends
+// the close's black transfer; main still sees Off and does not clear. Keep the CPU clear for reclaim and paths without
+// dlgSetShown, after the pending bottom transfer has finished (o2ds rows, S6 too).
 BLANK_TEXT static void blankClearShown(void) {
     extern void CtrLog_beginConsole(void);
     extern void CtrLog_endConsole(void);
@@ -1835,3 +1842,78 @@ BLANK_TEXT void* CtrBlank_copyShown(void* to, const void* from, size_t bytes) {
 #elif defined(CTR_GPU_KICK)
 #include "ctr_gpu_kick.inc"
 #endif
+
+#if defined(ENABLE_WAD16)
+// Read under the queue's existing gate; invisible to the private call graph.
+__asm__(
+    ".pushsection .rodata.paintchg_idle_late,\"a\",%progbits\n.balign 4\n"
+    ".global CtrBottomPaint_gpuState\n.type CtrBottomPaint_gpuState,%object\n"
+    "CtrBottomPaint_gpuState:\n.word needSwapBot,blankBoxWasShown\n"
+    ".size CtrBottomPaint_gpuState,.-CtrBottomPaint_gpuState\n.popsection\n"
+);
+#endif
+
+// heldslow bottom count (change scanout, logaudit, 2026-11-08; UNDERTALE only, CTRPORT_HELDSLOW): how many bottom
+// transfers into the shown buffer went outside the bottom's blank, the tear dlgblank holds them to avoid. releaseReady
+// asks this (the declaration after dlgblank's), and this asks dlgblank's CtrBlank_bottomReady first, unchanged and
+// where it was. Nothing more is done when it says wait or lets a transfer through in the blank; a forced go (its hold
+// ran out) and, once it gave up for the session, a go into the shown buffer, are checked against the blank (the clock
+// since VBlank1 and the LCD's line counter, as dlgblank checks them) and counted in the [held]/[slow] state
+// (ctr_frame_pacer.c's CtrHeldslow_noteBottom), printed each window when there are any. Late code; no data.
+#if defined(ENABLE_WAD16) && defined(CTRPORT_HELDSLOW)
+#define HSB_TEXT __attribute__((noinline, noipa, section(".text_heldslow_blank")))
+
+void CtrHeldslow_noteBottom(bool forced, bool outside, bool gaveUp);
+bool CtrHeldslow_bottomReady(gfxScreen_t screen);
+
+HSB_TEXT static bool hsbOutsideBlank(void) {
+    extern uint64_t hsbBlankTick __asm__("blankTick");
+    if (svcGetSystemTick() - hsbBlankTick >= BLANK_TRANSFER_TICKS) return true;
+    u32 line = 0;
+    if (R_FAILED(GSPGPU_ReadHWRegs(0x400554, &line, sizeof(line)))) return false;
+    return BLANK_TRANSFER_LINE <= line && BLANK_PICTURE_END > line;
+}
+
+HSB_TEXT bool CtrHeldslow_bottomReady(gfxScreen_t screen) {
+    extern uint8_t hsbForcedRun __asm__("blankForcedRun");
+    extern bool hsbGaveUp __asm__("blankGaveUp");
+    extern uint8_t CtrScreens_pacerGame;
+    extern __typeof__(held) hsbHeld __asm__("held");
+    extern __typeof__(heldCount) hsbHeldCount __asm__("heldCount");
+    uint8_t forcedRun = hsbForcedRun;
+    bool gaveUp = hsbGaveUp;
+    bool go = CtrBlank_bottomReady(screen);
+    if (!go) return false;
+    // Its forced go counts one more in its run; a go in the blank sets the run back to 0.
+    if (hsbForcedRun == (uint8_t) (forcedRun + 1u)) {
+        CtrHeldslow_noteBottom(true, hsbOutsideBlank(), hsbGaveUp);
+    } else if (gaveUp && CtrScreens_pacerGame == GFX_TOP) {
+        // dlgblank answered before its checks: is a bottom transfer going into the buffer on screen?
+        bool bottom = false;
+        for (u32 i = 0; hsbHeldCount > i; i++) bottom = bottom || hsbHeld[i].screen != GFX_TOP;
+        u32 regs[5];
+        if (bottom && R_SUCCEEDED(GSPGPU_ReadHWRegs(0x400568, regs, sizeof(regs))) &&
+            osConvertVirtToPhys(CtrPacer_backFramebuffer(GFX_BOTTOM, GFX_LEFT)) == ((regs[4] & 1) != 0 ? regs[1] : regs[0])) {
+            CtrHeldslow_noteBottom(false, hsbOutsideBlank(), true);
+        }
+    }
+    return true;
+}
+#endif // CTRPORT_HELDSLOW bottom
+
+#if defined(ENABLE_WAD16)
+// ===[ main.c's reclaimBottomForConsoles: only the consoles' screen goes single buffered (change bonepulse, 11-09) ]===
+//
+// main.c makes the bottom single buffered when dialogue leaves it and the consoles show there. Split's bottom box also
+// goes when the game moves to the bottom, and with bottom_mode=2 that counts as consoles, so the call came on the
+// game's own screen (BGR8). CtrPacer_shownFramebuffer had just turned double buffering on, and nothing turned it on
+// again: every game frame was drawn into the buffer the LCD was scanning, no transfer held for a vblank (bftrans
+// timing rows, New, pre and fix alike: 150 of 150 transfers into a single-buffered screen's only buffer). A
+// screenshot turned double buffering back on (CtrPacer_shownFramebuffer), so no picture run showed it
+// (docs/3ds-hardware-2.md). The consoles' screen is RGB565 (the move's format, ctr_renderer.c); only it goes single.
+// Late text, called where main called gfxSetDoubleBuffering, so main keeps its size and every address.
+__attribute__((noinline, noipa, optimize("Os"), section(".text.reclaim_late")))
+void CtrBlank_consolesSingle(gfxScreen_t screen, bool on) {
+    if (on || gfxGetScreenFormat(screen) == GSP_RGB565_OES) gfxSetDoubleBuffering(screen, on);
+}
+#endif // ENABLE_WAD16 (reclaim)

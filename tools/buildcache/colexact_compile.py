@@ -1,6 +1,6 @@
 """Restore qualified Release string groups without changing code or references.
 
-Ruling 2026-10-29, option A. The complete canonical pool fingerprint is
+review decision 2026-10-29, option A. The complete canonical pool fingerprint is
 from the pre-UT-039 public engine TU, devkitARM GCC 16.1, ordinary Release.
 Unknown strings/order or missing/duplicate anchors fail before assembly. The
 linked ELF still requires the independent strict byte/layout proof.

@@ -33,7 +33,7 @@ def loaded_bytes(path, address, size):
 def audit_compiler_locals(base, candidate):
     """Allow GCC numeric switch-table renames with identical slots and bytes.
 
-    This is the compiler-local rename exception in the layout rules;
+    This is the compiler-local rename exception in the project's rules;
     no moved table or changed functional contents qualifies.
     """
     def tables(path):

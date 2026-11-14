@@ -42,6 +42,79 @@ class NoticeTests(unittest.TestCase):
         self.manifest.write_text('', encoding='utf-8')
         self.assertNotIn('Actual upstream terms', self.render())
 
+    def test_distribution_note_does_not_replace_or_select_licence_text(self):
+        data = json.loads(self.catalogue.read_text())
+        data['components'][0]['distribution'] = 'Source notice; not a claim of executable linkage.'
+        self.catalogue.write_text(json.dumps(data))
+        result = self.render()
+        self.assertIn('Distribution: Source notice; not a claim of executable linkage.', result)
+        self.assertIn('Actual upstream terms', result)
+        self.assertIn('not an inventory of libraries linked into a particular executable', result)
+        self.manifest.write_text('')
+        self.assertNotIn('Distribution:', self.render())
+
+    def test_licence_only_and_helper_exports_keep_their_notice(self):
+        # UT retains the licence alone; DR also exports the optional decoder helpers.
+        helper = self.root / 'tools/deps/optional'
+        helper.mkdir(parents=True)
+        (helper / 'build.sh').write_text('# synthetic build helper\n')
+        licence = self.root / 'tools/release/licenses/optional-LICENSE'
+        licence.parent.mkdir(parents=True)
+        licence.write_text('Optional upstream terms\n')
+        data = json.loads(self.catalogue.read_text())
+        data['components'].append({
+            'name': 'optional decoder', 'license': 'Example',
+            'paths': ['tools/deps/optional/', 'tools/release/licenses/optional-LICENSE'],
+            'provenance': 'fixture', 'distribution': 'Licence-only or helper export.',
+            'texts': [{'file': 'tools/release/licenses/optional-LICENSE'}]})
+        self.catalogue.write_text(json.dumps(data))
+        licence_name = 'tools/release/licenses/optional-LICENSE\n'
+        self.manifest.write_text(licence_name)
+        result = self.render()
+        self.assertIn('Optional upstream terms', result)
+        self.assertNotIn('Actual upstream terms', result)
+        self.manifest.write_text(licence_name + 'tools/deps/optional/build.sh\n'
+                                 'engine/vendor/example/LICENSE\n')
+        result = self.render()
+        self.assertIn('Optional upstream terms', result)
+        self.assertIn('Actual upstream terms', result)
+
+    def test_decoder_catalogue_describes_game_linkage_and_source_scope(self):
+        data = json.loads((notices.ROOT / 'tools/release/notices.json').read_text(encoding='utf-8'))
+        aac = next(c for c in data['components'] if c['name'] == 'PacketVideo AAC decoder')
+        h264 = next(c for c in data['components'] if c['name'].startswith('Cisco OpenH264'))
+        self.assertNotIn('Linked even by UNDERTALE', aac['provenance'])
+        self.assertIn('Compiled and linked into DELTARUNE', aac['distribution'])
+        self.assertIn('UNDERTALE does not build this decoder', aac['distribution'])
+        self.assertIn('UNDERTALE kit has no OpenH264 build helpers', h264['distribution'])
+        self.assertIn('UNDERTALE does not build or link the decoder', h264['distribution'])
+        self.assertIn('when enabled and the external libopenh264dec.a archive is present',
+                      h264['distribution'])
+        for component in (aac, h264):
+            self.assertTrue(component['texts'])
+            # The UNDERTALE source kit has no pvaac folder, so it has none of that decoder's texts either.
+            if not any((notices.ROOT / path).exists() for path in component['paths']):
+                continue
+            for source in component['texts']:
+                self.assertTrue((notices.ROOT / source['file']).is_file(), source['file'])
+
+    def test_noon_undertale_bundle_retains_licence_without_claiming_helper_export(self):
+        # The UNDERTALE source kit ships this template as its root THIRD_PARTY_NOTICES (manifest-ut.txt #map).
+        path = notices.ROOT / 'tools/release/templates/THIRD_PARTY_NOTICES-undertale.txt'
+        if not path.is_file():
+            if not (notices.ROOT / 'tools/release/manifest-ut.txt').is_file():
+                self.skipTest('This source kit has no UNDERTALE notices')
+            path = notices.ROOT / 'THIRD_PARTY_NOTICES'
+        text = path.read_text(encoding='utf-8')
+        self.assertNotIn('PacketVideo AAC decoder', text)
+        self.assertIn('Cisco OpenH264', text)
+        self.assertIn('OpenH264 licence text is retained in both source kits.', text)
+        self.assertIn('UNDERTALE kit has no OpenH264 build helpers', text)
+        self.assertIn('This document is not an inventory of libraries linked into', text)
+        manifest = (notices.ROOT / 'tools/release/manifest-ut.txt').read_text(encoding='utf-8')
+        self.assertNotIn('tools/deps/openh264/', manifest)
+        self.assertIn('tools/release/licenses/openh264-LICENSE', manifest)
+
     def test_unknown_vendor_is_rejected(self):
         source = self.root / 'engine/vendor/unknown.c'
         source.write_text('int x;', encoding='utf-8')

@@ -1,4 +1,4 @@
-// pacealign (auditfixe, Option A, 2026-11-05; UNDERTALE only: CMakeLists.txt builds this file and defines
+// pacealign (change auditfixe, Option A, 2026-11-05; UNDERTALE only: CMakeLists.txt builds this file and defines
 // CTRPORT_PACEALIGN for UNDERTALE alone).
 //
 // The whole-frame numbers of a bench row come from the pacer's [pace] lines, which main.c's stats block prints every

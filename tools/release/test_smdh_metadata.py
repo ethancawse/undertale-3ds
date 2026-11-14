@@ -20,6 +20,12 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
+# Hang guards, not measures: nothing here times these calls, so a loaded host only makes them slower (toolfix 11-11:
+# on the shared PC 30 s limits on git show and CMake steps expired during process-start stalls). META_S is for small
+# metadata calls, 100+ times their normal time (at normal load: git show of one file max 0.05 s; test_release_ndebug's
+# tiny CMake configure max 0.81 s, its build max 0.12 s).
+# (here: git, and CMake -P runs of smdh.cmake and build_id.cmake).
+META_S = 120
 SCRIPT = ROOT / 'platform/3ds/smdh.cmake'
 
 
@@ -42,7 +48,7 @@ class SmdhMetadata(unittest.TestCase):
 
     def command(self, args, cwd=None, check=True):
         result = subprocess.run(list(map(str, args)), cwd=cwd or self.root, env=self.env,
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=META_S)
         if check:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
@@ -319,7 +325,7 @@ for game in ('undertale','deltarune'):
         publisher=work/(game+'-'+model+'-publisher.txt')
         subprocess.run([sys.argv[3],'-DROOT='+str(source),'-DGAME='+game,'-DMODEL='+model,
             '-DGIT_EXECUTABLE='+sys.argv[4],'-DDESCRIPTION_OUT='+str(output),'-DPUBLISHER_OUT='+str(publisher),'-P',
-            str(source/'platform/3ds/smdh.cmake')],check=True,stdin=subprocess.DEVNULL,timeout=20,env=job.environment())
+            str(source/'platform/3ds/smdh.cmake')],check=True,stdin=subprocess.DEVNULL,timeout=120,env=job.environment())
         print(output.read_text())
         print(publisher.read_text())
 '''
@@ -377,7 +383,7 @@ for model in ('o3ds','n3ds'):
     output=work/(model+'.txt'); publisher=work/(model+'-publisher.txt')
     subprocess.run([sys.argv[3],'-DROOT='+str(source),'-DGAME=undertale','-DMODEL='+model,
         '-DGIT_EXECUTABLE='+sys.argv[4],'-DDESCRIPTION_OUT='+str(output),'-DPUBLISHER_OUT='+str(publisher),'-P',
-        str(source/'platform/3ds/smdh.cmake')],check=True,stdin=subprocess.DEVNULL,timeout=20,env=env)
+        str(source/'platform/3ds/smdh.cmake')],check=True,stdin=subprocess.DEVNULL,timeout=120,env=env)
     print(output.read_text())
     print(publisher.read_text())
 '''
@@ -414,7 +420,7 @@ for model in ('o3ds','n3ds'):
             result = subprocess.run(['cmake', '-DSOURCE_DIR=' + str(source / 'platform/3ds'),
                 '-DOUT=' + str(header), '-DGIT_EXECUTABLE=' + shutil.which('git'),
                 '-DAOT_DIR=' + str(aot), '-P', ROOT / 'platform/3ds/build_id.cmake'],
-                cwd=source, env=kw['env'], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+                cwd=source, env=kw['env'], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=META_S)
             self.assertEqual(result.returncode, 0, result.stderr)
             return process
         build.popen = contaminated_compile

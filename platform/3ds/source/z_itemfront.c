@@ -1,11 +1,11 @@
-// itemfront (asrfight, UNDERTALE Old 3DS only): two of the game's item-name scripts, B and L (with the script N
+// itemfront (change asrfight, UNDERTALE Old 3DS only): two of the game's item-name scripts, B and L (with the script N
 // that L calls), run as hand code, with the interpreter as their fallback. Late code and constants only
 // (platform/3ds/late_reserve.ld, after exitpanic): no table row, nothing that existed moves.
 //
 // Why: each DREAM press in the Asriel fight runs the game's item-get script 8 times, and each runs B and L: 16
 // interpreted loops, 128 string() calls and 128 calls of the text lookup script G. On the Old 3DS these are ~12-14 ms
 // of the press's Step (o3DS GML profile, rows asrfight-dreamprof-*: B and N ~3.8-5.0 ms, G ~2.8 ms), and the press
-// frame is held (the play-test's "spike before Hopes and Dreams").
+// frame is held (maintainer's "spike before Hopes and Dreams").
 //
 // What: B fills the eight cells of the global battle item-name array: for each of the eight inventory slots it looks
 // up the text whose key is a prefix (one for serious battles, another otherwise) followed by the item's number, and

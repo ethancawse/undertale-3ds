@@ -26,7 +26,7 @@
 #include <string.h>
 #include <stdlib.h>
 #ifdef CTRPORT_OFFDRAW
-// offdraw's diagnostic (platform/3ds/diag/ctr_offdraw.c): offdraw.txt's hashskip=<object> leaves that object's
+// change offdraw's diagnostic (platform/3ds/diag/ctr_offdraw.c): offdraw.txt's hashskip=<object> leaves that object's
 // instances out of the state hash and its sprite's drawSprite records out of the draw hash (hashskip=kill: only the
 // kill objects' instances past their kill line).
 bool CtrOffdraw_hashSkip(void* inst);

@@ -630,7 +630,7 @@ __asm__(
     "    .size CtrLab_guardSleep, . - CtrLab_guardSleep\n"
     "    .previous\n");
 
-// leavekeep (credfix, 2026-10-27): points hb:ldr at the lab host. own: for a thread that ends the run itself
+// leavekeep (change credfix, 2026-10-27): points hb:ldr at the lab host. own: for a thread that ends the run itself
 // through _exit, without newlib's exit and its atexit handlers (ctr_exit_files.c's filesRecover when the exit's file
 // batch stalls): it takes the leave first and says "--after <exit note>" as onExit would, so the main thread's
 // onExit, should it still run, can't point hb:ldr at the Homebrew Launcher (aptShouldClose) or race this one. The

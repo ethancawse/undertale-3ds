@@ -1400,7 +1400,7 @@ SAVEAUDIT_FATAL static void saveauditFatalPaint(u8* fb, u16 fbW, u16 fbH, GSPGPU
 bool CtrLoadscreen_halt(void);    // z_loadscreen.c: the loading bar stops; true once no draw on another thread is live
 bool CtrLoadscreen_drawing(void); // z_loadscreen.c: a bar draw is still live (no wait)
 u32 CtrLab_fatalAt(void);         // ctr_lab.c: the fatal claim's clock for the save guard (0 before the claim)
-bool CtrRosalina_quiet(void);     // CtrArgcrash_quiet (a CMakeLists.txt rename; file end): true once the watcher ended
+bool CtrRosalina_quiet(void); bool CtrDimlight_crashQuiet(void); // restore before claiming the crash painter
 void CtrArgcrash_depart(ArgcrashKind kind, void (*paint)(ArgcrashKind, bool)); // R216c: file end
 
 // An ordinary bar draw is one frame: the bar into the back buffer and a swap, no wait for the GPU or VBlank, so a few
@@ -1444,7 +1444,7 @@ extern const void* argcrashMainTlsRef __asm__("argcrashMainTls");
 // clear the bottom error or switch the bottom off: this light goes past ctr_screens.c's dark mark, which the watcher
 // reads.
 ARGCRASH_GATE static void argcrashPaintGated(ArgcrashKind kind, bool exiting) {
-    bool quiet = CtrRosalina_quiet();
+    bool quiet = R216_PICK(CtrDimlight_crashQuiet, CtrRosalina_quiet)();
     (void) CtrLab_fatalAt();
     bool pending = argcrashPendingActive && !exiting; // the pending screen's paint: asked for again each frame
     void* self = getThreadLocalStorage();

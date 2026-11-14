@@ -44,8 +44,11 @@ int CtrAudioSystem_chainFlame(int32_t soundIndex, uint32_t bytes, uint32_t floor
 #define CTR_PRELOADSFX_AFTER_FLOWEND __real_CtrAudioSystem_preloadSfx
 #endif
 
-// UNDERTALE's bench-only alternate root precedes the ordinary argument parser.
-#ifdef CTRPORT_GOG_COMPAT
+// UNDERTALE's bench-only alternate root precedes the ordinary argument parser. UNDERTALE lab builds (labguard's
+// --labguard-crash, z_labguard.c, whose own next link is gogut's or the parser) filter their option first.
+#ifdef CTRPORT_LABGUARD_ARGS
+#define CTR_LAUNCHARGS_AFTER_ARGCRASH CtrLaunchArgs_chainLabguard
+#elif defined(CTRPORT_GOG_COMPAT)
 #define CTR_LAUNCHARGS_AFTER_ARGCRASH CtrLaunchArgs_chainGogut
 #else
 #define CTR_LAUNCHARGS_AFTER_ARGCRASH __real_CtrLaunchArgs_parse
@@ -447,6 +450,79 @@ void Thinart_endFrame(struct Renderer* renderer);
 #define CTR_FONTVERDICTS_AFTER_ITEMVERDICT Thinrule_fontVerdicts
 #undef CTR_DISPLAYCAPS_AFTER_ITEMVERDICT
 #define CTR_DISPLAYCAPS_AFTER_ITEMVERDICT Thinrule_caps
+#endif
+
+
+// dwkeep (change loadclass 10, UNDERTALE): data.win's later opens to read are sub-files of one kept handle
+// (z_dwkeep.c). Its layer goes over libctru's device before the real track, so ctr_open_files' list counts its opens:
+// gamedir -> [sdlat] -> dwkeep -> real.
+#if defined(ENABLE_WAD16) && !defined(ENABLE_WAD17)
+void CtrOpenFiles_chainDwkeep(void);
+#undef CTR_OPENFILES_AFTER_SDLAT
+#define CTR_OPENFILES_AFTER_SDLAT CtrOpenFiles_chainDwkeep
+#ifndef CTRPORT_SDLAT_CHAIN
+#undef CTR_OPENFILES_AFTER_GAMEDIR
+#define CTR_OPENFILES_AFTER_GAMEDIR CtrOpenFiles_chainDwkeep
+#endif
+#define CTR_OPENFILES_AFTER_DWKEEP __real_CtrOpenFiles_track
+#endif
+
+// battlesplit (UNDERTALE): the split battle layout (z_battlesplit.c). CtrRenderer_beginFrame: inputlate -> battlesplit
+// (the layer made or dropped before the frame, the bottom screen taken after it) -> real. CtrRenderer_endFrame:
+// ... nopromo -> battlesplit (the two screens presented in present's place) -> postkick -> real.
+#if !defined(ENABLE_WAD17)
+#undef CTR_ENDFRAME_AFTER_NOPROMO
+#define CTR_ENDFRAME_AFTER_NOPROMO CtrRenderer_chainEndFrameBattlesplit
+#define CTR_BEGINFRAME_AFTER_INPUTLATE CtrRenderer_chainBeginFrameBattlesplit
+#ifdef __3DS__
+void CtrRenderer_chainEndFrameBattlesplit(Renderer* renderer);
+void CtrRenderer_chainBeginFrameBattlesplit(Renderer* renderer);
+#endif
+#endif
+
+// battletouch (UNDERTALE): the Runner_step chain becomes inputlate -> battletouch (z_battletouch.c: keeps the runner
+// for the stylus's next input sample) -> swkbd -> real. inputlate's call target is the only change there.
+#if defined(ENABLE_WAD16) && defined(__3DS__)
+#undef CTR_STEP_AFTER_INPUTLATE
+#define CTR_STEP_AFTER_INPUTLATE Battletouch_step
+void Battletouch_step(struct Runner* runner);
+// The first-battle hint (z_battletouch.c's fourth pair, 11-08): one more link after battletouch in the Runner_step
+// chain (inputlate -> battletouch -> the hint -> swkbd -> real), and after screens' settings read and save, so the
+// hint's touch_hint_seen line is read and kept. The first slot's three calls change target only.
+// The stylus hint (lead 11-10, z_battletouch.c's .text_battletouchhint) replaced it: the step and settings-read
+// names are its code now (once a session: nothing read from or written to settings.ini for it), and the save goes
+// straight on to the display's rewrite.
+#define CTR_STEP_AFTER_BATTLETOUCH Battletouch_stepHint
+#define CTR_BENCHFIDLOAD_AFTER_BATTLETOUCH Battletouch_loadHint
+#define CTR_DISPLAYSAVE_AFTER_BATTLETOUCH __real_CtrDisplay_save
+void Battletouch_stepHint(struct Runner* runner); // the other two are declared in z_battletouch.c, their only caller
+#endif
+
+// dimlight: z_leavekeep's post-claim CtrAptTrace_exit call is retargeted by
+// CMake. Keep inputlate's exitonce link: no LCD work may precede its claim.
+
+// Dimlight's context-specific retry targets. Replacing a no-argument call
+// preserves existing slots; DELTARUNE keeps its original call targets.
+#ifdef ENABLE_WAD16
+int32_t CtrDimlight_topOnInit(void);
+int32_t CtrDimlight_bottomOnInit(void);
+int32_t CtrDimlight_topOffInit(void);
+void CtrDimlight_topBacklight(void* renderer, bool off);
+#else
+#define CtrDimlight_topOnInit gspLcdInit
+#define CtrDimlight_bottomOnInit gspLcdInit
+#define CtrDimlight_topOffInit gspLcdInit
+#define CtrDimlight_topBacklight screensTopBacklight
+#endif
+
+// bottomframe: prepare private CPU assets at the existing room-load hook.
+// The idle paint is called by paintchg at its post-recording ownership point.
+#ifdef ENABLE_WAD16
+#ifndef CTRPORT_NO_BOTTOMFRAME
+#undef CTR_PREFETCHROOM_AFTER_FLOWHITCH
+#define CTR_PREFETCHROOM_AFTER_FLOWHITCH CtrBottomframe_prefetchRoom
+void CtrBottomframe_prefetchRoom(struct Renderer* renderer);
+#endif // CTRPORT_NO_BOTTOMFRAME
 #endif
 
 #endif

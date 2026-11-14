@@ -3,7 +3,7 @@
 #include "collision.h"
 #if defined(__3DS__) && defined(ENABLE_WAD16) && !defined(USE_FLOAT_REALS)
 #define CTRPORT_COLEXACT_OVERLAY_BBOX
-#define Collision_computeBBox Colexact_sharedBBox
+#define Collision_computeBBox Hitcheck_collisionBBox
 #endif
 #line 4
 #include "real_type.h"
@@ -76,7 +76,7 @@ void DebugOverlay_drawCollisionMasks(Runner* runner) {
         }
 
         // Draw the AABB outline (works for both AABB-only and precise instances)
-        InstanceBBox bbox = Collision_computeBBox(runner, inst);
+        InstanceBBox bbox = Collision_readBBox(runner, inst);
         if (!bbox.valid) continue;
 
         uint32_t outlineColor = hasPreciseMask ? MASK_COLOR_AABB : MASK_COLOR_AABB_ONLY;

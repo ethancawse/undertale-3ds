@@ -1,4 +1,4 @@
-// dodgefront (credfix, charter rev 1 item 2, option 3; UNDERTALE Old 3DS only): the script that draws a line of
+// dodgefront (change credfix, charter rev 1 item 2, option 3; UNDERTALE Old 3DS only): the script that draws a line of
 // text centred, run as hand code for its common case. Late code and constants only (platform/3ds/late_reserve.ld): no
 // generated function, no table row, and nothing outside the late blocks moves.
 //

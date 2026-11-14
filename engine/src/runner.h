@@ -992,6 +992,11 @@ struct Runner {
     Random random;
     LayerDrawCursor* layerDrawCursor;
     struct PendingDrawDepthChange* pendingDrawDepthChanges;
+#if defined(ENABLE_WAD16)
+    // Occupies the existing four-byte ARM tail padding. The cache itself is
+    // allocated once on first collision use; no static mutable storage.
+    void* hitcheckCache;
+#endif
 };
 
 const char* Runner_getEventName(int32_t eventType, int32_t eventSubtype);
@@ -1241,6 +1246,14 @@ extern Runner* dprankRunner;
 #define DPRANK_PAD do { dprankRunner = runner; DPRANK_PAD_ASM; } while (0)
 #else
 #define DPRANK_PAD DPRANK_PAD_ASM
+#endif
+
+// UT initializes collision responders in self-object order, independently of
+// their collision target subtypes. Other game builds retain Runner_create.
+#if defined(ENABLE_WAD16)
+Runner* Hitcheck_createRunner(DataWin* dataWin, VMContext* vm, Renderer* renderer, FileSystem* fileSystem, AudioSystem* audioSystem, uint32_t randomSeed);
+#else
+#define Hitcheck_createRunner Runner_create
 #endif
 
 #endif /* _BS_RUNNER_H_ */

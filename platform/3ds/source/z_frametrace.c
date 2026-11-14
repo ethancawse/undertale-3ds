@@ -1,4 +1,4 @@
-// frametrace (10-28, benchfix): what each frame of a bench window did, for holds whose CPU and GPU work
+// frametrace (lead 10-28, change benchfix): what each frame of a bench window did, for holds whose CPU and GPU work
 // was low. One test word, build.sh ... frametrace (its own build directory, never a release): CMakeLists.txt compiles
 // this file, its link wraps and two accessors only then (ctr_benchmark.c's and ctr_frame_pacer.c's, at their ends),
 // so a build without the word links exactly the objects it did before.

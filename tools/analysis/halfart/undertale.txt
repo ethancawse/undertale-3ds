@@ -1,4 +1,4 @@
-# UNDERTALE sprites stored at half resolution under build.sh halfart=point|box (flowhalf; tools/analysis/
+# UNDERTALE sprites stored at half resolution under build.sh halfart=point|box (change flowhalf; tools/analysis/
 # halfart_pack.py). One sprite per line: the first 16 hex digits of the SHA-256 of its name (UTF-8; halfart_pack.py
 # name_hash), meaning all its frames, or entry:0,3,4 for those frames. halfart_pack.py matches the entries against the
 # player's own data.win at build time, so this list names no game identifiers; `halfart_pack.py --hash NAME` prints

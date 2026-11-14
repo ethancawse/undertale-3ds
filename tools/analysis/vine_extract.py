@@ -19,7 +19,9 @@ PREFIX = 'Flowery_dispatch_'
 WRAPPER = 'Flowery_wrap_'
 CONDITION = r'(?:eq|ne|cs|cc|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?'
 LATE = re.compile(r'^\.(?:text|rodata|data|bss)\.late\.perfflowery$')
-LATE_LANES = {'dlgwhite': re.compile(r'^\.text_dlgwhite$'),
+LATE_LANES = {'dlgtop4': re.compile(r'^\.aacout\.(?:text|rodata)\.dlgtop4$|^\.text\.late\.dlgtop4$|^\.bss\.dlgtop4$'),
+              'dlgflash': re.compile(r'^\.text_dlgflash$|^\.rodata\.dlgflash_in_text$|^\.data_dlgflash$'),
+              'dlgwhite': re.compile(r'^\.text_dlgwhite$'),
               'perfflowery': re.compile(r'^\.(?:text|rodata|data|bss)\.late\.perfflowery$|^\.text\.drpix_late$'),
               # DELTARUNE New's tower face retention (vine_new_retain.inc), its own late sections, and climbnoise's
               # Azahar-only free of the tower textures there (cnTowerFree, its own line in late_reserve.ld), change flowerhw's
@@ -61,7 +63,7 @@ def late_sections(text, lane='perfflowery'):
             selected = False
         if selected and not re.match(r'\s*\.(?:file|loc|cfi_\w+)\b', line):
             output.append(line)
-    assert not stack and ('.text_dlgwhite' if lane == 'dlgwhite' else '.text.late.'+lane) in kinds
+    assert not stack and ('.aacout.text.dlgtop4' if lane == 'dlgtop4' else '.text_'+lane if lane in ('dlgwhite','dlgflash') else '.text.late.'+lane) in kinds
     result = '\n'.join(output)+'\n'
     # GCC can emit .global/.type immediately before switching to an object's
     # section. Preserve declarations for retained definitions wherever they
@@ -82,7 +84,8 @@ def late_sections(text, lane='perfflowery'):
     definitions.update(re.findall(r'(?m)^\s*\.(?:set|equ)\s+(\.L[\w.]+)\s*,', result))
     references = set(re.findall(r'(?<![\w.])(\.L[\w.]+)\b', result))
     assert references <= definitions, ('Late code references excluded local labels', sorted(references-definitions))
-    result = re.sub(r'(?<![\w.])\.L([\w.]+)', r'.LFlowery_\1', result)
+    prefix = '.LDlgtop4_' if lane == 'dlgtop4' else '.LDlgflash_' if lane == 'dlgflash' else '.LFlowery_'
+    result = re.sub(r'(?<![\w.])\.L([\w.]+)', lambda m: prefix + m[1], result)
     # GCC's function-scope objects (message.42, logged.43, ...) can have the
     # same assembly name as an unrelated object in the independent pass.
     objects = set(re.findall(r'(?m)^\s*\.type\s+([\w.]+),\s*%object', result))

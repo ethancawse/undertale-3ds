@@ -97,7 +97,7 @@ __attribute__((constructor)) static void keepHeapTop(void) {
 #define TARGET_HEAP_SIZE (O3DS_HEAP_TARGET_MB * MB)
 #endif
 // libctru's default split below the LARGE_MEMORY threshold: the normal heap gets at least DEFAULT_HEAP_MIN_MB and
-// linear memory at most DEFAULT_LINEAR_MAX_MB. UNDERTALE on an Old 3DS (utflowey, rulings 2026-10-25 "1a"
+// linear memory at most DEFAULT_LINEAR_MAX_MB. UNDERTALE on an Old 3DS (change utflowey, rulings 2026-10-25 "1a"
 // and 2026-10-26 "option 1") moves 6 MB from the heap to linear memory: heap 20.1 / linear 38.0 MB of the .3dsx's
 // 64 MB mode instead of 26.1 / 32.0, so the Omega Flowey fight's whole set (132 tiles, 24.5 MB) stays resident beside
 // the sound effects and the 3 MB linear floor (at 36 the floor evicted set tiles and 7 came back from the SD card in
@@ -844,7 +844,7 @@ void __wrap__free_r(struct _reent* reent, void* ptr) {
 #undef CtrMemory_freeR
 #endif
 #line 826
-
+size_t CtrMemory_numberListBytes(void* freelist); // numcache (z_numcache.c): the lists' real size
 // Each thread's struct _reent caches number conversion buffers (printf's %f,
 // strtod) on the heap, and libctru frees a thread without them. Threads
 // that come and go with each chapter left them all over the heap, a few
@@ -853,7 +853,7 @@ void CtrMemory_releaseNumberCaches(void) {
     struct _reent* r = _REENT;
     struct _Bigint** freelist = _REENT_MP_FREELIST(r);
     if (freelist != nullptr) {
-        size_t lists = malloc_usable_size(freelist) / sizeof(*freelist);
+        size_t lists = CtrMemory_numberListBytes(freelist) / sizeof(*freelist);
         for (size_t k = 0; lists > k; k++) {
             for (struct _Bigint* b = freelist[k]; b != nullptr;) {
                 struct _Bigint* next = b->_next;
@@ -1494,4 +1494,17 @@ void* CtrMemory_vramAllocFit(size_t size, size_t keep) {
     CtrMemory_linearLockRelease(&linearLock);
     return p;
 }
+#endif
+
+// gpuburst F1 (UNDERTALE on the Old models): z_vramtop.c's names for the VRAM block list and the held frees, for its
+// CtrMemory_vramAllocTop by bank (the link wraps this file's, which stays as it was: CMakeLists.txt). Assembler aliases,
+// as memory_report.c's above and knightgpu's, so this file's code and statics stay as main's.
+#if !defined(ENABLE_WAD17) && defined(CTRPORT_TARGET_O3DS)
+__asm__(".globl CtrMemory_vtBlocks\n.set CtrMemory_vtBlocks, vramBlocks\n"
+        ".globl CtrMemory_vtBlockCount\n.set CtrMemory_vtBlockCount, vramBlockCount\n"
+        ".globl CtrMemory_vtBlocksLost\n.set CtrMemory_vtBlocksLost, vramBlocksLost\n"
+        ".globl CtrMemory_vtHeld\n.set CtrMemory_vtHeld, heldFrees\n"
+        ".globl CtrMemory_vtHeldCount\n.set CtrMemory_vtHeldCount, heldCount\n"
+        ".globl CtrMemory_vtContended\n.set CtrMemory_vtContended, linearLockContended\n"
+        ".globl CtrMemory_vtWaitTicks\n.set CtrMemory_vtWaitTicks, linearLockWaitTicks\n");
 #endif

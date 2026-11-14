@@ -1,4 +1,4 @@
-"""Builder key for UNDERTALE Old's covered-star skip (asrfight, unit D; ruling 2026-10-30 19:0x).
+"""Builder key for UNDERTALE Old's covered-star skip (change asrfight, unit D; review decision 2026-10-30 19:0x).
 
 When the big star of the Star Blazing attack bursts, one event makes its ring stars (a bullet object) at its centre
 and, in the same event, a copy of the big star (a cover object, the burst object's sprite, drawn by the default draw)

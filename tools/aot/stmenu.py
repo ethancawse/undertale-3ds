@@ -15,7 +15,7 @@ and never committed (stpack.build writes it beside the glyph pack):
     of the texels over black (Smart smoothing at an even place; checked against Azahar captures of the soul, mean error
     0.04 of 255), Crisp the texels at even rows and columns, the Crisp soul, or the pack's text glyphs placed as
     z_smalltext.c places them (nominal x, carry, row shift). Text is black on a white bubble, as in battle;
-  - the Crisp cards (round 18, playtest 10-25: Mettaton EX's "HAPPY BREAKTIME" card "looked broken"): each frame of a
+  - the Crisp cards (round 18, maintainer 10-25: Mettaton EX's "HAPPY BREAKTIME" card "looked broken"): each frame of a
     lettered card sprite at half size, drawn with the Text part Crisp instead of Smart's averaged card (r16). The
     letters are derived from the player's data.win as glyphs (crisp_card; no hand-drawn pixel): the card's words are
     its row bands with ink and their letters the column runs with ink; each word gets one even 2:1 row split for all its
@@ -41,7 +41,10 @@ Crisp line off its bubble's inner edge): b"DTSB", u32 version 2, u32 data.win si
 timestamp, u32 sprite count; then per bubble sprite (each sprite named with "blcon", frame 0, whose edges are at most
 255): u16 sprite index, u16 height, then height u8: the row's inner right edge, the first column right of the row's
 first run of white pixels (alpha and red at least 128) that isn't white, at most the commonest such column (the body's
-edge, so the tail never counts as room); 0 for a row without white. Then u32 font count and per font 112 bytes: its
+edge, so the tail never counts as room); 0 for a row without white. A sprite whose body edge is left of its middle
+is an outline, not a white body (the spiky bubble of Mettaton EX's callers: its first white run is
+the 1 px left outline), and is left out: its rows' edges would put every line past the bubble, and bubbleclip took
+the callers' word gaps down to 3 px ("knowwhat", crispread 11-08). Then u32 font count and per font 112 bytes: its
 name (16 bytes, NUL padded), then int8 px for chars 32..127: obj_base_writer's kerning, the px its Draw adds to a
 letter's advance in that font (read from the writer's own code, writer_kerning; English text).
 
@@ -320,6 +323,11 @@ def touch(a, ax, b, bx, dy=0):
     return False
 
 
+def overlap(a, ax, b, bx):
+    # crispread (z_smalltext.c stOverlapNative): b reaches a column of a on the same row
+    return any(a[r] != sg.NONE and b[r] != sg.NONE and b[r][0] + bx <= a[r][1] + ax for r in range(min(len(a), len(b))))
+
+
 GAP_NONE = 99
 CARRY_MIN = -2
 WORD_GAP = 5
@@ -366,8 +374,11 @@ def word_move(native_a, ax, native_b, bx, pc_a, apen, pc_b, bpen, carry):
 
 
 class Line:
-    def __init__(self, adv640):
+    def __init__(self, adv640, tight=False):
+        # tight: fnt_plain (z_smalltext.c stTight, crispread): at a step under the advance, letters that touch on PC
+        # move apart on screen until they share no column (they may still touch, as on PC)
         self.adv = adv640
+        self.tight = tight
         self.live = False
 
     def place(self, pen, nx0, native, pc, space_before=False):
@@ -377,12 +388,19 @@ class Line:
         nx = nx0 + carry
         p = self.prev
         if p is not None and not space_before and pen - self.pen <= self.adv + 1:
-            if not touch(p[2], p[3], pc, pen):
+            pc_gap = not touch(p[2], p[3], pc, pen)
+            if pc_gap:
                 move = even_move(p[0], p[1], native, nx, p[2], p[3], pc, pen, carry)
                 carry += move
                 nx += move
                 k = 0
                 while k < 2 and touch(p[0], p[1], native, nx):
+                    k += 1
+                    nx += 1
+                carry += k
+            elif self.tight and int(pen) - int(self.pen) < self.adv:
+                k = 0
+                while k < 2 and overlap(p[0], p[1], native, nx):
                     k += 1
                     nx += 1
                 carry += k
@@ -395,13 +413,13 @@ class Line:
         return nx
 
 
-def crisp_line(s, pens, packed):
+def crisp_line(s, pens, packed, tight=False):
     """The Crisp glyphs of line s at 640-space pens as z_smalltext.c draws them: [(bitmap, native x)], and the row
     shift (fix W on, as the Text part turns it on)."""
     rows, glyphs, cell_h, adv = packed
     base = {ch: (g, left, ext) for ch, variant, g, left, ext in glyphs if variant == 0}
     fix = {ch: (g, left, ext) for ch, variant, g, left, ext in glyphs if variant == 1}
-    line = Line(adv)
+    line = Line(adv, tight)
     space = False
     out = []
     for ch, pen in zip(s, pens):
@@ -429,7 +447,7 @@ def text_bubble(dw, name, s, mode, packed):
         if g and g['w']:
             right = max(right, x + g['offset'] + g['w'])
         x += g['shift'] if g else adv
-    placed, shift = crisp_line(s, pens, packed)
+    placed, shift = crisp_line(s, pens, packed, name == 'fnt_plain')
     w = max((max(x, right) + 1) // 2, max((nx + sg.width(g) for g, nx in placed), default=0))
     h = (cell_h + 1) // 2
     out = blank(h + 2 * BUBBLE_PAD, w + 2 * BUBBLE_PAD, (255.0, 255.0, 255.0))
@@ -570,6 +588,8 @@ def bubble_edges(rows, w):
     if not seen:
         return None
     body = max(set(seen), key=lambda e: (seen.count(e), -e))
+    if 2 * body < w:
+        return None  # an outline bubble (see the top)
     return [0 if e is None else min(e, body) for e in raw]
 
 

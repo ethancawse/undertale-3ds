@@ -1,4 +1,4 @@
-// ofloader (omegaflowey, GO 11-02; UNDERTALE only): the audio loader thread keeps the few files it reads
+// ofloader (change omegaflowey, GO 11-02; UNDERTALE only): the audio loader thread keeps the few files it reads
 // sounds from (data.win, adpcm-sfx.dtsp) open, instead of closing one and opening the other each time a request's
 // file differs from the last. On the SD card an open is a lookup in the game folder's directory, and the console's FS
 // serves it ahead of a read the game thread issued at the same moment: on the o2DS (11-01 on) each such reopen of
@@ -23,7 +23,7 @@
 #include "ctr_open_files.h"
 #include "log.h"
 
-// dofl (titancpu, GO 11-03, docs/perf/sd-open-design.md B1): DELTARUNE runs the same code. Its loader reads
+// dofl (change titancpu, GO 11-03, docs/perf/sd-open-design.md B1): DELTARUNE runs the same code. Its loader reads
 // sounds from data.win and the chapter's audiogroup in turn, and reopened each about 7-10 times a Flowery minute
 // (~32 ms an open on the console, a main-thread read queued behind it). Its code, constants and statics go in their
 // own sections, appended after flowerhw stfix (late_reserve.ld), so nothing before them moves; UNDERTALE's stay where they

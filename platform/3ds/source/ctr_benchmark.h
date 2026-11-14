@@ -139,7 +139,7 @@ void CtrBench_handleRoomChange(Runner* runner);
 #else
 #define ROOMLOAD_TRACE_FRAME(runner, renderer, frameStart, stepMs, drawMs) ((void) 0)
 #endif
-// freewins (diagnostic builds only, build.sh ... freewins; source/z_freewins.c): main-loop segment timers and
+// change freewins (diagnostic builds only, build.sh ... freewins; source/z_freewins.c): main-loop segment timers and
 // off switches. Elsewhere FW_MARK and FW_NOTE are empty and FW_SKIP is 0, so main.c compiles to the release code.
 #ifdef CTRPORT_FREEWINS
 void FreeWins_mark(int point);
@@ -154,7 +154,7 @@ bool FreeWins_skip(unsigned bit);
 #define FW_SKIP(bit) 0
 #endif
 
-// pacealign (auditfixe, Option A, 2026-11-05; UNDERTALE only, CMakeLists.txt defines CTRPORT_PACEALIGN): a
+// pacealign (change auditfixe, Option A, 2026-11-05; UNDERTALE only, CMakeLists.txt defines CTRPORT_PACEALIGN): a
 // measured window's opening and end, and a battle sweep's end, log the pacer's numbers for the frames up to there
 // (source/z_pacealign.c). Three calls in ctr_benchmark.c go there instead of CtrLog_beginConsole and logInfo, with the
 // same arguments; elsewhere they are those calls, so every other build compiles to the same code.

@@ -172,7 +172,7 @@ LM_CODE static void lmReset(void) {
 #ifndef LM_HOST
 static void gomDspCallback(void* data); static void ptDspCallback(void* data); __attribute__((noinline, noipa, optimize("Os"), section(AUDPAR_DSP_SECTION))) static void audofixDspCallback(void* data); LM_CODE static void lmRegister(ndspCallback callback, void* data) {
     lmReset();
-    UTA_PHYS_CALLBACK(callback != NULL ? gomDspCallback : NULL, data); // gomusic -> play-through -> audofix H1 -> lmCallback (file end)
+    LOADCLASS_PHYS_CALLBACK(callback != NULL ? gomDspCallback : NULL, data); // loadclass 4c -> gomusic -> play-through -> audofix H1 -> lmCallback (file end)
 }
 #endif
 
@@ -430,7 +430,7 @@ PT_CODE void ptPhysPaused(int p, bool paused) {
 }
 #ifndef LM_HOST
 __asm__(".set gomMixLink, gomPhysMix\n"); // gomusic: a stream's mix (ctr_audio_system.c's end)
-__asm__(".set audofixPtPaused, gomPhysPaused\n"); // gomusic's hold first (ctr_audio_system.c's end), then ptPhysPaused
+__asm__(".set audofixPtPaused, " LOADCLASS_PAUSE_LINK "\n"); // loadclass 4c's hold, gomusic's, then ptPhysPaused (ctr_audio_system.c's end)
 #endif
 
 // Game thread, after the boundary: a window opened from none takes the snapshot; a close drops it.

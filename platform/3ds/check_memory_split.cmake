@@ -46,7 +46,7 @@ elseif(WAD17)
 endif()
 math(EXPR region_kb "${AOT_REGION_MB} * 1024")
 # libctru's default rule's heap floor and linear cap (DEFAULT_HEAP_MIN_MB / DEFAULT_LINEAR_MAX_MB): 24 / 32 MB, and for
-# UNDERTALE on the Old 3DS the first definitions in the source (20 / 38 MB, utflowey's 1a and option 1).
+# UNDERTALE on the Old 3DS the first definitions in the source (20 / 38 MB, change utflowey's 1a and option 1).
 set(default_heap_kb 24576)
 set(default_linear_kb 32768)
 if(NOT WAD17 AND CONSOLE STREQUAL "o3ds")

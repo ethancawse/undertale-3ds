@@ -2,6 +2,7 @@
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = Path(__file__).resolve().parent
@@ -42,6 +43,44 @@ class SaveFixture(unittest.TestCase):
         self.pc.mkdir()
         self.server = self.server_class(self.card)
         self.address = '127.0.0.1:%d' % self.server.port
+        self.trace_timeouts()
+
+    def trace_timeouts(self):
+        """A client read that times out (the builder's own 10 s ftpd timeout, unchanged) gets a note naming the fake
+        ftpd's command and step it waited on, and how late the waiting thread was (toolfix 11-11: a full-suite load
+        flake). Nothing is retried and no timeout changes; the exception and its handling stay the builder's."""
+        server = self.server
+
+        def note(ftp, began, exc):
+            if not any(str(n).startswith('fake ftpd:') for n in getattr(exc, '__notes__', ())):
+                exc.add_note(server.describe_wait(began, time.monotonic(), getattr(ftp, 'timeout', None)))
+
+        def traced(real):
+            def call(ftp, *args, **kwargs):
+                began = time.monotonic()
+                try:
+                    return real(ftp, *args, **kwargs)
+                except TimeoutError as exc:
+                    note(ftp, began, exc)
+                    raise
+            return call
+
+        def traced_listing(real):
+            def listing(ftp, *args, **kwargs):
+                began = time.monotonic()
+                try:
+                    yield from real(ftp, *args, **kwargs)
+                except TimeoutError as exc:
+                    note(ftp, began, exc)
+                    raise
+            return listing
+
+        from unittest import mock
+        for name, wrap in (('getline', traced), ('retrbinary', traced), ('storbinary', traced),
+                           ('mlsd', traced_listing)):
+            patch = mock.patch.object(ftp_delivery.ConsoleFTP, name, wrap(getattr(ftp_delivery.ConsoleFTP, name)))
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def tearDown(self):
         self.server.close()
@@ -49,6 +88,212 @@ class SaveFixture(unittest.TestCase):
 
     def live(self):
         return {p.name: p.read_bytes() for p in self.saves.iterdir() if p.is_file()}
+
+
+class TimeoutNoteTests(SaveFixture):
+    """The note a timed-out read carries names the fake ftpd's step (here with a 0.2 s test connection, not the
+    builder's 10 s, so each case takes well under a second)."""
+
+    def stalled_stor(self, step):
+        import ftplib
+        from unittest import mock
+        ftp = ftp_delivery.ConsoleFTP()
+        ftp.connect('127.0.0.1', self.server.port, timeout=0.2)
+        ftp.login()
+        source = self.root/'upload'
+        source.write_bytes(b'NEW\n2\n0\n')
+        real_write = Path.write_bytes
+        stalled = []
+
+        def slow_write(path, data):
+            if path.name == 'file0.builder-part' and not stalled:
+                stalled.append(path)
+                time.sleep(0.6)
+            return real_write(path, data)
+
+        def slow_reply(cmd, text):
+            if text.startswith('226 stored') and not stalled:
+                stalled.append(cmd)
+                time.sleep(0.6)
+        if step == 'reply':
+            self.server.before_reply = slow_reply
+        with mock.patch.object(Path, 'write_bytes', slow_write if step == 'write' else real_write):
+            with source.open('rb') as stream, self.assertRaises(TimeoutError) as caught:
+                ftp.storbinary('STOR /%s/file0.builder-part' % UT.sd_save_dir(), stream)
+            deadline = time.monotonic() + 5
+            while self.server.trace[-1]['steps'][-1][0] != 'reply' and time.monotonic() < deadline:
+                time.sleep(0.02)  # let the stalled step finish before the card folder is removed
+        ftp.close()
+        self.assertTrue(stalled)
+        return '\n'.join(caught.exception.__notes__)
+
+    def test_a_stalled_card_write_is_named(self):
+        text = self.stalled_stor('write')
+        self.assertIn('STILL RUNNING', text)
+        self.assertRegex(text, r'STOR /\S+/file0\.builder-part: in step write for 0\.\d+ s \(after receive\)')
+
+    def test_a_stalled_reply_is_named(self):
+        text = self.stalled_stor('reply')
+        self.assertRegex(text, r'STOR /\S+/file0\.builder-part: in step reply for 0\.\d+ s \(after write\)')
+
+    def wait_for_end(self, cmd):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            ends = [r['steps'][-1][0] for r in self.server.trace if r['cmd'] == cmd]
+            if ends and ends[-1] in ('reply', 'closed', 'aborted'):
+                return ends[-1]
+            time.sleep(0.02)
+        self.fail('%s never ended' % cmd)
+
+    def dropped_stor(self):
+        import io
+        (self.card/'drop').mkdir()
+        self.server.drop_stor['/drop'] = 1
+        ftp = ftp_delivery.ConsoleFTP()
+        ftp.connect('127.0.0.1', self.server.port, timeout=5)
+        ftp.login()
+        with self.assertRaises((EOFError, OSError, ftplib_errors())):
+            ftp.storbinary('STOR /drop/part', io.BytesIO(b'x' * 8192))
+        ftp.close()
+        deadline = time.monotonic() + 5
+        while not (self.card/'drop'/'part').is_file() and time.monotonic() < deadline:
+            time.sleep(0.02)  # the handler wrote its half: it returns straight after
+        self.assertTrue((self.card/'drop'/'part').is_file())
+
+    def test_a_dropped_upload_is_not_still_running_at_a_later_timeout(self):
+        # c26rev4 FTP-1: the dropped STOR wrote its half and closed; a later stall elsewhere must not name it running
+        self.dropped_stor()
+        ftp = ftp_delivery.ConsoleFTP()
+        ftp.connect('127.0.0.1', self.server.port, timeout=0.2)
+        ftp.login()
+        self.server.before_reply = lambda cmd, text: time.sleep(0.6) if cmd == 'NOOP' else None
+        with self.assertRaises(TimeoutError) as caught:
+            ftp.voidcmd('NOOP')
+        self.wait_for_end('NOOP')
+        ftp.close()
+        text = '\n'.join(caught.exception.__notes__)
+        self.assertNotRegex(text, r'STILL RUNNING conn \d+ STOR')
+        self.assertRegex(text, r'STILL RUNNING conn \d+ NOOP : in step reply for 0\.\d+ s \(after start\)')
+        self.assertRegex(text, r'ENDED WITHOUT AN ANSWER conn \d+ STOR /drop/part: closed after receive, '
+                               r'\d+\.\d+ s before the wait began')
+        self.assertEqual(self.wait_for_end('STOR'), 'closed')
+
+    def test_an_answered_wait_after_a_dropped_upload_does_not_claim_every_command_answered(self):
+        self.dropped_stor()
+        self.assertEqual(self.wait_for_end('STOR'), 'closed')
+        now = time.monotonic()
+        text = self.server.describe_wait(now, now, 0.2)
+        self.assertNotIn('STILL RUNNING', text)
+        self.assertNotIn('the server had answered', text)
+        self.assertIn('every command since the wait began was answered', text)
+        self.assertIn('ENDED WITHOUT AN ANSWER', text)
+        # a drop during the wait is not blamed on the waiting thread
+        text = self.server.describe_wait(now - 30, now, 0.2)
+        self.assertIn('a command ended without an answer while the client waited', text)
+
+    def test_a_handler_that_raises_is_recorded_aborted(self):
+        def boom(cmd, text):
+            if cmd == 'NOOP':
+                raise RuntimeError('injected')
+        self.server.before_reply = boom
+        ftp = ftp_delivery.ConsoleFTP()
+        ftp.connect('127.0.0.1', self.server.port, timeout=5)
+        ftp.login()
+        with mock_handle_error(self.server), self.assertRaises((EOFError, OSError, ftplib_errors())):
+            ftp.voidcmd('NOOP')
+        self.assertEqual(self.wait_for_end('NOOP'), 'aborted')
+        ftp.close()
+        now = time.monotonic()
+        text = self.server.describe_wait(now, now, 0.2)
+        self.assertNotIn('STILL RUNNING', text)
+        self.assertRegex(text, r'ENDED WITHOUT AN ANSWER conn \d+ NOOP : aborted after start, .* \(RuntimeError\)')
+
+    def ended_after_the_timeout(self, cmd, client, hold):
+        """c26rev4 FTP-2: the client's timeout time is taken while the server is still in a step; the command ends
+        (unanswered) before describe_wait takes its snapshot. Returns the note for that timeout time."""
+        import threading
+        held, release = threading.Event(), threading.Event()
+        hold(held, release)
+        caller = threading.Thread(target=client, daemon=True)
+        caller.start()
+        self.assertTrue(held.wait(5))
+        began = time.monotonic() - 0.1
+        now = time.monotonic()   # the timeout's time, before the server's end
+        release.set()
+        end = self.wait_for_end(cmd)
+        caller.join(5)
+        return end, self.server.describe_wait(began, now, 0.1)
+
+    def connected(self):
+        ftp = ftp_delivery.ConsoleFTP()
+        ftp.connect('127.0.0.1', self.server.port, timeout=5)
+        ftp.login()
+        return ftp
+
+    def test_a_drop_that_closes_after_the_timeout_is_still_running_at_it(self):
+        import io
+        from unittest import mock
+        (self.card/'drop').mkdir()
+        self.server.drop_stor['/drop'] = 1
+        ftp = self.connected()
+        real_write = Path.write_bytes
+
+        def hold(held, release):
+            def write(path, data):
+                if path.name == 'part':
+                    held.set()
+                    release.wait(5)
+                return real_write(path, data)
+            patcher = mock.patch.object(Path, 'write_bytes', write)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        def client():
+            try:
+                ftp.storbinary('STOR /drop/part', io.BytesIO(b'x' * 8192))
+            except (EOFError, OSError, ftplib_errors()):
+                pass
+        end, text = self.ended_after_the_timeout('STOR', client, hold)
+        ftp.close()
+        self.assertEqual(end, 'closed')
+        self.assertNotIn('had answered', text)
+        self.assertRegex(text, r'STILL RUNNING conn \d+ STOR /drop/part: in step write for \d+\.\d+ s \(after receive\); '
+                               r'it ended after the timeout \(closed \d+\.\d+ s later\)')
+
+    def test_a_handler_that_raises_after_the_timeout_is_still_running_at_it(self):
+        ftp = self.connected()
+
+        def hold(held, release):
+            def boom(cmd, text):
+                if cmd == 'NOOP':
+                    held.set()
+                    release.wait(5)
+                    raise RuntimeError('injected')
+            self.server.before_reply = boom
+
+        def client():
+            try:
+                ftp.voidcmd('NOOP')
+            except (EOFError, OSError, ftplib_errors()):
+                pass
+        with mock_handle_error(self.server):
+            end, text = self.ended_after_the_timeout('NOOP', client, hold)
+        ftp.close()
+        self.assertEqual(end, 'aborted')
+        self.assertNotIn('had answered', text)
+        self.assertRegex(text, r'STILL RUNNING conn \d+ NOOP : in step reply for \d+\.\d+ s \(after start\); '
+                               r'it ended after the timeout \(aborted \d+\.\d+ s later\) \(RuntimeError\)')
+
+
+def ftplib_errors():
+    import ftplib
+    return ftplib.Error
+
+
+def mock_handle_error(server):
+    """socketserver prints a handler's exception to stderr; keep the injected one out of the test log."""
+    from unittest import mock
+    return mock.patch.object(server.server, 'handle_error', lambda request, address: None)
 
 
 class CaseOnlyNameTests(SaveFixture):

@@ -14,7 +14,7 @@
 #   96MB   Not offered. The SYSTEM region drops to 12 MB, under the 18 MB the system reserves for applets, so the
 #          HOME Menu gets about 6 MB and crashes as the game starts; library applets (software keyboard, error
 #          display) get nothing.
-#   64MB   The normal layout: no reboot, 16 MB less for the game. UNDERTALE always uses it (decided 10-25).
+#   64MB   The normal layout: no reboot, 16 MB less for the game. UNDERTALE always uses it (maintainer 10-25).
 # On a New 3DS this build keeps the normal New 3DS layout (no reboot) and is capped at the Old 3DS amount above.
 #
 # CPU: an Old 3DS always runs at 268 MHz without L2. The New 3DS settings below only matter when this build runs on a

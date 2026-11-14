@@ -111,7 +111,7 @@ void SpatialGrid_syncGrid(Runner* runner, SpatialGrid* grid) {
         // Remove from old cells
         SpatialGrid_removeInstance(grid, instance);
 
-        InstanceBBox bbox = Collision_computeBBox(runner, instance);
+        InstanceBBox bbox = Collision_hitBBox(runner, instance);
 
         arrsetlen(instance->collisionCells, 0);
 

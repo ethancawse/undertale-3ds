@@ -1,4 +1,4 @@
-// halfart (build argument halfart=point|box, prototype, flowhalf): art stored at half resolution, from the patch
+// halfart (build argument halfart=point|box, prototype, change flowhalf): art stored at half resolution, from the patch
 // tools/analysis/halfart_pack.py makes at build time (romfs:/halfart/<game>.dthr; its comment has the format). Only
 // in its own builds, all late code, through three link wraps:
 //   * CtrPack_keyFor: at the first call for a data.win the patch was made from (before the texture cache or the setup

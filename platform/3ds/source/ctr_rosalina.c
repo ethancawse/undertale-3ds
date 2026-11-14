@@ -1,4 +1,4 @@
-// Luma3DS's Rosalina menu with the other screen Off (rosalina2, an o3DS playtest report of 2026-10-25: "When I open
+// Luma3DS's Rosalina menu with the other screen Off (change rosalina2, maintainer's o3DS report of 2026-10-25: "When I open
 // the Rosalina menu with the bottom display off, it freezes and doesn't appear").
 //
 // Rosalina draws its menu on the bottom screen only, by pointing the bottom screen's framebuffer registers at its own
@@ -140,7 +140,7 @@ static ROSA_CODE bool rosaClear(void) {
 #define ROSA_TICKS_PER_MS ((u64) SYSCLOCK_ARM11 / 1000)
 u32 C3D_FrameCounter(int id); // citro3d: the vblanks its vblank callback has counted
 // After the resume, the second's vblanks (citro3d's callback: GSP relays them), the game's pictures and the DSP's audio
-// frames (ndsp: about 205 a second) tell which part stopped if the game doesn't come back (rosafreeze).
+// frames (ndsp: about 205 a second) tell which part stopped if the game doesn't come back (change rosafreeze).
 static const char rosaPauseText[] ROSA_RO =
     "Rosalina: app paused %lu ms (bottom %s); %lu vblanks counted meanwhile; first new picture %ld ms after the "
     "resume, %lu pictures, %lu vblanks and %lu DSP frames in the next second; lit for the combo %lu times so far "
@@ -202,7 +202,7 @@ static ROSA_CODE void rosaProbe(bool lit, bool dark) {
 // Azahar only. The pause starts ROSA_SIM_AT_MS after the watcher starts and lasts ROSA_SIM_PAUSE_MS. L+Down is held
 // from a second before it until 1.5 s into it (so the watcher lights the bottom before the pause and powers it off as
 // soon as it ends, as after a real close), and again for 0.3 s 4 s after it. Rosalina stops every thread of the app
-// while the GPU, the LCDs and the DSP run on; as near as Azahar gets (rosafreeze), a thread at the highest
+// while the GPU, the LCDs and the DSP run on; as near as Azahar gets (change rosafreeze), a thread at the highest
 // application priority spins on each of the app's cores for the whole pause, so that no other thread of the app runs
 // there, citro3d's vblank callbacks and libctru's GSP and ndsp threads included. Azahar's GSP and DSP don't stop.
 #ifndef CTRPORT_ROSALINA_SIM_AT_MS
@@ -471,5 +471,59 @@ extern void rosaStartRef(void) __asm__("rosaStart");
 extern bool rosaTriedRef __asm__("rosaTried");
 __attribute__((noinline, noipa, section(".text_rosalow"))) void CtrRosalina_startAll(void) {
     if (!rosaTriedRef) rosaStartRef();
+}
+#endif
+
+#ifdef ENABLE_WAD16
+// Keep the existing watcher bodies and slots unchanged. A keep-lit dim does
+// not mark the bottom powered off, so New also needs this explicit first-dim
+// start, after the last LCD reference is released.
+extern void dimlightRosaStart(void) __asm__("rosaStart");
+extern bool dimlightRosaTried __asm__("rosaTried");
+__attribute__((noinline, noipa, section(".text.late.dimlight"))) void CtrDimlight_startWatcher(void) {
+    if (!dimlightRosaTried) dimlightRosaStart();
+}
+// The base body is return-value-elided by GCC in release builds. Keep its
+// compiled slot; the retry path needs this separate Result-preserving client.
+Result CtrRosabl_send(Handle session);
+__attribute__((noinline, noipa, section(".text.late.dimlight")))
+static Result dimlightRosaBacklight(u32 command) {
+    Handle lcd = 0;
+    Result res = srvGetServiceHandle(&lcd, rosaService);
+    if (R_FAILED(res)) return res;
+    u32* cmdbuf = getThreadCommandBuffer();
+    cmdbuf[0] = IPC_MakeHeader(command, 1, 0);
+    cmdbuf[1] = GSPLCD_SCREEN_BOTTOM;
+    // The crash-stop tail above deliberately undefines the original rename.
+    // This watcher client must explicitly retain rosabl's request reconciliation.
+    res = CtrRosabl_send(lcd);
+    if (R_SUCCEEDED(res)) res = (Result) cmdbuf[1];
+    svcCloseHandle(lcd);
+    return res;
+}
+u32* CtrDimlight_watcherPending(void);
+__attribute__((noinline, noipa, section(".text.late.dimlight"))) Result CtrDimlight_watcherPower(u32 command) {
+    u32* pending = CtrDimlight_watcherPending();
+    if (pending) __atomic_store_n(pending, command, __ATOMIC_RELEASE);
+    Result result = dimlightRosaBacklight(command);
+    if (pending && R_SUCCEEDED(result)) {
+        u32 expected = command;
+        __atomic_compare_exchange_n(pending, &expected, 0, false,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    }
+    return result;
+}
+__attribute__((noinline, noipa, section(".text.late.dimlight"))) void CtrDimlight_retryWatcher(void) {
+    u32* pending = CtrDimlight_watcherPending();
+    if (!pending) return;
+    if (__atomic_load_n(&rosaQuitRef, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(pending, 0, __ATOMIC_RELEASE);
+        return;
+    }
+    u32 command = __atomic_load_n(pending, __ATOMIC_ACQUIRE);
+    // The existing rosabl send continuation reconciles against the latest app
+    // intent when the combo is released. A failed one-shot remains pending even
+    // though rosaMain's unchanged local lit flag already advanced.
+    if (command) CtrDimlight_watcherPower(command);
 }
 #endif

@@ -1,4 +1,4 @@
-// spikerec: the spike recorder, for playtest builds only (build.sh ... spikerec; CMakeLists.txt compiles this file
+// change spikerec: the spike recorder, for playtest builds only (build.sh ... spikerec; CMakeLists.txt compiles this file
 // and its three link wraps only then, so release builds are unchanged).
 //
 // Every frame that misses its slot in normal play gets one 32-byte record in a fixed RAM ring (SPIKEREC_RING records,

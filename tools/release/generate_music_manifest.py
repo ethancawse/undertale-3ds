@@ -41,7 +41,7 @@ def generate(folder, *, store='steam', platform='windows'):
     credits_record = dict(size=credits.stat().st_size, sha256=digest(credits))
     return dict(schema=2, notice='names only: file names, sizes in bytes and SHA-256 digests; no game content',
                 game='undertale', releases={store: {platform: {version: dict(store=store, depot=platform,
-                    data_sha256=sha256, count=len(files), credits=credits_record, files=files)}}})
+                    data_sha256=sha256, count=len(files), files=files, credits=credits_record)}}})
 
 
 def merge(existing, generated):

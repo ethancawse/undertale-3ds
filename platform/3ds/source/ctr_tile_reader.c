@@ -613,7 +613,7 @@ void CtrTileReader_release(CtrTileReader* reader, CtrTileRead* read) {
     freeRead(read);
 }
 
-// ===[ Reads done on the game thread use its open files (utstall, item 8 step 1) ]===
+// ===[ Reads done on the game thread use its open files (change utstall, item 8 step 1) ]===
 
 // Late code, the --wrap of CtrTileReader_wait (CMakeLists.txt): CtrTileReader_wait above, except that the read it
 // performs meanwhile takes the page's file from the game thread's own open cache files (ctr_textures.c's cacheFile)
@@ -656,3 +656,27 @@ UTSTALL8_TEXT double __wrap_CtrTileReader_wait(CtrTileReader* reader, CtrTileRea
     }
     return (double) (nowNanos() - start) / 1e6;
 }
+
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+// ===[ closehand (change loadclass 12a, 11-08; UNDERTALE Old): the room change's file closes go to the thread ]===
+//
+// After a room load the game thread closes the kept-open texture files the room no longer needs
+// (CtrTextures_roomLoadedOld). The FS service does one card request at a time, so a close waits behind whatever is
+// ahead of it: in maintainer's 11-08 logs, back from a battle into the fan room and the cooler, a song's open (its folder
+// lookup on his slow card) held one close 216 ms, the battle's last frame up for that long. The thread takes the file
+// as it takes those the game thread read from (performNext): it closes them once no read is queued (closeFiles), and
+// waits behind the lookup instead of the game. Called by ctr_textures.c's CtrTextures_closehandFile. Late code, named
+// outside .text.late.*; no strings.
+__attribute__((noinline, section(".text_closehand"))) void CtrTileReader_closeOrHand(CtrTileReader* reader, FILE* f) {
+    bool handed = false;
+    if (reader != nullptr) {
+        LightLock_Lock(&reader->lock);
+        // A quitting thread has closed its list or is about to: the file would stay open.
+        handed = !reader->quit && READER_OPEN_FILES > reader->toCloseCount && CtrOpenFiles_mayKeep();
+        if (handed) reader->toClose[reader->toCloseCount++] = f;
+        LightLock_Unlock(&reader->lock);
+    }
+    if (handed) LightEvent_Signal(&reader->wake);
+    else CTR_TRACE_CLOSE(f, CTR_SITE_GAME, UINT32_MAX);
+}
+#endif

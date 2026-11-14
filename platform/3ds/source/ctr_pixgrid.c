@@ -259,7 +259,7 @@ static __attribute__((noinline, section(".text.late.nativemac"))) bool pixgridKn
     return false;
 }
 
-// Whether pixgridDrawSprite takes this item (utkill, utkill8): ctr_renderer.c's CtrUtk_plainReady refuses a plain
+// Whether pixgridDrawSprite takes this item (change utkill, utkill8): ctr_renderer.c's CtrUtk_plainReady refuses a plain
 // run of it. Frame 1's strips follow the game's own draw, which reaches the renderer unchanged, and a run's later
 // draws skip the vtable, so they would skip the strips too. Before the data is known, item 0 is refused as well.
 __attribute__((noinline, section(".text.late.utkill"))) bool Pixgrid_takes(int32_t tpagIndex) {

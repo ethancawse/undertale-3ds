@@ -5,6 +5,8 @@
 The synthetic data.win names no game identifiers. The last test checks the real entries against the player's
 UNDERTALE data when it is installed (CTRPORT_UNDERTALE_DATA or Steam), and is skipped otherwise.
 """
+import contextlib
+import importlib.util
 import os
 import struct
 import sys
@@ -15,6 +17,27 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import offkill  # noqa: E402
+
+
+@contextlib.contextmanager
+def aot_prepare(directory):
+    """tools/aot/prepare.py loaded by path, and 'prepare' only inside the block (offkill.build imports it by that
+    name). In one pytest process over every tool, tools/audio/prepare.py can already be sys.modules['prepare'] or come
+    first on sys.path, so a bare import may not be this file. sys.modules and sys.path are put back afterwards."""
+    missing = object()
+    old, path = sys.modules.get('prepare', missing), sys.path[:]
+    spec = importlib.util.spec_from_file_location('prepare', os.path.join(directory, 'prepare.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['prepare'] = module
+    try:
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        sys.path[:] = path
+        if old is missing:
+            sys.modules.pop('prepare', None)
+        else:
+            sys.modules['prepare'] = old
 
 
 def fake_data_win(objects, sprites, variables=()):
@@ -196,7 +219,10 @@ class OffKillTest(unittest.TestCase):
             self.assertGreaterEqual(e.reach, 1 + 2 * e.shake)
 
     def test_real_undertale_entries(self):
-        import prepare
+        with aot_prepare(HERE) as prepare:
+            self.real_undertale_entries(prepare)
+
+    def real_undertale_entries(self, prepare):
         found = prepare.find_data('undertale', None)
         if not found:
             self.skipTest('no UNDERTALE data installed')

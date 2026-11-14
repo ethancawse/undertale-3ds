@@ -202,7 +202,7 @@ static BTN_LATE void btnpromptLoad(VMContext* ctx) {
 }
 
 // ds_map_add copies the letter replacements. The two title values borrow their live STRG labels, so a Controls
-// remap updates both language maps too (UT-037). After freewins' other late code (late_reserve.ld).
+// remap updates both language maps too (UT-037). After change freewins' other late code (late_reserve.ld).
 __attribute__((noinline, section(".text.freewins_r3_late"))) bool Btnprompt_isSlot(const char* s) {
     // Retain the 56 B loop: GCC otherwise expands three tests into 60 B.
 #pragma GCC unroll 0

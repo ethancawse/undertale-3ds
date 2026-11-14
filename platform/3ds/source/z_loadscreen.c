@@ -167,7 +167,7 @@ extern uint8_t CtrScreens_game;
 #include "ctr_display.h"
 #include "ctr_launch_args.h"
 #define LG_CODE __attribute__((noinline,noipa,section(".text.late.dlgtop")))
-bool Loadgame_prepare(void);
+bool Loadgame_prepare(void); bool CtrDimlight_prepare(void);
 void Loadgame_packFallback(const DataWin* dataWin);
 static GSPGPU_FramebufferFormat Loadgame_format(gfxScreen_t);
 static u8* Loadgame_framebuffer(gfxScreen_t,gfx3dSide_t,u16*,u16*);
@@ -586,7 +586,7 @@ CTR_H1_LS("utlhelp") static void lsLayout(void) {
     if (!LS_DELTARUNE) {
         // UNDERTALE: a 160 x 14 bar, 3 pixels of frame and 2 of gap.
         ls.barW = 160, ls.barH = 14, ls.frameT = 3;
-        ls.barX = (LS_SCREEN_W - ls.barW) / 2, ls.barY = 150;
+        ls.barX = (LS_SCREEN_W - ls.barW) / 2, ls.barY = (LS_SCREEN_H - ls.barH) / 2;
     } else {
         // DELTARUNE: a 120 x 7 bar, 1 pixel of frame and 2 of gap, 18 pixels under the text, the dog 16 above it.
         ls.barW = 120, ls.barH = 7, ls.frameT = 1;
@@ -728,7 +728,7 @@ CTR_H1_LS("asgborder") static void lsDecide(void) {
 #ifdef ENABLE_WAD16
 CTR_H1_LS("utloop") static void lsBegin(uint32_t load, const char* path) {
     if (!ls.decided) lsDecide();
-    if (!Loadgame_prepare()) return;
+    if (!CtrDimlight_prepare()) return;
     LightLock_Lock(&ls.lock);
     ls.load = load;
     ls.loadStart = ls.phaseStart = svcGetSystemTick();
@@ -904,7 +904,7 @@ void __wrap_CtrPack_setDataWinPath(const char* path);
 DataWin* __real_DataWin_parse(const char* filePath, DataWinParserOptions options);
 DataWin* __wrap_DataWin_parse(const char* filePath, DataWinParserOptions options);
 void __real_CtrPackScreen_run(const DataWin* dataWin);
-void __wrap_CtrPackScreen_run(const DataWin* dataWin); __attribute__((noinline, noipa, section(".text.late.packscreen"))) static void lsPackRun(const DataWin* dataWin);
+void __wrap_CtrPackScreen_run(const DataWin* dataWin); __attribute__((noinline, noipa, R216_UT(used,) section(".text.late.packscreen"))) static void lsPackRun(const DataWin* dataWin); R216_UT(void CtrFirstboot_packRun(const DataWin* dataWin);) // firstboot: file end; used in UNDERTALE only (DELTARUNE calls it)
 VMContext* __real_VM_create(DataWin* dataWin);
 VMContext* __wrap_VM_create(DataWin* dataWin);
 FileSystem* __real_SandboxFileSystem_create(FileSystem* real, FileSystem* bundleOnly);
@@ -956,7 +956,7 @@ CTR_H1_LS("utstall") DataWin* __wrap_DataWin_parse(const char* filePath, DataWin
 
 LS_CODE void __wrap_CtrPackScreen_run(const DataWin* dataWin) {
     lsPause(true);
-    lsPackRun(dataWin);
+    R216_PICK(CtrFirstboot_packRun, lsPackRun)(dataWin); // firstboot (UNDERTALE): the setup with a moving bar
     lsPhase(P_VM);
     lsPause(false);
 }
@@ -2025,4 +2025,173 @@ __attribute__((noipa)) LS_HALT_TEXT static void lsSwapTop(gfxScreen_t screen, bo
     if ((__atomic_load_n(&lsGate, __ATOMIC_ACQUIRE) & 1) == 0)
         Loadgame_swap(screen, hasStereo);
 }
+#endif
+
+#ifdef ENABLE_WAD16
+// ===[ firstboot: the first time setup keeps its bar moving (review decision 11-08, A then B; UNDERTALE) ]===
+//
+// lsPackRun's UNDERTALE setup, with two changes. __wrap_CtrPackScreen_run calls this instead (R216_PICK); lsPackRun
+// keeps its slot and bytes, no longer called in UNDERTALE (used). DELTARUNE is unchanged: there the dog moves, and
+// without Chapter 3's art its bar stalls the same way (parked with DELTARUNE).
+// A: between pages the fill follows ctr_firstboot_fill.h (the measured rate, under a cap of the work done, the pages
+//    in hand and one average page, both read from the worker), so it no longer stands still for seconds while a big
+//    page packs.
+// B: the setup's bar runs from empty to where the load's bar will stand after it, rather than to 97%, and the load
+//    expects the first boot's slow files phase (the bytecode copy) by the data.win's size: after the setup the load's
+//    bar goes on from there through the VM, the files, the runner and the room instead of holding at 97% for 8.5 s.
+// At the file's end, so no __LINE__ above moves; its own section, appended in late_reserve.ld after the last late
+// input. State on the stack and in ls only.
+#include "ctr_firstboot_fill.h"
+void CtrPackWorker_firstbootWork(CtrPackWorker* worker, uint32_t slack, uint64_t* done, uint64_t* inHand); // ctr_texture_pack.c's end
+
+__attribute__((noinline, noipa, section(".text_firstboot"))) void CtrFirstboot_packRun(const DataWin* dataWin) {
+    if (!ls.running) {
+        Loadgame_packFallback(dataWin);
+        return;
+    }
+    CtrPack_init();
+    CtrPackKey key = CtrPack_keyFor(dataWin);
+    if (CtrPack_isComplete(&key, dataWin->txtr.count)) return;
+    CtrPackWorker* worker = CtrPackWorker_start(dataWin, &key, true);
+    if (worker == nullptr) return;
+
+    uint64_t start = nowNanos();
+    uint64_t totalWork = 0;
+    for (uint32_t i = 0; i < dataWin->txtr.count; i++) {
+        const Texture* texture = &dataWin->txtr.textures[i];
+        if (texture->externalPath == nullptr && texture->blobOffset > 0 && texture->blobSize > 0)
+            totalWork += (uint64_t) texture->blobSize + FB_PAGE_SLACK; // the worker's packable pages (CtrPackWorker_start)
+    }
+    uint32_t done = 0, total = 0, built = 0, pictures = ls.pictures;
+    bool skipped = false;
+    double bytesWritten = 0, writingMs = 0, waitingMs = 0;
+    psReadArt();
+    bool line = psLine != nullptr;
+    logInfo(psLogThreads, (unsigned) CtrPackWorker_threadCount(worker));
+    CtrLog_flush();
+    LightLock_Lock(&ls.lock);
+    ls.gen++;
+    // B: the first boot's files phase, then where the load's bar will stand once the setup is done (its own phase,
+    // the textures, counts only its short expected time there). The setup's bar ends at that point.
+    ls.base[P_FS] += (uint32_t) ((uint64_t) FB_COLD_FILES_PER_MB10 * ls.sizeBytes / (10u << 20));
+    uint32_t range = lsTarget(svcGetSystemTick());
+    if (range > LS_CAP) range = LS_CAP;
+    LightLock_Unlock(&ls.lock);
+    uint32_t px = (uint32_t) ls.fillMax * range / 1000u;
+    FbFill fill = {0};
+    u64 lastDisplay = 0;
+    while (aptMainLoop()) {
+        CtrWatchdog_mark(psWatchPhase);
+        hidScanInput();
+        if (hidKeysDown() & KEY_B) {
+            skipped = true;
+            break;
+        }
+        CtrPackResult result;
+        while (CtrPackWorker_poll(worker, &result)) {
+            if (result.built) {
+                built++;
+                logInfo(psLogPage, (unsigned) result.pageId, (unsigned) (result.size / 1024), (double) result.decodeMs,
+                        (double) result.packMs, (double) result.readMs, (double) result.inflateMs, (double) result.convertMs,
+                        (double) result.compressMs, (double) result.writeMs, (int) result.thread, (int) result.core,
+                        (double) (nowNanos() - start) / 1e9);
+                const CtrPackWriteStats* io = &result.io;
+                double ms = (double) (io->openMs + io->sizeMs + io->dataMs + io->flushMs + io->closeMs + io->renameMs);
+                logInfo(psLogWrote, (unsigned) (result.size / 1024), io->streamed ? psStreamed : io->staged ? psStaged : psWhole,
+                        (unsigned) io->calls, (double) io->callMinMs, (double) io->callMaxMs,
+                        ms > 0 ? (double) result.size / (1024.0 * 1024.0) / (ms / 1000.0) : 0.0, (double) io->openMs,
+                        (double) io->sizeMs, (double) io->dataMs, (double) io->flushMs, (double) io->closeMs, (double) io->renameMs,
+                        (double) io->waitMs);
+                bytesWritten += (double) result.size;
+                logInfo(psLogPublication, io->publication.direct ? psSdArchive : psStdio, (double) io->publication.deleteMs,
+                        (double) io->publication.renameMs);
+                writingMs += ms;
+                waitingMs += (double) io->waitMs;
+            }
+            CtrPacked_free(result.packed);
+        }
+        CtrPackWorker_progress(worker, &done, &total);
+        bool last = done >= total;
+        u64 tick = svcGetSystemTick();
+        if (last || lastDisplay == 0 || tick - lastDisplay >= 33ull * LS_TICKS_PER_MS) {
+            // A: the work done and in hand, from the worker, every 33 ms at most.
+            uint64_t doneWork = 0, inHand = 0;
+            CtrPackWorker_firstbootWork(worker, FB_PAGE_SLACK, &doneWork, &inHand);
+            uint32_t ms = (uint32_t) ((nowNanos() - start) / 1000000u);
+            uint32_t fillW = FbFill_step(&fill, doneWork, inHand, totalWork, total, px, ms, last);
+            LightLock_Lock(&ls.lock);
+            int32_t frame = psDogKey((uint32_t) ((tick - ls.loadStart) / LS_TICKS_PER_MS));
+            psDraw((int32_t) fillW, frame);
+            LightLock_Unlock(&ls.lock);
+            lastDisplay = tick;
+        }
+        if (last) break;
+        gspWaitForVBlank();
+    }
+    // B: the load's bar goes on from where the setup's ended (a skipped setup: from its fill so far).
+    LightLock_Lock(&ls.lock);
+    ls.shown = px > 0 ? range * fill.px / px : range;
+    LightLock_Unlock(&ls.lock);
+    uint32_t memoryWaits = 0, deferred = 0;
+    CtrPackWorker_memoryStats(worker, &memoryWaits, &deferred);
+    CtrPackWorker_stop(worker);
+    CtrQoi_releaseWorkspace();
+    psLine = nullptr;
+    free(psOwned);
+    psOwned = nullptr;
+    // The heap is never trimmed (ctr_memory.c), so its arena is the peak so far.
+    struct mallinfo mi = mallinfo();
+    logInfo(psLogReady, (unsigned) (done - deferred), (unsigned) total, (unsigned) built, (double) (nowNanos() - start) / 1e9,
+            skipped ? psSkipped : psNothing, (double) mi.arena / (1024.0 * 1024.0), (unsigned) memoryWaits, (unsigned) deferred);
+    if (built > 0) {
+        logInfo(psLogWritten, bytesWritten / (1024.0 * 1024.0), writingMs / 1000.0,
+                writingMs > 0 ? bytesWritten / (1024.0 * 1024.0) / (writingMs / 1000.0) : 0.0, waitingMs / 1000.0);
+    }
+    logInfo(psLogScreen, line ? psWithLine : psWithoutLine, (unsigned) (ls.pictures - pictures));
+}
+#endif
+
+// bottomframe startup cover: owned by the loading UI, closed before the first
+// game transfer is queued. Worker completion alone does not uncover the LCD.
+#ifdef ENABLE_WAD16
+#ifndef CTRPORT_NO_BOTTOMFRAME
+#include <citro3d.h>
+#include "ctr_frame_pacer.h"
+#define BF_COVER_CODE __attribute__((noinline, noipa, section(".aacout.text.bottomframe")))
+// 0: no loading picture; 1: UI swap queued; 2: first game transfer; 3: UI confirmed.
+static uint32_t bfStartupCover __attribute__((section(".bss.late.bottomframe")));
+BF_COVER_CODE bool CtrLoadscreen_startupCovered(void) {
+    if ((__atomic_load_n(&lsGate, __ATOMIC_ACQUIRE) & 1) != 0) return false;
+    uint32_t state = __atomic_load_n(&bfStartupCover, __ATOMIC_ACQUIRE);
+    if (state == 1 && CtrPacer_screenReady(ls.firstBelow ? GFX_BOTTOM : GFX_TOP)) {
+        // Once a UI picture is shown, later UI swaps still cover the game.
+        // Only the first game transfer can end that ownership interval.
+        if (__atomic_compare_exchange_n(&bfStartupCover, &state, 3, false,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return true;
+    }
+    return state == 3;
+}
+BF_COVER_CODE static void bfCoverSwapped(void) {
+    uint32_t unseen = 0;
+    // A late loading-thread swap must never reopen a closed startup cover.
+    __atomic_compare_exchange_n(&bfStartupCover, &unseen, 1, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+}
+BF_COVER_CODE void CtrLoadscreen_coverTopSwap(gfxScreen_t screen, bool stereo) {
+    __real_gfxScreenSwapBuffers(screen, stereo);
+    bfCoverSwapped();
+}
+BF_COVER_CODE void CtrLoadscreen_coverBottomSwap(gfxScreen_t screen) {
+    void CtrScreens_pacerShow(gfxScreen_t);
+    CtrScreens_pacerShow(screen);
+    bfCoverSwapped();
+}
+BF_COVER_CODE void CtrLoadscreen_gameTransfer(C3D_FrameBuf* fb, gfxScreen_t screen,
+                                              gfx3dSide_t side, u32 flags) {
+    if (screen == (ls.firstBelow ? GFX_BOTTOM : GFX_TOP))
+        __atomic_store_n(&bfStartupCover, 2, __ATOMIC_RELEASE);
+    // Preserve dev's transfer accounting before its original citro3d continuation.
+    void CtrHeldslow_transfer(C3D_FrameBuf*, gfxScreen_t, gfx3dSide_t, u32);
+    CtrHeldslow_transfer(fb, screen, side, flags);
+}
+#endif // CTRPORT_NO_BOTTOMFRAME
 #endif
