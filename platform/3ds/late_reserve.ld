@@ -2297,6 +2297,18 @@ SECTIONS
     *(.text_battletouchbubble)
     /* battlesplit22: the Split's top margin (what reaches above the view, drawn above the band); UNDERTALE only. */
     *(.text_bsmargin22 .rodata_bsmargin22)
+    /* battlesplit W1: the SOUL's entry travels to its split place (z_battlesplit.c's end); UNDERTALE only. */
+    *(.text_bsentry .rodata_bsentry)
+    /* battlesplit box-follow lift: the Royal Guards' and Pyrope's lift follows the box (z_battlesplit.c's end); UNDERTALE only. */
+    *(.text_bsfollow .rodata_bsfollow)
+    /* bsgroup: per-group Split placements (z_bsgroup.c, modes 6 and 7); UNDERTALE only. Code only: its constants are in
+       literal pools, so it names no read-only section. */
+    *(.text_bsgroup)
+    /* bsmex: Mettaton EX in Split (z_bsmex.c, scene mode 8: centred, his heart turns whole on the bottom); UNDERTALE only. */
+    *(.text_bsmex .rodata_bsmex)
+    /* stalecarry (battlesplit, 11-13; UNDERTALE development builds only, empty in every release build): the
+       screen-move probe at ctr_frame_pacer.c's end, code and constants. */
+    *(.text_stalecarry .rodata_stalecarry)
     /* repack test install (repacka, 11-02; build.sh repacktest= test builds only, empty in every release build):
        diag/ctr_repack_test.c's code and constants, last, so adding them moves no other late address of that test
        build (its late addresses still differ from release). Keep these last; new appends go above this comment. */
@@ -3396,6 +3408,16 @@ SECTIONS
     *(.bss.late.fpsghost)
     /* battlesplit22: the Split's top-margin records (UNDERTALE only). */
     *(.bss_bsmargin22_late)
+    /* battlesplit W1: a moved fight's entry this frame (one byte; UNDERTALE only). */
+    *(.bss_bsentry_late)
+    /* battlesplit box-follow lift: the battle its state is for (UNDERTALE only). */
+    *(.bss_bsfollow_late)
+    /* bsgroup: mode 6's next drawSprite (one pointer; UNDERTALE only). */
+    *(.bss_bsgroup_late)
+    /* bsmex: the latch (the split it is for, two name ids, the last turns, the place; UNDERTALE only). */
+    *(.bss_bsmex_late)
+    /* stalecarry: the screen-move probe's state (UNDERTALE development builds only, empty in every release build). */
+    *(.bss.stalecarry_late)
     /* ballast (build.sh ballast test builds only, empty in every release build): z_ballast.c's state, last, so a
        ballast build keeps every late static's address of the release build. Keep this line last in late .bss; new
        appends go above this comment. Its code and constants are in the AAC slots (aacout.cmake). */

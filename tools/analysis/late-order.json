@@ -841,6 +841,11 @@
     "*(.text_letterdraw_plan)",
     "*(.text_battletouchbubble)",
     "*(.text_bsmargin22 .rodata_bsmargin22)",
+    "*(.text_bsentry .rodata_bsentry)",
+    "*(.text_bsfollow .rodata_bsfollow)",
+    "*(.text_bsgroup)",
+    "*(.text_bsmex .rodata_bsmex)",
+    "*(.text_stalecarry .rodata_stalecarry)",
     "*(.repack_test)",
     "*(.repack_test_ro)"
   ],
@@ -1302,6 +1307,11 @@
     "*(.bss_menulag)",
     "*(.bss.late.fpsghost)",
     "*(.bss_bsmargin22_late)",
+    "*(.bss_bsentry_late)",
+    "*(.bss_bsfollow_late)",
+    "*(.bss_bsgroup_late)",
+    "*(.bss_bsmex_late)",
+    "*(.bss.stalecarry_late)",
     "*(.bss.ballast_late)"
   ],
   "aac_text": [
@@ -1314,7 +1324,8 @@
     ".aacout.text.btup",
     ".aacout.text.touchquiz",
     ".aacout.text.touchmenus",
-    ".aacout.text.touchoverworld"
+    ".aacout.text.touchoverworld",
+    ".aacout.text.btgrey"
   ],
   "aac_rodata": [
     ".aacout.rodata.dlgtop4",
@@ -1326,7 +1337,8 @@
     ".aacout.rodata.btup",
     ".aacout.rodata.touchquiz",
     ".aacout.rodata.touchmenus",
-    ".aacout.rodata.touchoverworld"
+    ".aacout.rodata.touchoverworld",
+    ".aacout.rodata.btgrey"
   ],
   "devonly": {
     "aac_text": [

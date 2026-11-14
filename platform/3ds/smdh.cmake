@@ -12,10 +12,24 @@
 # - an archive built by hand: nothing says which source it is, and it may be changed, so it says "source build" with
 #   no commit. A bug report's build can then be told from a release (c26rev3 F3).
 # Homebrew Launcher text (the 3dsx only): the description is "<build> (o3ds/o2ds)" or "<build> (n3ds/n2ds)".
-# Always query Git at build time, so an incremental build follows HEAD too.
+# Always query Git at build time, so an incremental build follows HEAD too. Git is read without optional locks
+# (GIT_OPTIONAL_LOCKS=0: git status never writes .git/index, so a killed status leaves no index.lock), each call gets
+# GIT_TIMEOUT seconds (120; a hang guard for a loaded host), and git's own error is printed. A checkout git cannot read
+# says "source build" as above; a git call that timed out, or a status or tag query that failed in a checkout git did
+# read, fails the build: the identity is unknown, and a guess ("clean", or no label) would mislabel a bug report.
 get_filename_component(ROOT "${ROOT}" ABSOLUTE)
 include("${CMAKE_CURRENT_LIST_DIR}/release_contract.cmake")
 release_read_contract("${ROOT}")
+if(NOT DEFINED GIT_TIMEOUT)
+    set(GIT_TIMEOUT 120)
+endif()
+# Stops the build when a git call timed out (its result is CMake's text, not git's status).
+function(smdh_git_timed_out what result error)
+    if(result MATCHES "timeout")
+        message(FATAL_ERROR "SMDH: git ${what} did not end in ${GIT_TIMEOUT} s (${result}); the source identity is "
+            "unknown. ${error}")
+    endif()
+endfunction()
 if(NOT GAME MATCHES "^(undertale|deltarune)$" OR NOT MODEL MATCHES "^(o3ds|n3ds)$")
     message(FATAL_ERROR "Unknown SMDH game or model")
 endif()
@@ -56,17 +70,25 @@ if(GIT_EXECUTABLE AND EXISTS "${ROOT}/.git")
             GIT_PREFIX GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM)
         unset(ENV{${git_env}})
     endforeach()
+    set(ENV{GIT_OPTIONAL_LOCKS} 0)
     execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --show-toplevel WORKING_DIRECTORY "${ROOT}"
-        RESULT_VARIABLE git_result OUTPUT_VARIABLE git_root OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET TIMEOUT 10)
+        RESULT_VARIABLE git_result OUTPUT_VARIABLE git_root OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_VARIABLE git_error ERROR_STRIP_TRAILING_WHITESPACE TIMEOUT ${GIT_TIMEOUT})
+    smdh_git_timed_out("rev-parse --show-toplevel" "${git_result}" "${git_error}")
+    if(NOT git_result EQUAL 0)
+        message(STATUS "SMDH: git cannot read this checkout (${git_result}): ${git_error}")
+    endif()
     # Git reports the top level with links resolved; compare it with the same form of this tree's root.
     get_filename_component(git_root "${git_root}" REALPATH)
     get_filename_component(root_path "${ROOT}" REALPATH)
     # Archives inside another checkout must not inherit its identity or lab label.
     if(git_result EQUAL 0 AND git_root STREQUAL root_path)
         execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=7 HEAD WORKING_DIRECTORY "${ROOT}"
-            RESULT_VARIABLE git_result OUTPUT_VARIABLE commit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET TIMEOUT 10)
+            RESULT_VARIABLE git_result OUTPUT_VARIABLE commit OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_VARIABLE git_error ERROR_STRIP_TRAILING_WHITESPACE TIMEOUT ${GIT_TIMEOUT})
+        smdh_git_timed_out("rev-parse HEAD" "${git_result}" "${git_error}")
         if(NOT git_result EQUAL 0 OR NOT commit MATCHES "^[0-9a-f]+$")
-            message(FATAL_ERROR "Cannot identify the SMDH source commit")
+            message(FATAL_ERROR "Cannot identify the SMDH source commit (${git_result}): ${git_error}")
         endif()
         set(label "$ENV{CTRPORT_SMDH_BUILD_TAG}")
         if(label AND NOT label MATCHES "^(cand|stage)[0-9]+[a-zA-Z0-9._-]*$")
@@ -75,7 +97,12 @@ if(GIT_EXECUTABLE AND EXISTS "${ROOT}/.git")
         if(NOT label)
             execute_process(COMMAND "${GIT_EXECUTABLE}" tag --points-at HEAD --list "cand[0-9]*" "stage[0-9]*"
                 WORKING_DIRECTORY "${ROOT}" RESULT_VARIABLE tag_result OUTPUT_VARIABLE tags
-                OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET TIMEOUT 10)
+                OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_VARIABLE git_error ERROR_STRIP_TRAILING_WHITESPACE
+                TIMEOUT ${GIT_TIMEOUT})
+            smdh_git_timed_out("tag --points-at" "${tag_result}" "${git_error}")
+            if(NOT tag_result EQUAL 0)
+                message(FATAL_ERROR "Cannot read the SMDH source tags (${tag_result}): ${git_error}")
+            endif()
             string(REPLACE "\n" ";" tags "${tags}")
             list(SORT tags COMPARE NATURAL ORDER DESCENDING)
             foreach(tag IN LISTS tags)
@@ -88,10 +115,14 @@ if(GIT_EXECUTABLE AND EXISTS "${ROOT}/.git")
         if(NOT label)
             set(label "source build")
         endif()
-        execute_process(COMMAND "${GIT_EXECUTABLE}" status --porcelain --untracked-files=no WORKING_DIRECTORY "${ROOT}"
-            RESULT_VARIABLE status_result OUTPUT_VARIABLE changes OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET TIMEOUT 10)
+        # Lock-free (also GIT_OPTIONAL_LOCKS above): status may not refresh .git/index, so killing it leaves no lock.
+        execute_process(COMMAND "${GIT_EXECUTABLE}" --no-optional-locks status --porcelain --untracked-files=no
+            WORKING_DIRECTORY "${ROOT}" RESULT_VARIABLE status_result OUTPUT_VARIABLE changes
+            OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_VARIABLE git_error ERROR_STRIP_TRAILING_WHITESPACE
+            TIMEOUT ${GIT_TIMEOUT})
+        smdh_git_timed_out("status" "${status_result}" "${git_error}")
         if(NOT status_result EQUAL 0)
-            message(FATAL_ERROR "Cannot check the SMDH source status")
+            message(FATAL_ERROR "Cannot check the SMDH source status (${status_result}): ${git_error}")
         endif()
         if(changes)
             string(APPEND commit "-dirty")

@@ -165,15 +165,48 @@ class SmdhMetadata(unittest.TestCase):
         self.env['CTRPORT_SMDH_BUILD_TAG'] = label + '7'
         self.assertIn('publisher exceeds', self.query('undertale', 'n3ds', check=False, mode='3dsx').stderr)
 
-    def query(self, game='undertale', model='o3ds', root=None, check=True, mode=None):
+    def query(self, game='undertale', model='o3ds', root=None, check=True, mode=None, extra=()):
         """(description, publisher), or the failed process."""
         output = Path(self.temp.name) / 'description.txt'
         publisher = Path(self.temp.name) / 'publisher.txt'
         result = self.command(['cmake', '-DROOT=' + str(root or self.root), '-DGAME=' + game,
                                '-DMODEL=' + model, '-DGIT_EXECUTABLE=' + shutil.which('git'),
                                '-DDESCRIPTION_OUT=' + str(output), '-DPUBLISHER_OUT=' + str(publisher),
-                               *(['-DMODE=' + mode] if mode else []), '-P', SCRIPT], check=check)
+                               *(['-DMODE=' + mode] if mode else []), *extra, '-P', SCRIPT], check=check)
         return (output.read_text(), publisher.read_text()) if result.returncode == 0 else result
+
+    def test_the_status_query_never_writes_the_index(self):
+        # integrate21 11-13: `git status` killed at its 10 s limit under build load left a 0-byte .git/index.lock that
+        # broke the next checkout. Status refreshes a stat-dirty index (and takes index.lock to write it) unless
+        # optional locks are off; here the index must stay byte- and time-identical, and the build still clean.
+        commit = self.commit()
+        index = self.root / '.git/index'
+        os.utime(self.root / 'VERSION', ns=(index.stat().st_mtime_ns + 5 * 10**9,) * 2)  # same bytes, newer mtime
+        before = (index.stat().st_mtime_ns, index.read_bytes())
+        self.assertEqual(self.query()[1], 'Unofficial port - source build ' + commit + ' - Old 3DS')
+        self.assertEqual((index.stat().st_mtime_ns, index.read_bytes()), before)
+        self.assertFalse((self.root / '.git/index.lock').exists())
+        self.assertIn('GIT_OPTIONAL_LOCKS} 0', SCRIPT.read_text(encoding='utf-8'))
+        self.assertIn('--no-optional-locks status', SCRIPT.read_text(encoding='utf-8'))
+
+    def test_a_git_call_that_times_out_fails_the_build(self):
+        # Never "source build" with no commit, never a clean status: the identity is unknown, and the build says so.
+        self.commit()
+        self.env['CTRPORT_SMDH_RELEASE'] = '1'
+        failed = self.query(check=False, extra=['-DGIT_TIMEOUT=0.001'])
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn('did not end in 0.001 s', failed.stdout + failed.stderr)
+        self.assertIn('the source identity is', failed.stdout + failed.stderr)
+
+    def test_a_status_git_cannot_run_fails_the_build_with_gits_error(self):
+        # ERROR_QUIET hid why; the build now stops with git's own words, never a clean (or dirty) guess.
+        self.commit()
+        (self.root / '.git/index').write_bytes(b'not an index')
+        failed = self.query(check=False)
+        text = failed.stdout + failed.stderr
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn('Cannot check the SMDH source status (128)', text)
+        self.assertIn('index', text.split('Cannot check the SMDH source status (128)')[1])
 
     def test_all_player_models_use_contract_version_and_no_parent_identity(self):
         self.commit()

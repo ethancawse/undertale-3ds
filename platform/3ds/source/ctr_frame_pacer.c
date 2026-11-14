@@ -1915,3 +1915,23 @@ void* CtrPortmenu_copy(void* to, const void* from, size_t bytes) {
     return memcpy(to, from, bytes);
 }
 #endif
+
+// stalecarry's reader of bottomflip's counts (change battlesplit, 11-13; UNDERTALE development builds only: CMake defines
+// CTRPORT_STALECARRY only without a release source URL; the probe is source/z_stalecarry.c). For one screen: its
+// presents, the presents seen shown, the bottom vblanks counted, the one its last present was seen shown at, whether
+// that one is valid, and its last presented buffer. False before bottomflip's state exists. Nothing above calls it.
+#if defined(CTRPORT_STALECARRY) && defined(CTRPORT_BOTTOMFLIP) && defined(ENABLE_WAD16) && defined(__3DS__)
+bool CtrStale_bottomflip(unsigned screen, u32 out[6]);
+__attribute__((noinline, noipa, optimize("Os"), section(".text_stalecarry")))
+bool CtrStale_bottomflip(unsigned screen, u32 out[6]) {
+    CtrBfState* s = CtrBottomflip_state;
+    if (s == NULL || s == (CtrBfState*) 1 || screen > GFX_BOTTOM) return false;
+    out[0] = __atomic_load_n(&s->seq[screen], __ATOMIC_ACQUIRE);
+    out[1] = s->seen[screen];
+    out[2] = s->vblanks;
+    out[3] = s->lastShown[screen];
+    out[4] = s->lastShownValid[screen];
+    out[5] = (u32) s->lastFb[screen];
+    return true;
+}
+#endif

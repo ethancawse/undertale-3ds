@@ -386,6 +386,7 @@ endif()
 # ===[ 3DS platform layer ]===
 file(GLOB PLATFORM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/source/*.c")
 list(REMOVE_ITEM PLATFORM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/source/z_bootline_console.c") # Added explicitly for UT below.
+list(REMOVE_ITEM PLATFORM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/source/z_stalecarry.c") # UT development builds add it below.
 # Frame was withdrawn from 1.0 by the owner; keep its recoverable sources out of every link.
 list(FILTER PLATFORM_SOURCES EXCLUDE REGEX "/z_bottomframe(_core|_assets|_settings)?\\.c$")
 if(NOT CTRPORT_GAME STREQUAL "undertale" OR NOT CTRPORT_TARGET STREQUAL "o3ds")
@@ -462,7 +463,8 @@ endif()
 if(NOT CTRPORT_GAME STREQUAL "undertale")
     # battlesplit (the split battle layout) is UNDERTALE-only, like inputlate, whose beginFrame link calls it.
     list(REMOVE_ITEM PLATFORM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/source/z_battlesplit.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/source/z_battlesplitbsr.c")
+        "${CMAKE_CURRENT_SOURCE_DIR}/source/z_battlesplitbsr.c" "${CMAKE_CURRENT_SOURCE_DIR}/source/z_bsgroup.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/source/z_bsmex.c")
 endif()
 # The spike recorder (change spikerec, build.sh ... spikerec): playtest builds only. Without the word its file is not
 # even compiled, so release builds link exactly the objects they did before (its wraps and defines are further down).
@@ -4310,7 +4312,8 @@ endif()
 # counter probe and the half census), where it never splits.
 if(CTRPORT_GAME STREQUAL "undertale")
     set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/source/z_battlesplit.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/source/z_battlesplitbsr.c" PROPERTIES
+        "${CMAKE_CURRENT_SOURCE_DIR}/source/z_battlesplitbsr.c" "${CMAKE_CURRENT_SOURCE_DIR}/source/z_bsgroup.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/source/z_bsmex.c" PROPERTIES
         COMPILE_OPTIONS "-Os;-fno-merge-constants;-fno-tree-switch-conversion;-fno-jump-tables")
     if(NOT CTRPORT_ASG_PROBE AND NOT CTRPORT_HALF_CENSUS)
         target_link_options(ctrport PRIVATE -Wl,--wrap=Runner_drawViews)
@@ -4687,6 +4690,31 @@ if(GAME_WAD_DEFINE STREQUAL "ENABLE_WAD16" AND NOT CTRPORT_HOMEAUDIO_PROBE)
         -Wl,--wrap=CtrPacer_init)
 endif()
 
+# stalecarry (change battlesplit, 11-13; UNDERTALE development builds only, never with a release source URL): each Game
+# screen change's carry source, its buffers and an estimate of how long the carried frame shows, on the bench's
+# screen-move line (source/z_stalecarry.c, with a reader of bottomflip's counts at the end of source/ctr_frame_pacer.c).
+# Call targets
+# only: ctr_renderer.c's game screen calls (the two moves only) and console close calls, bottomflip's real present calls
+# and z_screenmovestamp.c's log calls go to the probe. Its death flash watch (battle_probe 32, off otherwise) adds
+# bottomflip's call of the bottom painter's vblank lock, the GPU queue's frame flips (ctr_gpu_queue.c's
+# gfxScreenSwapBuffers calls) and z_battlesplit.c's switch accessor (CTRPORT_STALECARRY).
+if(GAME_WAD_DEFINE STREQUAL "ENABLE_WAD16" AND NOT CTRPORT_HOMEAUDIO_PROBE AND NOT CTRPORT_RELEASE_SOURCE_URL)
+    target_sources(ctrport PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/source/z_stalecarry.c")
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/source/z_stalecarry.c" PROPERTIES
+        COMPILE_OPTIONS "-Os;-fno-merge-constants")
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/source/ctr_frame_pacer.c" APPEND PROPERTY COMPILE_DEFINITIONS
+        CTRPORT_STALECARRY "__real_gspPresentBuffer=CtrStale_present"
+        "__real_CtrBottomPaint_vblank1Lock=CtrStale_vblank")
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/source/z_battlesplit.c" APPEND PROPERTY COMPILE_DEFINITIONS
+        CTRPORT_STALECARRY)
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/source/ctr_gpu_queue.c" APPEND PROPERTY COMPILE_DEFINITIONS
+        "gfxScreenSwapBuffers=CtrStale_gpuSwap")
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/source/ctr_renderer.c" APPEND PROPERTY COMPILE_DEFINITIONS
+        "CtrPacer_setGameScreen=CtrStale_setGameScreen" "CtrLog_endConsole=CtrStale_endConsole")
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/source/z_screenmovestamp.c" APPEND PROPERTY COMPILE_DEFINITIONS
+        "logInfo=CtrStale_log")
+endif()
+
 # touchui step 1: battletouch's weak sample extension supplies the pen/keys and owns the merge; no HID wrapper.
 # All new code/constants append after battletouch in the text reserve, with state allocated on the heap.
 if(CTRPORT_GAME STREQUAL "undertale")
@@ -4916,3 +4944,6 @@ if(CTRPORT_GAME STREQUAL "undertale" AND CTRPORT_TARGET STREQUAL "o3ds"
         "${CMAKE_CURRENT_SOURCE_DIR}/source/main.c" APPEND PROPERTY OBJECT_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/buildcache/sfxlate_compile.py;${CMAKE_CURRENT_SOURCE_DIR}/../../tools/buildcache/sfxlate_object.py;${CMAKE_CURRENT_SOURCE_DIR}/../../tools/buildcache/portmenu_compile.py;${CMAKE_CURRENT_SOURCE_DIR}/source/ctr_sfxlate_cooler.inc")
 endif()
+
+# Last: the launcher dispatcher wraps the finished C_COMPILER_LAUNCHER chain.
+include("${CMAKE_CURRENT_SOURCE_DIR}/launch_dispatch.cmake")

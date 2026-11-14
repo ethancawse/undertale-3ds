@@ -573,6 +573,9 @@ tools/audio/verify_listening.py
 tools/buildcache/builderx_compile.py
 tools/buildcache/compile_cache.py
 tools/buildcache/test_compile_cache.py
+tools/buildcache/launch_dispatch.py
+tools/buildcache/launch_dispatch_check.py
+tools/buildcache/test_launch_dispatch.py
 tools/release/generate_notices.py
 tools/release/licenses/cinnamon-LICENSE
 tools/release/licenses/citro3d-LICENSE
@@ -1058,6 +1061,7 @@ platform/3ds/source/z_upd1_text.c
 
 # AAC retired: UT-only retained slots and compile adapter
 platform/3ds/aacout.cmake
+platform/3ds/launch_dispatch.cmake
 tools/buildcache/aacout_compile.py
 tools/buildcache/test_aacout_compile.py
 # Dev-only AAC inputs (devdiet): the emitter's dev lists, link check and budgets; release scripts unchanged.
@@ -1083,6 +1087,11 @@ tools/release/test_dlgwhite_gate.py
 # changes are composed, keep one copy of each (check_release.py refuses a repeated path).
 platform/3ds/source/z_battlesplit.c
 platform/3ds/source/z_battlesplitbsr.c
+platform/3ds/source/z_bsgroup.c
+platform/3ds/source/z_bsgroup.h
+platform/3ds/source/z_bsmex.c
+platform/3ds/source/z_bsmex.h
+platform/3ds/source/z_stalecarry.c
 platform/3ds/source/ctr_battlesplit.h
 platform/3ds/source/ctr_bottom_view.h
 platform/3ds/source/ctr_battletouch.h

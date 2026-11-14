@@ -1226,6 +1226,12 @@ static inline __attribute__((always_inline)) bool lyCanUp18(void) {
            (lyRoot2.up18 & LY_UP_ON) == 0 && v != 0 && LY_HOLDER18() != CTR_LAYOUT_TOP_DIALOGUE;
 }
 
+// battlesplit part C's latch (W1, each frame of a SOUL flight with the game below): would the move up be made now (the
+// group aside)? The predicate only: no WAIT, no state. Late text, with W1's.
+__attribute__((noinline, noipa, optimize("Os"), section(".text_bsentry"))) bool CtrLayout_canUp18(void) {
+    return lyCanUp18();
+}
+
 LY_CODE18 bool CtrLayout_moveUp(Renderer* renderer, bool up) {
     if (up) {
         if (!lyCanUp18()) {
@@ -1305,7 +1311,8 @@ LY_CODE18 void CtrLayout_chain18(Renderer* renderer) {
         lyRoot2.up18 = (uint8_t) ((u & LY_UP_PICKED) != 0 ? u & ~(LY_UP_PICKED | LY_UP_PICK | LY_UP_WAIT) : u);
         if ((u & LY_UP_PICKED) != 0 && (u & (LY_UP_PICK | LY_UP_WAIT)) != 0) CtrBattlesplit_repick18(renderer);
     }
-    CtrRenderer_chainBeginFrameBattlesplit(renderer);
+    void CtrBattlesplit_entryW1(Renderer* renderer); // battlesplit's SOUL entry, then the chain (z_battlesplit.c's end)
+    CtrBattlesplit_entryW1(renderer);
 }
 
 // ===[ The held top target's lend (commit D; ctr_layout.h has the contract) ]===

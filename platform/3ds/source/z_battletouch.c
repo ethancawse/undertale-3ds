@@ -1391,6 +1391,10 @@ static BT_CODE3 const char* obNth(uint32_t i) {
 // Battletouch_obHelp18 and Battletouch_obValue18 (battletouch18, the file's end: the same calls as before, other names).
 const char* Battletouch_obHelp18(uint32_t i);
 const char* Battletouch_obValue18(uint32_t i);
+// Its two callers name Battletouch_obRowGrey (the Battle stylus row's grey, the file's end), which calls this body by a
+// second name (Battletouch_obRowOld): kept (used), as nothing in C calls it by its own name now.
+void Battletouch_obRowGrey(const CtrMenu* menu, uint32_t k, ObRow* r);
+static BT_CODE3 void obRow(const CtrMenu* menu, uint32_t k, ObRow* r) __attribute__((used));
 static BT_CODE3 void obRow(const CtrMenu* menu, uint32_t k, ObRow* r) {
     uint32_t id = obOrder[k];
     if (OB_LAYOUT > id) {
@@ -1439,7 +1443,7 @@ BT_CODE3 CtrMenuAction CtrOptbattle_keys(CtrMenu* menu, u32 down) {
             if (folded & KEY_DUP) k = k == 0 ? OB_ROWS - 1u : k - 1u;
             else k = k + 1u == OB_ROWS ? 0u : k + 1u;
             ObRow r;
-            obRow(menu, k, &r);
+            Battletouch_obRowGrey(menu, k, &r);
             if (!r.dis) break;
         }
         uint32_t id = obOrder[k];
@@ -1479,7 +1483,7 @@ BT_CODE3 void CtrOptbattle_compose(const CtrMenu* menu, uint16_t* fb) {
     uint32_t sel = obCursor();
     for (uint32_t k = 0; OB_ROWS > k; k++) {
         ObRow r;
-        obRow(menu, k, &r);
+        Battletouch_obRowGrey(menu, k, &r);
         int32_t y = obY[k];
         uint32_t col = r.dis ? 0x8410u : (k == sel ? 0xFFE0u : 0xFFFFu);
         CtrOptmenu_text(fb, 24, y, r.label, col);
@@ -2695,4 +2699,26 @@ static BT_CODE18 const char* btObHelp18(uint32_t i) {
     return v != CTR_BATTLE_LAYOUT_ORIGINAL ? Battletouch_obHelp(OB_HLP_SPLIT) : btHlpOriginal18;
 }
 __asm__(".global Battletouch_obHelp18\n.set Battletouch_obHelp18, btObHelp18\n");
+
+// ===[ The Battle stylus row grey under Top screen (lead 11-13, item A) ]===
+//
+// With Battle layout Top screen the whole battle is on the top screen, where the stylus has nothing to touch (battlesplit
+// makes no move down for it), so the Battle stylus row is grey: its label and stored value drawn grey, and Up and Down
+// pass over it (as over every grey row). Its value is kept, for Original or 3DS Mode. No new line: the cursor never
+// rests on a grey row (the layout changes only on its own row), so its help line is never shown. Earlier code keeps its
+// size and place: obRow's two callers (the keys' walk, the page's draw) name Battletouch_obRowGrey in place of obRow
+// (same-size call-target swaps; test_swaps18.py), and this body calls obRow by the second name below. A new function,
+// so a new last AAC input (.aacout.text.btgrey, aacout.cmake): no tenant moves. Menu code: the options menu only.
+#if defined(ENABLE_WAD16)
+#define BT_CODEG __attribute__((noinline, noipa, used, section(".aacout.text.btgrey")))
+#else
+#define BT_CODEG __attribute__((noinline, noipa, used))
+#endif
+void Battletouch_obRowOld(const CtrMenu* menu, uint32_t k, ObRow* r);
+__asm__(".global Battletouch_obRowOld\n.set Battletouch_obRowOld, obRow\n");
+static BT_CODEG void btObRowGrey(const CtrMenu* menu, uint32_t k, ObRow* r) {
+    Battletouch_obRowOld(menu, k, r);
+    if (obOrder[k] == OB_STYLUS && CtrBattlesplit_setting() == CTR_BATTLE_LAYOUT_TOP) r->dis = true;
+}
+__asm__(".global Battletouch_obRowGrey\n.set Battletouch_obRowGrey, btObRowGrey\n");
 #endif

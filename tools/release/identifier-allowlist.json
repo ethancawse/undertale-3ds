@@ -30,7 +30,7 @@
     {
       "member": "tools/aot/selection/undertale.txt",
       "class": "aot-selection",
-      "sha256": "5155491114d4dfa1f1149b41d905637d3c92fd2bdf11282b25e575a1df2fb841",
+      "sha256": "7868252a43323596eed1ee4bc8fcb659d4c9d04d9aa1750dc23098ff7365ee55",
       "justification": "Names-only selection keys for compiling the players own code."
     },
     {
@@ -102,7 +102,7 @@
     {
       "member": "engine/src/bench_script.c",
       "class": "engine-lookups",
-      "sha256": "87a494e6b6437c870211c0755f7056ccb88284c929e8365fb81e20728444c07f",
+      "sha256": "b591e97d5de1e7b0f4fdee42779b0e2e495df809a04bd86f1ef4fdff7ca4e962",
       "justification": "Encounter setup entry names connect the harness to the players own code.",
       "evidence_sha256": [
         "0760bbc2b1799bf21d2ef06414d39986c47438e02b912f107a22c33f99c73ead"
@@ -120,7 +120,7 @@
     {
       "member": "engine/src/runner.c",
       "class": "engine-lookups",
-      "sha256": "7e444b61922a5b1c7e035008e83d8cd99b95aa6f7133bcbc5a682af0da457188",
+      "sha256": "bdf0f8b9e20889fb2755087929f74b213c3be8ea95ae9eed38572927af6ed4ca",
       "justification": "Object and variable lookup examples explain runner initialization and dispatch.",
       "evidence_sha256": [
         "e21b4a0970f25e43698b263730323baeaa930e9907f1661a433985a117c25dc1"
@@ -147,7 +147,7 @@
     {
       "member": "platform/3ds/source/ctr_audio_system.c",
       "class": "engine-lookups",
-      "sha256": "7dbcfe1412f6706363630cf7f30c241aea3627e5c6d2bbb7ff81d0beebe2b4d8",
+      "sha256": "8396abecf89daf40a491bd764311c7e5f29577b27e02d05c8765621fd6d8bb8f",
       "justification": "One sound lookup name: the game-over music fence recognises this stream by its name at runtime.",
       "evidence_sha256": [
         "9b7906afa34fd7378c77b13fc0e94b5b9afac4944fce6a70064bf387c8751674"
@@ -174,7 +174,7 @@
     {
       "member": "platform/3ds/source/ctr_benchmark.c",
       "class": "engine-lookups",
-      "sha256": "0ede30b54b50331b6929f8da1aff0eee88ce65f2df5b73d9b38a9569c57fa854",
+      "sha256": "01608fcd110685d31f6459222864fa5a48cc1702dfb26b266670dffb55edaead",
       "justification": "Room, object and script lookup names select harness setup in player data.",
       "evidence_sha256": [
         "2b5bc4fa300c8eb091e9e80ba7df656563bd895c75a5e7b06f4a4104ea59a29b"
@@ -183,7 +183,7 @@
     {
       "member": "platform/3ds/source/ctr_benchmark.h",
       "class": "engine-lookups",
-      "sha256": "fa59325eee953aee9ffa14deed90794579853f017810ca65f336a29e09589b48",
+      "sha256": "01eab043a53ceac79a0d7dc2f71abb046136dc5b152774854d10027c9a18785b",
       "justification": "Player setup entry names document benchmark API calls.",
       "evidence_sha256": [
         "ddb78a42c893a85fc1eb39a7b4d08b02a38ed5343cf84ac07ee616e39bcc3b33"
@@ -201,7 +201,7 @@
     {
       "member": "platform/3ds/source/ctr_renderer.c",
       "class": "engine-lookups",
-      "sha256": "08629417224b19562c721ef89918561d1f59f734b117a8bc55ba31620e5cedb8",
+      "sha256": "0d08fb5a71521fbf1f141fdb713f666fdec6ff962321bff9712ece016c784bdc",
       "justification": "Shader, object and sprite lookup names select renderer compatibility paths.",
       "evidence_sha256": [
         "3ed79f9b7583c83142de5f28eacb6d2f2812841561d123ca4eeb55dc4a503d84"
@@ -327,7 +327,7 @@
     {
       "member": "platform/3ds/source/z_utfade.c",
       "class": "engine-lookups",
-      "sha256": "78b5166dde9ef69667570c6df6d3b86a4f7a69981defdb1b9a811b4dc0be033d",
+      "sha256": "0d4f8c62aad9c36cb279a235fa17992f428bd1fa802ae89096b7ae5b5b813045",
       "justification": "Two object names tell that a door is fading to black at a room change, so the screen shows black while the room loads (presentation only); the comments name the fades it leaves alone. No game body, constants or assets.",
       "evidence_sha256": [
         "17037ed9c62235579663ed428831b5d73610236b3db9bd10f55c301deced5511"
@@ -480,7 +480,7 @@
     {
       "member": "platform/3ds/source/ctr_textures.c",
       "class": "engine-symbols",
-      "sha256": "b5bcb9bfed60548986ebe398a350e93d903cd82ccb1d082c0cd6e6e67f08c9c9",
+      "sha256": "6f59d146ecd513923fd558ccea2161238a0abddd5be84ad6bfa5ef80588bd14e",
       "justification": "Reviewed parser limits, format fields, settings or upstream APIs; prefix overlap is not a game asset.",
       "evidence_sha256": [
         "fa3195d59833c0bb17ff059283d9ea5552a7023e68e0cb575a13476296cd56a0"
@@ -552,7 +552,7 @@
     {
       "member": "tools/roomplan/build_plan.py",
       "class": "roomplan-tool",
-      "sha256": "c99c3675e41a8a75da66f866a13d44876ff9042aaf2c28c52aa7a307270de369",
+      "sha256": "6507f430d094ecbc2dc931795ee3a68beed8d7378f756da07ca54edf6b90a2b3",
       "justification": "Roomplan schema fields, format limits and lookup names build hash-gated plans from player data.",
       "evidence_sha256": [
         "c177adae24d12a729595cc4e2f5accacc41f933cf4b52caba433eae2b8cf9f0d"
@@ -714,7 +714,7 @@
     {
       "member": "engine/src/z_btnprompt.c",
       "class": "engine-lookups",
-      "sha256": "c4c02463e552287fda7474ddafae066d7c6ef54ddab858112002ed6c6ffc3851",
+      "sha256": "e1b5d545905aa0219d7474437149409bc2cdffc29c9535bf2493da47d2f72f43",
       "justification": "The button-sprite API name selects our controller adaptation; original text and words come from private build inputs, with STRG index/FNV matching and retained ELF slots.",
       "evidence_sha256": [
         "4b798f4494300d76eb5ca66259d8ebbdfd048e31216029690970ccc6b972913b"
@@ -795,7 +795,7 @@
     {
       "member": "platform/3ds/source/z_smalltext.c",
       "class": "engine-lookups",
-      "sha256": "dc046d927b874ae2d240af885206bdef7bc6f63f5c0258ce6a94ab4acd8d2bad",
+      "sha256": "7a52a12b4b0436dfaa2bb5ef89b626cd46acbfd2d970df0999f0f30ff344f144",
       "justification": "The KR label's sprite name finds the frame that Crisp text draws sharp (UNDERTALE only; part of the Smoothing menu's choices). Speech bubbles (bubbleclip; integrate21, approved by the lead 2026-10-27): the text writer object and the four bubble border objects find the writer and the bubble edges so Crisp text stays inside the bubble.",
       "evidence_sha256": [
         "db903e39c5e3b4b4503b85492d4397b9c79fb2534f86197307ffd9a0e012f190"
@@ -804,19 +804,19 @@
     {
       "member": "platform/3ds/source/z_battlesplit.c",
       "class": "engine-lookups",
-      "sha256": "2bc47fcbbb69adae6cd75e3def768eaa877d14a03c3200690367f542267cbbca",
+      "sha256": "34f816e81ce9336e14aaa9511525b6df7d84ce31f8763ba83bd9cb396a6fb9c6",
       "justification": "battlesplit (lead approved 2026-11-08): names used only as runtime lookups, as z_battletouch.c: battle object names (bullets and their parents, the SOUL and its shots, the battle controller, the target and name bars, the text writer, the box borders, the faders, and the fight-specific objects of its encounter tables) sort a battle's draws between the two screens; the battle room names and the battle group variable find the rooms and the fight; no game text, art or generated code; exported with UNDERTALE only. The exact names are bound by the evidence hash and listed in the commit that added this entry.",
       "evidence_sha256": [
-        "3318ffc338fc79aaffe16ff549df39cc5ae02172cd40bfe656e61dcb063c7aa3"
+        "b41ebeb0006d6f9a68f98882583a8d97c83038c4527dbcb4e81d7fb35e642720"
       ]
     },
     {
       "member": "tools/layout/undertale-scenes.json",
       "class": "engine-lookups",
-      "sha256": "8130eced80fc80d2e3c4504a0e10995df6e1f30d6f4f6483f836bde0288bf639",
+      "sha256": "7d700f5ee69ca310243dbd27a7c00ae36ea527c8ecceff1f7fd431d1a9601ccc",
       "justification": "layout S3 (lead approved 2026-11-08, ruling 5: a names-only spec resolved at build time): the battle object names and the battle room name z_battlesplit.c's approved lookups use, as the scene table's spec; build.sh resolves them against the player's own data.win into romfs:/layout/undertale.lst (numbers only, never committed); no game text, art, numbers or generated code; exported with UNDERTALE only. The exact names are bound by the evidence hash.",
       "evidence_sha256": [
-        "52b1cad920f21ed11b1b484987afdee232a1e53ecd36e2f007ff611a8c8b924b"
+        "d7bc1ae86269c7b05c8ea6592006e05ac89dd6469892d9a9d37cddc214ef3d3d"
       ]
     },
     {
@@ -876,7 +876,7 @@
     {
       "member": "tools/aot/gog_smart.py",
       "class": "gating-hashes",
-      "sha256": "fa0cd9e8aefc6ea33c3b6cc955d8f91efb8427e546f1e8ef3e8d72e77bab7070",
+      "sha256": "0d128cdc3d7cc4811400f3fa51d6ac7d61617b4ff00f001e69dc0861b4132452",
       "justification": "Lead 2026-10-23 option 1: GOG-only compatibility indices/verdict bits keyed by content hashes and stable sprite/frame identity; no game content.",
       "evidence_sha256": [
         "dcf99176f5beeab6da7c76142996000867d039c9fffd11c97f64eb2640957c09",
@@ -919,7 +919,16 @@
       "evidence_sha256": [
         "ec6d5c493df4c8b53e57dd4a2ce27ce563d52ee9ccf95083c9135cec002574aa"
       ],
-      "sha256": "d2bf53c6936a74aefc3722ce385f934ee97e5a12d28d79b6e48d2a5e33436278"
+      "sha256": "584f7b71e3fa29d15a301d765213bdda73a3a2fc8513b89a45e014b73c393080"
+    },
+    {
+      "member": "tools/buildcache/launch_dispatch_check.py",
+      "class": "engine-symbols",
+      "sha256": "faac3bafe58fc11f9d4355360fffe2c50780ec06daa4fee0046514eacc032d55",
+      "justification": "buildfast identity checker: the flagged name is the ELF section-header type field it reads; prefix overlap is not a game asset.",
+      "evidence_sha256": [
+        "18ecdaf31888c2de321b900dbf2eb3f15e093af15594d8c087ac84fa527fb11e"
+      ]
     },
     {
       "member": "tools/aot/stpack.py",
@@ -972,7 +981,7 @@
     {
       "member": "engine/src/z_utkill_swarm.c",
       "class": "engine-lookups",
-      "sha256": "f7295afd5745afe954b2722a61579f6ca45dfca6bc8fa6e1b0c1f2d853d82d31",
+      "sha256": "f62339a02697c63b43e1171f0e14c5be314f087909463fcf852264cd1b11145b",
       "justification": "Object and event code lookup names bind the dust swarm and its strips to the player's own objects and events (UNDERTALE only, utkill SW9 94d1151fd, v3 B'' 84f1c4c25).",
       "evidence_sha256": [
         "04e0d9b1d21635c257c3ba01585294e181e63e3d3906fb10c8b3148346e555a9"
@@ -981,7 +990,7 @@
     {
       "member": "engine/src/z_utflames.c",
       "class": "engine-lookups",
-      "sha256": "1de3c134680ec926c415da461b58fa95f73bbe4da94bb0aa7b117b33de39e795",
+      "sha256": "48586bf77e91819857535ead6c7b7d65b45ab91eef8b37ad12a28a2f25ab92d1",
       "justification": "A section comment names the room whose snow floor collision_circle's native no-hit answer serves (comment only; UNDERTALE only, utflames circle af36f9670).",
       "evidence_sha256": [
         "5ba75d9207f269aac4ebb0473447bf55bac5fb0cc3bb0ff2f73c41b3923717d3"
@@ -990,7 +999,7 @@
     {
       "member": "platform/3ds/source/z_swkbd.c",
       "class": "engine-lookups",
-      "sha256": "0610c7675ed34831274164714768e7f92f808a279eb7d704daf7fd4e826593ec",
+      "sha256": "0aecd2a2917604f71cad15b80e006e1f2836164237656860b994e5df2800e36d",
       "justification": "Object, variable and text lookup names that open the 3DS software keyboard at the game's one typing prompt.",
       "evidence_sha256": [
         "2f5ff10635020e1c0738646fbcdf3b473b0758a4b871f6c472c4e5e43457ee3a"
@@ -999,7 +1008,7 @@
     {
       "member": "platform/3ds/source/z_utstall.c",
       "class": "engine-lookups",
-      "sha256": "74aeaf63f517ad204405cf02509870ff2a19a214f11e5d75f42f9475d5b3be64",
+      "sha256": "b91ff881f9e555f2e46f782ff7abf5be8820e20d1033f52671d3ee77fc3a80a0",
       "justification": "Code entry names the UNDERTALE Old first room load reads ahead (utflDialogueCode: the first textbox's dialogue scripts), and comments naming the room and object that reach it.",
       "evidence_sha256": [
         "b30b6f9c0118c69e23e46614e45ed7de416e68c19a4c370b7d27cbd96df15c05"
@@ -1035,7 +1044,7 @@
     {
       "member": "platform/3ds/source/ctr_repack.inc",
       "class": "engine-lookups",
-      "sha256": "62151029c9fead0c59ef99cdd3e4a942be979da8f779980f0b962c785546a5bb",
+      "sha256": "54e003e7dc326e6344b87ae058ba345ee21db5498e74599bba2e391dc66447eb",
       "justification": "integrate23 repack stage 2026-10-27 (lane repack f8b21a137), approved by the lead 2026-10-27: one sprite name (the attack-bar PRESS sprite, the same name ctr_pixfix_press.c's approved entry carries) selects the tile pixpress rewrites at load, which the per-room repack keeps on its original tile (DELTARUNE New only; not compiled into UNDERTALE).",
       "evidence_sha256": [
         "0d4016bf56af8da86a16d4870d399694305ac9ccb86a9f93097499e37905e8f8"
@@ -1080,7 +1089,7 @@
     {
       "member": "tools/aot/dskip.py",
       "class": "gating-hashes",
-      "sha256": "3d8f0725f2e89f2ccf9509975bbf2cb2d494642a004f4e57e7c4bebb0cf18ae4",
+      "sha256": "d6152e59d3cde45c6cabdc24fc0d7ca78335a042c9e0de308d569325106023e0",
       "justification": "Lead 2026-10-30 (asrfight D; GOG added 20:0x): UNDERTALE Old's covered-star key is written only for the three data versions its occlusion proof was checked on (whole-file SHA-256); no game content.",
       "evidence_sha256": [
         "cf7a80fd0f8ab71c47954453f7de768681a1e788ca4bfb2f81222c76ee3aac46",
@@ -1176,7 +1185,7 @@
     {
       "member": "platform/3ds/source/z_battletouch.c",
       "class": "engine-lookups",
-      "sha256": "8b6426178380f0934cd18e2a6f3a2e066784b19daba85f82cef3ab595da3a3b8",
+      "sha256": "fe0d3c6101b5cb28f59ede52e99c7412f88a9940ecffc269f985dbe6058438e8",
       "justification": "battletouch (lead approved 2026-11-08): battle object names used only as runtime lookups for stylus hit areas and the SOUL's position; no game text or art. The battle menu's and the SOUL's variables are read by name the same way; UNDERTALE only, compiled empty for DELTARUNE.",
       "evidence_sha256": [
         "fef656a73ff8a30be6accc88a930891d74b8b915deb77bc8dd456dc43c8c25f5"
@@ -1236,7 +1245,7 @@
     {
       "member": "platform/3ds/source/ctr_dlgtop_lease.inc",
       "class": "engine-lookups",
-      "sha256": "ab0edae21ff210c7033f4f43b32929f20cad335d192dd9b7b64f95775576627b",
+      "sha256": "c0c35c0b97fedffb6325e89c6f1a74ad332e5db5bae3fe0a6d21e4bd86405851",
       "justification": "S4 reads the existing engine battle-room lookup name solely to return the held top-target loan before battle Step and keep text with the game during battle; no game event body, text, resource number or asset.",
       "evidence_sha256": [
         "0dd2ae8faf2a32113f9c52491903b8d12d333bf2fd5199478d48a6a861ba4fee"

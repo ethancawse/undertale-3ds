@@ -14,6 +14,8 @@
 # ruling and a relocation-driven move proof for every tenant behind it; bootahead, benchsettings and battlesplit14
 # never without a new ruling; NEW functions still go to a new last input. This settles "growth inside a function
 # already in AAC stays in place" against "do not grow an earlier input" (above) for the suffix only.
+# btgrey (lead 11-13, battlesplit item A: z_battletouch.c's Battle stylus row grey under Top screen) is such a new last
+# input, after touchoverworld: nothing that exists moves.
 # S4 occupies part of the retired Frame hole. Its padding stays fixed, so
 # battlesplit14 and every existing tenant retain their dv8q addresses.
 set(aacout_text_hole_inputs
@@ -32,6 +34,7 @@ set(aacout_text_inputs
     .aacout.text.touchquiz
     .aacout.text.touchmenus
     .aacout.text.touchoverworld
+    .aacout.text.btgrey
 )
 set(aacout_rodata_inputs
     .aacout.rodata.bootahead
@@ -43,6 +46,7 @@ set(aacout_rodata_inputs
     .aacout.rodata.touchquiz
     .aacout.rodata.touchmenus
     .aacout.rodata.touchoverworld
+    .aacout.rodata.btgrey
 )
 # Development-only inputs (lead 11-11, devdiet decision 2; CTRPORT_DEVONLY_AAC, UNDERTALE builds without the release
 # source URL): labguard (z_labguard.o, every code and constant section), the pen log's own pairs (z_battletouch.c's

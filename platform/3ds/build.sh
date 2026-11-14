@@ -1233,6 +1233,13 @@ if [ "${CTRPORT_CCACHE:-1}" != 0 ]; then
     fi
 fi
 
+# The launcher dispatcher (platform/3ds/launch_dispatch.cmake) runs each compile's whole launcher chain in one
+# Python process; CTRPORT_LAUNCH_DISPATCH=OFF starts every launcher as its own process, as before. Set on every
+# configure, so an OFF build never sticks. Its log times each compile (summary printed after the build).
+# ON by default for UNDERTALE, where its identity is proven (docs/building-cia.md); DELTARUNE keeps the chain until then.
+if [ "$game" = undertale ]; then launch_dispatch=${CTRPORT_LAUNCH_DISPATCH:-ON}; else launch_dispatch=${CTRPORT_LAUNCH_DISPATCH:-OFF}; fi
+export CTRPORT_LAUNCH_DISPATCH_LOG="$(native_path "$build")/launch_dispatch.log"
+
 # CTRPORT_FILE_PREFIX_MAP=OFF builds with the checkout's absolute paths (CMakeLists.txt); unset keeps the build
 # directory's setting, ON by default.
 prefix_map=()
@@ -1268,6 +1275,7 @@ cmake -S "$here" -B "$build" -G "Unix Makefiles" \
     ${release_source[@]+"${release_source[@]}"} \
     -DCTRPORT_PYTHON_EXECUTABLE="$python_executable" \
     -DCMAKE_C_COMPILER_LAUNCHER="$launcher" \
+    -DCTRPORT_LAUNCH_DISPATCH="$launch_dispatch" \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/3DS.cmake" \
     -DCMAKE_BUILD_TYPE="$config" \
     -DCTRPORT_FLOWCODE="$flowcode" -DCTRPORT_FLOWCODE_PLAN="$flowcode_plan" \
@@ -1333,6 +1341,7 @@ cmake -S "$here" -B "$build" -G "Unix Makefiles" \
 if [ -n "$launcher" ]; then
     : > "$build/compile_cache.log"
 fi
+: > "$build/launch_dispatch.log"
 # The renderer's per-font and per-item Smart smoothing verdicts, worked out from the game data here instead of at each
 # font's or item's first draw on the console (tools/aot/fontverdict.py, tools/aot/itemverdict.py):
 # romfs/fonts/<data.win folder>.dtfv and .dtiv. Without game data or Python the console analyses them itself, as before.
@@ -1406,6 +1415,9 @@ cmake --build "$build" -j "$(nproc)"
 cmake --build "$build" --target cia
 if [ -n "$launcher" ]; then
     "$cc_python" -X utf8 -I -S "$(native_path "$repo/tools/buildcache/compile_cache.py")" --summary "$(native_path "$build")/compile_cache.log"
+fi
+if [ -s "$build/launch_dispatch.log" ]; then
+    "${python[@]}" -X utf8 -I -S "$(native_path "$repo/tools/buildcache/launch_dispatch.py")" --summary "$(native_path "$build")/launch_dispatch.log"
 fi
 
 package_stem=$(<"$build/package-stem.txt")
