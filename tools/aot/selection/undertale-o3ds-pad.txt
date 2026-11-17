@@ -1,7 +1,11 @@
 # AOT block padding (tools/aot/aot_pad.py; read by platform/3ds/CMakeLists.txt): bytes added after the
 # AOT code, constants and statics, and to the string pool, so everything after them stays where the
-# base build had it.
-text 80
-rodata 780
-bss 68
-str 164
+# base build had it. `late <file> <section> <bytes>`: bytes added after one late function, inside its
+# own section.
+text 393068
+rodata 164
+bss 64
+str 548
+late aot_late .text.aotl_31 172
+late aot_late .text.aotl_62 60
+late aot_utold_loop .text.aotul_11 532

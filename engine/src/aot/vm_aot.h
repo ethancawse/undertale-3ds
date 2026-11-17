@@ -234,6 +234,82 @@ void aotx_handleCall(VMContext* ctx, uint32_t instr, const uint8_t* extraData);
 void aotx_handlePushEnv(VMContext* ctx, uint32_t instr, uint32_t instrAddr);
 void aotx_handlePopEnv(VMContext* ctx, uint32_t instr, uint32_t instrAddr);
 
+// The slow halves of the inline arithmetic, conversions and comparisons, each as one call: the stack top the handler
+// expects (top: B + the depth before the instruction, or before the push of a fused constant), the constant's push
+// when there is one, and the interpreter's handler. Spelled out at every site (the sync, the constant's sixteen
+// bytes, the handler's operands, and after a compare the read of its bool), a slow half was 6 to 15 ARM instructions;
+// as a call it is 4 to 6. None of it runs unless an operand isn't a plain number, so the code that does run is the
+// same instructions, closer together (change codeshrink-aot: 9% of UNDERTALE Old's generated code).
+// They are defined below (AOT_SLOW_HALVES_DEFINE), once, in aot_table.c: with the generated code and not in vm.c, so
+// that in a 3DS build they are part of the generated code's block and nothing outside it moves.
+void aotAddSlow(VMContext* ctx, int32_t top, uint32_t resultType);
+void aotSubSlow(VMContext* ctx, int32_t top, uint32_t resultType);
+void aotMulSlow(VMContext* ctx, int32_t top, uint32_t resultType);
+void aotAddSlowK(VMContext* ctx, int32_t top, int32_t k, uint32_t resultType);   // the constant a Push.i/PushI.e int16
+void aotSubSlowK(VMContext* ctx, int32_t top, int32_t k, uint32_t resultType);
+void aotMulSlowK(VMContext* ctx, int32_t top, int32_t k, uint32_t resultType);
+void aotAddSlowR(VMContext* ctx, int32_t top, uint32_t resultType, GMLReal kv);  // the constant a Push.d
+void aotSubSlowR(VMContext* ctx, int32_t top, uint32_t resultType, GMLReal kv);
+void aotMulSlowR(VMContext* ctx, int32_t top, uint32_t resultType, GMLReal kv);
+void aotDivSlow(VMContext* ctx, int32_t top, uint32_t instr);
+void aotDivSlowR(VMContext* ctx, int32_t top, uint32_t instr, GMLReal kv);       // the divisor an int constant's Conv.i.d
+void aotConvSlow(VMContext* ctx, int32_t top, uint32_t convKey);
+int aotCmpSlowTruth(VMContext* ctx, int32_t top, uint32_t instr);                // handleCmp, then the truth of its bool
+int aotCmpSlowK(VMContext* ctx, int32_t top, uint32_t instr, int32_t k);         // the same after an int16 constant's push
+void aotCoerceInt64(RValue* val);                                                // coerceIntStoreToRealInPlace's int64 arm
+__attribute__((noreturn)) void aotBadString(VMContext* ctx, int32_t stringIndex);   // AOT_PUSH_STRING's failed check
+
+#ifdef AOT_SLOW_HALVES_DEFINE
+// A constant's push: what AOT_KI(k, GML_TYPE_INT16) or AOT_KR(kv) stores, at top.
+static inline void aotSlowPushK(VMContext* ctx, int32_t top, int32_t k) {
+    ctx->stack.slots[top] = (RValue) { .int32 = k, .type = RVALUE_INT32, .gmlStackType = GML_TYPE_INT16 };
+    ctx->stack.top = top + 1;
+}
+static inline void aotSlowPushR(VMContext* ctx, int32_t top, GMLReal kv) {
+    ctx->stack.slots[top] = (RValue) { .real = kv, .type = RVALUE_REAL, .gmlStackType = GML_TYPE_DOUBLE };
+    ctx->stack.top = top + 1;
+}
+NOINLINE void aotAddSlow(VMContext* ctx, int32_t top, uint32_t resultType) { ctx->stack.top = top; aotx_handleAddSlow(ctx, (uint8_t) resultType); }
+NOINLINE void aotSubSlow(VMContext* ctx, int32_t top, uint32_t resultType) { ctx->stack.top = top; aotx_handleSubSlow(ctx, (uint8_t) resultType); }
+NOINLINE void aotMulSlow(VMContext* ctx, int32_t top, uint32_t resultType) { ctx->stack.top = top; aotx_handleMulSlow(ctx, (uint8_t) resultType); }
+NOINLINE void aotAddSlowK(VMContext* ctx, int32_t top, int32_t k, uint32_t resultType) { aotSlowPushK(ctx, top, k); aotx_handleAddSlow(ctx, (uint8_t) resultType); }
+NOINLINE void aotSubSlowK(VMContext* ctx, int32_t top, int32_t k, uint32_t resultType) { aotSlowPushK(ctx, top, k); aotx_handleSubSlow(ctx, (uint8_t) resultType); }
+NOINLINE void aotMulSlowK(VMContext* ctx, int32_t top, int32_t k, uint32_t resultType) { aotSlowPushK(ctx, top, k); aotx_handleMulSlow(ctx, (uint8_t) resultType); }
+NOINLINE void aotAddSlowR(VMContext* ctx, int32_t top, uint32_t resultType, GMLReal kv) { aotSlowPushR(ctx, top, kv); aotx_handleAddSlow(ctx, (uint8_t) resultType); }
+NOINLINE void aotSubSlowR(VMContext* ctx, int32_t top, uint32_t resultType, GMLReal kv) { aotSlowPushR(ctx, top, kv); aotx_handleSubSlow(ctx, (uint8_t) resultType); }
+NOINLINE void aotMulSlowR(VMContext* ctx, int32_t top, uint32_t resultType, GMLReal kv) { aotSlowPushR(ctx, top, kv); aotx_handleMulSlow(ctx, (uint8_t) resultType); }
+NOINLINE void aotDivSlow(VMContext* ctx, int32_t top, uint32_t instr) { ctx->stack.top = top; aotx_handleDiv(ctx, instr); }
+NOINLINE void aotDivSlowR(VMContext* ctx, int32_t top, uint32_t instr, GMLReal kv) { aotSlowPushR(ctx, top, kv); aotx_handleDiv(ctx, instr); }
+// convKey is (dstType << 4) | srcType, as AOT_CONV makes it.
+NOINLINE void aotConvSlow(VMContext* ctx, int32_t top, uint32_t convKey) {
+    ctx->stack.top = top;
+    aotx_handleConv(ctx, (uint8_t) (convKey & 0xF), (uint8_t) (convKey >> 4), (uint8_t) convKey);
+}
+// The truth of the bool handleCmp left at slot: aotTruth, which is defined further down.
+static inline int aotSlowTruth(const RValue* v) { return vmToInt32Fast(v) != 0; }
+NOINLINE int aotCmpSlowTruth(VMContext* ctx, int32_t top, uint32_t instr) {
+    ctx->stack.top = top;
+    aotx_handleCmp(ctx, instr);
+    return aotSlowTruth(&ctx->stack.slots[top - 2]);
+}
+NOINLINE int aotCmpSlowK(VMContext* ctx, int32_t top, uint32_t instr, int32_t k) {
+    aotSlowPushK(ctx, top, k);
+    aotx_handleCmp(ctx, instr);
+    return aotSlowTruth(&ctx->stack.slots[top - 1]);
+}
+NOINLINE void aotCoerceInt64(RValue* val) {
+#ifndef NO_RVALUE_INT64
+    *val = (RValue) { .real = (GMLReal) val->int64, .type = RVALUE_REAL, .gmlStackType = GML_TYPE_DOUBLE };
+#else
+    (void) val;
+#endif
+}
+NOINLINE void aotBadString(VMContext* ctx, int32_t stringIndex) {
+    logError("AOT: [%s] string %d is not in the game's string table\n", ctx->currentCodeName, (int) stringIndex);
+    abort();
+}
+#endif
+
 // ---[ Frame, deopt and checks ]---
 
 // The generated code addresses the stack frame as S[depth] with S = &slots[B], B being ctx->stack.top on entry.
@@ -332,9 +408,13 @@ static inline float aotBitsFloat(uint32_t b) { float v; memcpy(&v, &b, sizeof v)
     do { AOT_SET_INT(&S[d], (v), (gmlType)); AOT_OPAQUE(d); } while (0)
 #define AOT_PUSH_REAL(d, v, gmlType) \
     do { AOT_SET_REAL(&S[d], (v), (gmlType)); AOT_OPAQUE(d); } while (0)
+// An int constant's push and the Conv.i.d after it: what the two leave (the push's int and zeroed rest, then the
+// Conv's real over it, which is all of it unless reals are floats).
+#define AOT_PUSH_INT_REAL(d, k) \
+    do { AOT_SET_INT(&S[d], (k), GML_TYPE_DOUBLE); S[d].real = (GMLReal) (k); S[d].type = RVALUE_REAL; AOT_OPAQUE(d); } while (0)
 #define AOT_PUSH_STRING(d, stringIndex) \
     do { \
-        require((stringIndex) >= 0 && ctx->dataWin->strg.count > (uint32_t) (stringIndex)); \
+        if (__builtin_expect(!((stringIndex) >= 0 && ctx->dataWin->strg.count > (uint32_t) (stringIndex)), 0)) aotBadString(ctx, (stringIndex)); \
         S[d] = (RValue) { .string = ctx->dataWin->strg.strings[stringIndex], .type = RVALUE_STRING, .gmlStackType = GML_TYPE_STRING }; \
     } while (0)
 
@@ -408,9 +488,22 @@ AOT_INLINE void aotStoreInto(RValue* dst, RValue* src) {
     else *dst = *src;
 }
 
+// coerceIntStoreToRealInPlace with its int64 arm (a conversion libgcc does, __aeabi_l2d) out of line: an int64 on the
+// stack is rare, and the arm was a third of every store's inline code.
+AOT_INLINE void aotCoerceIntStore(RValue* val, uint8_t type2) {
+    if (type2 == GML_TYPE_INT32 || type2 == GML_TYPE_INT64 || type2 == GML_TYPE_INT16) {
+        if (val->type == RVALUE_INT32) {
+            *val = (RValue) { .real = (GMLReal) val->int32, .type = RVALUE_REAL, .gmlStackType = GML_TYPE_DOUBLE };
+        }
+#ifndef NO_RVALUE_INT64
+        else if (__builtin_expect(val->type == RVALUE_INT64, 0)) aotCoerceInt64(val);
+#endif
+    }
+}
+
 // coerceIntStoreToRealInPlace followed by storeStackValueIntoSlot: the OP_POP fast path's store.
 #define AOT_STORE(dst, d, type2) \
-    do { RValue* s_ = &S[(d) - 1]; coerceIntStoreToRealInPlace(s_, (type2)); aotStoreInto((dst), s_); } while (0)
+    do { RValue* s_ = &S[(d) - 1]; aotCoerceIntStore(s_, (type2)); aotStoreInto((dst), s_); } while (0)
 
 // Pop.v.v <scope>.<var>: aotPopVarFast, else slow (aotPopVarSlow).
 #define AOT_POP_VAR(d, scope, varIdx, type2, slow) \
@@ -659,14 +752,14 @@ void aotFreeCopy(const RValue* v);
 #define AOT_ARITH(d, op, resultType, slow) \
     do { \
         if (__builtin_expect(!vmArithNumbers(&S[(d) - 2], &S[(d) - 1], (op), (resultType)), 0)) { \
-            AOT_SYNC(d); slow(ctx, (resultType)); \
+            slow(ctx, B + (d), (resultType)); \
         } \
         AOT_OPAQUE((d) - 2); \
     } while (0)
 
-#define AOT_ADD(d, resultType) AOT_ARITH(d, VM_ARITH_ADD, resultType, aotx_handleAddSlow)
-#define AOT_SUB(d, resultType) AOT_ARITH(d, VM_ARITH_SUB, resultType, aotx_handleSubSlow)
-#define AOT_MUL(d, resultType) AOT_ARITH(d, VM_ARITH_MUL, resultType, aotx_handleMulSlow)
+#define AOT_ADD(d, resultType) AOT_ARITH(d, VM_ARITH_ADD, resultType, aotAddSlow)
+#define AOT_SUB(d, resultType) AOT_ARITH(d, VM_ARITH_SUB, resultType, aotSubSlow)
+#define AOT_MUL(d, resultType) AOT_ARITH(d, VM_ARITH_MUL, resultType, aotMulSlow)
 
 // The RValue a constant push stores: Push.i/Push.e (k, typed pushType) and Push.d (kv).
 #define AOT_KR(kv) ((RValue) { .real = (kv), .type = RVALUE_REAL, .gmlStackType = GML_TYPE_DOUBLE })
@@ -690,20 +783,53 @@ void aotFreeCopy(const RValue* v);
         AOT_OPAQUE((d) - 1); \
     } while (0)
 
-#define AOT_ADD_K(d, k, pushType, resultType) AOT_ARITH_C(d, VM_ARITH_ADD, AOT_KI_STATIC(k, pushType), resultType, aotx_handleAddSlow)
-#define AOT_SUB_K(d, k, pushType, resultType) AOT_ARITH_C(d, VM_ARITH_SUB, AOT_KI_STATIC(k, pushType), resultType, aotx_handleSubSlow)
-#define AOT_MUL_K(d, k, pushType, resultType) AOT_ARITH_C(d, VM_ARITH_MUL, AOT_KI_STATIC(k, pushType), resultType, aotx_handleMulSlow)
-#define AOT_ADD_R(d, kv, resultType) AOT_ARITH_C(d, VM_ARITH_ADD, AOT_KR_LOCAL(kv), resultType, aotx_handleAddSlow)
-#define AOT_SUB_R(d, kv, resultType) AOT_ARITH_C(d, VM_ARITH_SUB, AOT_KR_LOCAL(kv), resultType, aotx_handleSubSlow)
-#define AOT_MUL_R(d, kv, resultType) AOT_ARITH_C(d, VM_ARITH_MUL, AOT_KR_LOCAL(kv), resultType, aotx_handleMulSlow)
+// The slow half as one call: the constant's push, the sync and the handler (aot<Op>SlowK for an int16 constant, which
+// nearly every int constant is; aot<Op>SlowR for a real). An int32 constant keeps the spelled-out half.
+#define AOT_ARITH_KI(d, op, k, pushType, resultType, slow, slowK) \
+    do { \
+        AOT_KI_STATIC(k, pushType); \
+        if (__builtin_expect(!vmArithNumbers(&S[(d) - 1], &k_, (op), (resultType)), 0)) { \
+            if ((pushType) == GML_TYPE_INT16) slowK(ctx, B + (d), (k), (resultType)); \
+            else { S[d] = k_; AOT_SYNC((d) + 1); slow(ctx, (resultType)); } \
+        } \
+        AOT_OPAQUE((d) - 1); \
+    } while (0)
+#define AOT_ARITH_KR(d, op, kv, resultType, slowR) \
+    do { \
+        AOT_KR_LOCAL(kv); \
+        if (__builtin_expect(!vmArithNumbers(&S[(d) - 1], &k_, (op), (resultType)), 0)) slowR(ctx, B + (d), (resultType), (kv)); \
+        AOT_OPAQUE((d) - 1); \
+    } while (0)
+
+#define AOT_ADD_K(d, k, pushType, resultType) AOT_ARITH_KI(d, VM_ARITH_ADD, k, pushType, resultType, aotx_handleAddSlow, aotAddSlowK)
+#define AOT_SUB_K(d, k, pushType, resultType) AOT_ARITH_KI(d, VM_ARITH_SUB, k, pushType, resultType, aotx_handleSubSlow, aotSubSlowK)
+#define AOT_MUL_K(d, k, pushType, resultType) AOT_ARITH_KI(d, VM_ARITH_MUL, k, pushType, resultType, aotx_handleMulSlow, aotMulSlowK)
+#define AOT_ADD_R(d, kv, resultType) AOT_ARITH_KR(d, VM_ARITH_ADD, kv, resultType, aotAddSlowR)
+#define AOT_SUB_R(d, kv, resultType) AOT_ARITH_KR(d, VM_ARITH_SUB, kv, resultType, aotSubSlowR)
+#define AOT_MUL_R(d, kv, resultType) AOT_ARITH_KR(d, VM_ARITH_MUL, kv, resultType, aotMulSlowR)
 
 // Div of two plain numbers (vmDivNumbers, as executeLoop does it), else handleDiv. type2 is the instruction's type2.
 #define AOT_DIV(d, instr, type2, intDivide) \
     do { \
         if (__builtin_expect(!vmDivNumbers(&S[(d) - 2], &S[(d) - 1], (intDivide), (type2), ctx->currentCodeName), 0)) { \
-            AOT_SYNC(d); aotx_handleDiv(ctx, (instr)); \
+            aotDivSlow(ctx, B + (d), (instr)); \
         } \
         AOT_OPAQUE((d) - 2); \
+    } while (0)
+
+// An int constant's push, its Conv.i.d and the Div (x / 2): vmDivNumbers with the constant as the divisor, which
+// only goes onto the stack in the slow half. d is the depth before the push. The divisor goes behind a barrier
+// (AOT_OPAQUE_REAL, below): with -ffast-math GCC multiplies by a constant divisor's reciprocal, which rounds
+// differently from the interpreter's divide.
+#define AOT_DIV_R(d, instr, kv, type2, intDivide) \
+    do { \
+        GMLReal kv_ = (kv); \
+        AOT_OPAQUE_REAL(kv_); \
+        RValue k_ = AOT_KR(kv_); \
+        if (__builtin_expect(!vmDivNumbers(&S[(d) - 1], &k_, (intDivide), (type2), ctx->currentCodeName), 0)) { \
+            aotDivSlowR(ctx, B + (d), (instr), (kv)); \
+        } \
+        AOT_OPAQUE((d) - 1); \
     } while (0)
 
 // Any other handler that pops and pushes a known number of values and cannot leave an exception behind.
@@ -783,7 +909,7 @@ GMLReal aotFmodOut(GMLReal x, GMLReal y);
     do { \
         RValue* t_ = &S[(d) - 1]; \
         if (__builtin_expect(vmConvFast(t_, (uint8_t) (((dstType) << 4) | (srcType))), 1)) t_->gmlStackType = (dstType); \
-        else { AOT_SYNC(d); aotx_handleConv(ctx, (srcType), (dstType), (uint8_t) (((dstType) << 4) | (srcType))); } \
+        else aotConvSlow(ctx, B + (d), (uint8_t) (((dstType) << 4) | (srcType))); \
         AOT_OPAQUE((d) - 1); \
     } while (0)
 
@@ -828,7 +954,7 @@ AOT_INLINE bool aotTruth(RValue* v) {
 #define AOT_CMP_BRANCH(d, instr, kind, branchIfTrue, label) \
     do { \
         int r_ = aotCmpFast(&S[(d) - 2], &S[(d) - 1], (kind)); \
-        if (__builtin_expect(r_ < 0, 0)) { AOT_SYNC(d); aotx_handleCmp(ctx, (instr)); r_ = aotTruth(&S[(d) - 2]); } \
+        if (__builtin_expect(r_ < 0, 0)) r_ = aotCmpSlowTruth(ctx, B + (d), (instr)); \
         if ((r_ != 0) == (branchIfTrue)) goto label; \
     } while (0)
 
@@ -855,21 +981,28 @@ AOT_INLINE int aotCmpFastK(RValue* a, GMLReal kv, uint8_t kind) {
     return vmCmpHolds(vmCmpOrder(diff), kind);
 }
 
-// kslot is the RValue the push would have stored (AOT_KI / AOT_KR): handleCmp needs it on the stack.
-#define AOT_CMP_K_SLOW(d, instr, kslot) \
-    do { S[d] = kslot; AOT_SYNC((d) + 1); aotx_handleCmp(ctx, (instr)); } while (0)
+// kslot is the RValue the push would have stored (AOT_KI / AOT_KR): handleCmp needs it on the stack. An int16
+// constant (AOT_KI(k, 15), which nearly every one is) takes the one-call slow half, aotCmpSlowK, which also reads
+// the bool handleCmp leaves into r; any other constant is spelled out, and r is then truth (the branch's read of
+// that bool, or nothing). The constant's tags are compile-time constants, so only one of the two is ever emitted.
+#define AOT_CMP_K_SLOW(d, instr, kslot, r, truth) \
+    do { \
+        const RValue ks_ = kslot; \
+        if (ks_.type == RVALUE_INT32 && ks_.gmlStackType == GML_TYPE_INT16) r = aotCmpSlowK(ctx, B + (d), (instr), ks_.int32); \
+        else { S[d] = ks_; AOT_SYNC((d) + 1); aotx_handleCmp(ctx, (instr)); r = truth; } \
+    } while (0)
 
 #define AOT_CMP_K(d, instr, kind, kv, kslot) \
     do { \
         int r_ = aotCmpFastK(&S[(d) - 1], (kv), (kind)); \
         if (__builtin_expect(r_ >= 0, 1)) vmSetCmpBoolInPlace(&S[(d) - 1], r_); \
-        else AOT_CMP_K_SLOW(d, instr, kslot); \
+        else AOT_CMP_K_SLOW(d, instr, kslot, r_, 0); \
     } while (0)
 
 #define AOT_CMP_K_BRANCH(d, instr, kind, kv, kslot, branchIfTrue, label) \
     do { \
         int r_ = aotCmpFastK(&S[(d) - 1], (kv), (kind)); \
-        if (__builtin_expect(r_ < 0, 0)) { AOT_CMP_K_SLOW(d, instr, kslot); r_ = aotTruth(&S[(d) - 1]); } \
+        if (__builtin_expect(r_ < 0, 0)) AOT_CMP_K_SLOW(d, instr, kslot, r_, aotTruth(&S[(d) - 1])); \
         if ((r_ != 0) == (branchIfTrue)) goto label; \
     } while (0)
 
@@ -1105,6 +1238,223 @@ AOT_INLINE GMLReal aotMathPointDistance(GMLReal x1, GMLReal y1, GMLReal x2, GMLR
     do { if (aotStressPeriod != 0 && ++aotStressCounter % aotStressPeriod == 0) AOT_DEOPT(d, addr); } while (0)
 #else
 #define AOT_BLOCK(d, addr) do { } while (0)
+#endif
+
+// ---[ gmlaot.py's GMLAOT_SHRINK passes (change aotshrink2) ]---
+//
+// Each is used only by code generated with its pass on. They are at the end of the header so that no line above
+// moves (the stress build's AOT_CVERIFY passes __LINE__).
+
+// cstorek: a number constant's push and the Pop.v that stores it, as one store. kv is what the two leave in the
+// variable, a real (gmlaot.py's fuse_store: an int constant popped as an int is coerced to one, a double constant is
+// one), so the store's test of the value's type is decided here and the value never goes through the stack: the slot
+// above the top keeps what it had, which nothing reads. Over a value that owns a reference storeStackValueIntoSlot
+// frees it (RValue_free) and then copies; aotFreeCopy frees it through a copy, and every field is written after.
+#define AOT_STORE_K(dst, kv) \
+    do { \
+        RValue* t_ = (dst); \
+        if (__builtin_expect(t_->ownsReference, 0)) aotFreeCopy(t_); \
+        AOT_SET_REAL(t_, (kv), GML_TYPE_DOUBLE); \
+    } while (0)
+
+// AOT_CSTORE with the constant's push fused: push (the constant's AOT_PUSH_INT or AOT_PUSH_REAL at the pop's depth
+// less one) runs only ahead of slow, which pops it from the stack as before.
+#define AOT_CSTORE_K(p, scope, varID, kv, push, slow, alias, refind) \
+    do { \
+        AOT_CVERIFY(p, scope, varID); \
+        const bool ins_ = (p) == nullptr; \
+        if (__builtin_expect(ins_, 0)) (p) = aotSlotWrite(ctx, (scope), (varID)); \
+        if (__builtin_expect((p) != nullptr, 1)) { AOT_STORE_K((p), kv); } else { push; slow; } \
+        if (__builtin_expect(ins_, 0)) { \
+            if ((p) != nullptr) { alias; } \
+            if ((p) == nullptr || aotGrew) { refind; } \
+        } \
+    } while (0)
+
+// callz: a Call.i whose result the next instruction discards (Popz), as one call. Each function does what its
+// AOT_CALL macro does (the stack's top and ctx->ip set, the call, the check that the stack is one result above the
+// arguments with no exception pending) and then the Popz: the result freed through a copy when it owns a reference.
+// It returns 0, or the Popz's address when the check fails: the interpreter carries on from the Popz, as it does after
+// AOT_CHECK, and frees the result itself. The site's word holds the Call's address (bits 0-23, in instructions) and
+// its argument count (bits 24-31); the instruction word is Call.i's with that count (0xD902<argc>), which gmlaot.py
+// checks, and the function operand is in the bytecode at ctx->bytecodeBase, the generated function's BC.
+// The functions are defined once, in aot_table.c (bit 1 of AOT_SLOW_HALVES_DEFINE, set when the pass is on).
+uint32_t aotCallZ(VMContext* ctx, int32_t top, uint32_t site);
+uint32_t aotCallScriptZ(VMContext* ctx, int32_t top, uint32_t site, uint32_t funcIndex);
+uint32_t aotCallBuiltinZ(VMContext* ctx, int32_t top, uint32_t site, uint32_t funcIndex);
+#define AOT_CALLZ_WORD(addr, argc) ((uint32_t) ((addr) >> 2) | ((uint32_t) (argc) << 24))
+#define AOT_CALLZ_DO(call) do { uint32_t ip_ = (call); if (__builtin_expect(ip_ != 0, 0)) AOT_DEOPT_AT(ip_); } while (0)
+#define AOT_CALL_Z(d, addr, argc) AOT_CALLZ_DO(aotCallZ(ctx, B + (d), AOT_CALLZ_WORD(addr, argc)))
+#define AOT_CALL_SCRIPT_Z(d, addr, argc, funcIndex) \
+    AOT_CALLZ_DO(aotCallScriptZ(ctx, B + (d), AOT_CALLZ_WORD(addr, argc), (funcIndex)))
+#define AOT_CALL_BUILTIN_Z(d, addr, argc, funcIndex) \
+    AOT_CALLZ_DO(aotCallBuiltinZ(ctx, B + (d), AOT_CALLZ_WORD(addr, argc), (funcIndex)))
+
+#if defined(AOT_SLOW_HALVES_DEFINE) && (AOT_SLOW_HALVES_DEFINE & 2)
+#define AOT_CALLZ_BEGIN() \
+    const uint32_t addr = (site & 0xFFFFFFu) << 2, argc = site >> 24, instr = 0xD9020000u | argc; \
+    ctx->stack.top = top; \
+    ctx->ip = addr + 8
+// AOT_CHECK(dAfter, addr + 8), then AOT_POPZ(dAfter - 1): expect is the stack's top after the call, B + dAfter.
+static inline uint32_t aotCallZEnd(VMContext* ctx, int32_t expect, uint32_t next) {
+    if (__builtin_expect(ctx->stack.top != expect || AOT_EXCEPTION_PENDING(), 0)) return next;
+    const RValue* result = &ctx->stack.slots[expect - 1];
+    if (__builtin_expect(result->ownsReference, 0)) aotFreeCopy(result);
+    return 0;
+}
+NOINLINE uint32_t aotCallZ(VMContext* ctx, int32_t top, uint32_t site) {
+    AOT_CALLZ_BEGIN();
+    aotx_handleCall(ctx, instr, ctx->bytecodeBase + addr + 4);
+    return aotCallZEnd(ctx, top - (int32_t) argc + 1, addr + 8);
+}
+NOINLINE uint32_t aotCallScriptZ(VMContext* ctx, int32_t top, uint32_t site, uint32_t funcIndex) {
+    AOT_CALLZ_BEGIN();
+    aotCallScript(ctx, instr, ctx->bytecodeBase + addr + 4, funcIndex);
+    return aotCallZEnd(ctx, top - (int32_t) argc + 1, addr + 8);
+}
+NOINLINE uint32_t aotCallBuiltinZ(VMContext* ctx, int32_t top, uint32_t site, uint32_t funcIndex) {
+    AOT_CALLZ_BEGIN();
+    aotCallBuiltin(ctx, instr, ctx->bytecodeBase + addr + 4, funcIndex);
+    return aotCallZEnd(ctx, top - (int32_t) argc + 1, addr + 8);
+}
+#endif
+
+// storetail: AOT_CSTORE's cold half, the pointer being nullptr, as one call. aotStoreMiss does what the macro spells
+// out at every site: aotSlotWrite; with a slot, the store (AOT_STORE of the value at the stack's top - 1); with none
+// (no instance), the site, aotSitePopVar. It takes the site's own operands (AOT_SITE_POPVAR's word and the variable
+// operand): the scope is the word's code (self, other or global, the only scopes with cached slots) and the varID is
+// the variable's, which aotMatches has checked against the one the generator saw. It returns the slot when the
+// variable was inserted without growing the map: only alias runs then, as before. Otherwise it returns nullptr with
+// the address to hand over at in aotMissIp, or 0 there: the map grew, or the site ran, and refind looks up every
+// pointer still good and this one again (before, alias ran ahead of refind when the map grew; refind looks up
+// alias's pointers too, and a lookup changes nothing, so the pointers end up the same).
+// A pointer that is good takes the same one test and the same store as in AOT_CSTORE.
+// Defined once, in aot_table.c (bit 2 of AOT_SLOW_HALVES_DEFINE, set when the pass is on).
+extern uint32_t aotMissIp;
+RValue* aotStoreMiss(VMContext* ctx, int32_t top, uint32_t site, uint32_t varRef);
+#define AOT_STORE_MISS(d, p, addr, ic, type2, varRef, alias, refind) \
+    do { \
+        (p) = aotStoreMiss(ctx, B + (d), (uint32_t) ((addr) >> 2) | ((uint32_t) (ic) << 24) | ((uint32_t) (type2) << 28), (varRef)); \
+        if ((p) != nullptr) { alias; } \
+        else { const uint32_t ip_ = aotMissIp; if (__builtin_expect(ip_ != 0, 0)) AOT_DEOPT_AT(ip_); refind; } \
+    } while (0)
+#define AOT_CSTORE_T(d, p, scope, varID, addr, ic, type2, varRef, alias, refind) \
+    do { \
+        AOT_CVERIFY(p, scope, varID); \
+        if (__builtin_expect((p) != nullptr, 1)) { AOT_STORE((p), d, type2); } \
+        else AOT_STORE_MISS(d, p, addr, ic, type2, varRef, alias, refind); \
+    } while (0)
+// With cstorek's constant: push (the constant's, at d - 1) runs ahead of the call, which stores it from the stack.
+#define AOT_CSTORE_KT(d, p, scope, varID, kv, push, addr, ic, type2, varRef, alias, refind) \
+    do { \
+        AOT_CVERIFY(p, scope, varID); \
+        if (__builtin_expect((p) != nullptr, 1)) { AOT_STORE_K((p), kv); } \
+        else { push; AOT_STORE_MISS(d, p, addr, ic, type2, varRef, alias, refind); } \
+    } while (0)
+
+#if defined(AOT_SLOW_HALVES_DEFINE) && (AOT_SLOW_HALVES_DEFINE & 4)
+uint32_t aotMissIp;
+NOINLINE RValue* aotStoreMiss(VMContext* ctx, int32_t top, uint32_t site, uint32_t varRef) {
+    const uint32_t code = (site >> 24) & 3u;
+    RValue* p = aotSlotWrite(ctx, code == 0 ? INSTANCE_SELF : code == 1 ? INSTANCE_OTHER : INSTANCE_GLOBAL,
+                             ctx->dataWin->vari.variables[varRef & 0x07FFFFFFu].varID);
+    if (p == nullptr) {
+        aotMissIp = aotSitePopVar(ctx, top, site, varRef);
+        return nullptr;
+    }
+    RValue* s = &ctx->stack.slots[top - 1];
+    aotCoerceIntStore(s, (uint8_t) (site >> 28));
+    aotStoreInto(p, s);
+    aotMissIp = 0;
+    return aotGrew ? nullptr : p;
+}
+#endif
+
+// ---[ The slow halves as they were before the codeshrink-aot unit (astrarev2 ASHR-3, 2026-11-16) ]---
+//
+// The unit's forms above are qualified for UNDERTALE only. gmlaot.py writes AOT_SHRINK_FORMS into every file it
+// generates for a run whose games are all WAD 16 (FORMS_LINE), and AOT_SLOW_HALVES_DEFINE into that run's
+// aot_table.c. A file with neither (DELTARUNE's) gets these, 09ad2939b's text of each macro the unit changed, and
+// compiles as it did before the unit. They are at the end so that no line above moves.
+#if defined(AOT_SLOW_HALVES_DEFINE) && !defined(AOT_SHRINK_FORMS)
+#define AOT_SHRINK_FORMS 1
+#endif
+#ifndef AOT_SHRINK_FORMS
+#undef AOT_PUSH_STRING
+#undef AOT_STORE
+#undef AOT_ARITH
+#undef AOT_ADD
+#undef AOT_SUB
+#undef AOT_MUL
+#undef AOT_ADD_K
+#undef AOT_SUB_K
+#undef AOT_MUL_K
+#undef AOT_ADD_R
+#undef AOT_SUB_R
+#undef AOT_MUL_R
+#undef AOT_DIV
+#undef AOT_CONV
+#undef AOT_CMP_BRANCH
+#undef AOT_CMP_K_SLOW
+#undef AOT_CMP_K
+#undef AOT_CMP_K_BRANCH
+#define AOT_PUSH_STRING(d, stringIndex) \
+    do { \
+        require((stringIndex) >= 0 && ctx->dataWin->strg.count > (uint32_t) (stringIndex)); \
+        S[d] = (RValue) { .string = ctx->dataWin->strg.strings[stringIndex], .type = RVALUE_STRING, .gmlStackType = GML_TYPE_STRING }; \
+    } while (0)
+#define AOT_STORE(dst, d, type2) \
+    do { RValue* s_ = &S[(d) - 1]; coerceIntStoreToRealInPlace(s_, (type2)); aotStoreInto((dst), s_); } while (0)
+#define AOT_ARITH(d, op, resultType, slow) \
+    do { \
+        if (__builtin_expect(!vmArithNumbers(&S[(d) - 2], &S[(d) - 1], (op), (resultType)), 0)) { \
+            AOT_SYNC(d); slow(ctx, (resultType)); \
+        } \
+        AOT_OPAQUE((d) - 2); \
+    } while (0)
+#define AOT_ADD(d, resultType) AOT_ARITH(d, VM_ARITH_ADD, resultType, aotx_handleAddSlow)
+#define AOT_SUB(d, resultType) AOT_ARITH(d, VM_ARITH_SUB, resultType, aotx_handleSubSlow)
+#define AOT_MUL(d, resultType) AOT_ARITH(d, VM_ARITH_MUL, resultType, aotx_handleMulSlow)
+#define AOT_ADD_K(d, k, pushType, resultType) AOT_ARITH_C(d, VM_ARITH_ADD, AOT_KI_STATIC(k, pushType), resultType, aotx_handleAddSlow)
+#define AOT_SUB_K(d, k, pushType, resultType) AOT_ARITH_C(d, VM_ARITH_SUB, AOT_KI_STATIC(k, pushType), resultType, aotx_handleSubSlow)
+#define AOT_MUL_K(d, k, pushType, resultType) AOT_ARITH_C(d, VM_ARITH_MUL, AOT_KI_STATIC(k, pushType), resultType, aotx_handleMulSlow)
+#define AOT_ADD_R(d, kv, resultType) AOT_ARITH_C(d, VM_ARITH_ADD, AOT_KR_LOCAL(kv), resultType, aotx_handleAddSlow)
+#define AOT_SUB_R(d, kv, resultType) AOT_ARITH_C(d, VM_ARITH_SUB, AOT_KR_LOCAL(kv), resultType, aotx_handleSubSlow)
+#define AOT_MUL_R(d, kv, resultType) AOT_ARITH_C(d, VM_ARITH_MUL, AOT_KR_LOCAL(kv), resultType, aotx_handleMulSlow)
+#define AOT_DIV(d, instr, type2, intDivide) \
+    do { \
+        if (__builtin_expect(!vmDivNumbers(&S[(d) - 2], &S[(d) - 1], (intDivide), (type2), ctx->currentCodeName), 0)) { \
+            AOT_SYNC(d); aotx_handleDiv(ctx, (instr)); \
+        } \
+        AOT_OPAQUE((d) - 2); \
+    } while (0)
+#define AOT_CONV(d, srcType, dstType) \
+    do { \
+        RValue* t_ = &S[(d) - 1]; \
+        if (__builtin_expect(vmConvFast(t_, (uint8_t) (((dstType) << 4) | (srcType))), 1)) t_->gmlStackType = (dstType); \
+        else { AOT_SYNC(d); aotx_handleConv(ctx, (srcType), (dstType), (uint8_t) (((dstType) << 4) | (srcType))); } \
+        AOT_OPAQUE((d) - 1); \
+    } while (0)
+#define AOT_CMP_BRANCH(d, instr, kind, branchIfTrue, label) \
+    do { \
+        int r_ = aotCmpFast(&S[(d) - 2], &S[(d) - 1], (kind)); \
+        if (__builtin_expect(r_ < 0, 0)) { AOT_SYNC(d); aotx_handleCmp(ctx, (instr)); r_ = aotTruth(&S[(d) - 2]); } \
+        if ((r_ != 0) == (branchIfTrue)) goto label; \
+    } while (0)
+#define AOT_CMP_K_SLOW(d, instr, kslot) \
+    do { S[d] = kslot; AOT_SYNC((d) + 1); aotx_handleCmp(ctx, (instr)); } while (0)
+#define AOT_CMP_K(d, instr, kind, kv, kslot) \
+    do { \
+        int r_ = aotCmpFastK(&S[(d) - 1], (kv), (kind)); \
+        if (__builtin_expect(r_ >= 0, 1)) vmSetCmpBoolInPlace(&S[(d) - 1], r_); \
+        else AOT_CMP_K_SLOW(d, instr, kslot); \
+    } while (0)
+#define AOT_CMP_K_BRANCH(d, instr, kind, kv, kslot, branchIfTrue, label) \
+    do { \
+        int r_ = aotCmpFastK(&S[(d) - 1], (kv), (kind)); \
+        if (__builtin_expect(r_ < 0, 0)) { AOT_CMP_K_SLOW(d, instr, kslot); r_ = aotTruth(&S[(d) - 1]); } \
+        if ((r_ != 0) == (branchIfTrue)) goto label; \
+    } while (0)
 #endif
 
 #endif

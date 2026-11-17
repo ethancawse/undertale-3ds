@@ -11,7 +11,13 @@ import subprocess
 NAME = '__wrap_CtrTextures_beginFrame'
 TAIL = 'oomport_tail_FvgPalette_earlyRetry'
 SLOT = 268
-BIN = 'C:/devkitPro/devkitARM/bin/arm-none-eabi-'
+def arm_tool(name):
+    """A devkitARM tool for the lab audits below (never a fixed devkitPro folder; builds only use retain())."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'buildcache'))
+    import devkit_tools
+    return devkit_tools.arm_tools(name)[0]
 
 
 def loaded_bytes(path, address, size):
@@ -37,7 +43,7 @@ def audit_compiler_locals(base, candidate):
     no moved table or changed functional contents qualifies.
     """
     def tables(path):
-        text = subprocess.run([BIN + 'nm.exe', '-n', '-S', '--defined-only', str(path)],
+        text = subprocess.run([arm_tool('nm'), '-n', '-S', '--defined-only', str(path)],
                               stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, check=True, timeout=30).stdout
         result = {}
@@ -94,7 +100,7 @@ def audit_elf(base, candidate):
     or computes this wrapper's tail address.
     """
     def command(tool, *args):
-        return subprocess.run([BIN + tool + '.exe', *map(str, args)],
+        return subprocess.run([arm_tool(tool), *map(str, args)],
                               stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, check=True, timeout=30).stdout
 

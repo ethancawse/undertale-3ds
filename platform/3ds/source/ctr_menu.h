@@ -78,4 +78,14 @@ static inline __attribute__((always_inline)) u32 CtrMenu_fold(u32 down) {
 #define CTR_MENU_FOLD(down) ((down) | (((down) >> 24) & 0xF0u))
 #endif
 
+// Whether the menu's close writes settings.ini. Shots builds' --ini opt_probe=3 (change optplan: console rows on lab
+// consoles, whose settings.ini stays as it was) turns it off: main.c's save and the 3DS page's owed line both ask.
+// Every other build: true, as a constant.
+#ifdef CTRPORT_PLAYER_SHOTS
+extern bool CtrOptmenu_probeNoSave;
+#define CTR_MENU_SAVES (!CtrOptmenu_probeNoSave)
+#else
+#define CTR_MENU_SAVES true
+#endif
+
 #endif

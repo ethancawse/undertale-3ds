@@ -23,8 +23,10 @@ def route(text, source, chapter_prefix='BxN'):
                    ('optActivate', 'Bx_menuActivate', 'Bx_menuActivateOriginal'),
                    # battletouch (11-08): the main page's keys and draw go through its Battle layout and Battle
                    # stylus rows (z_battletouch.c), which call the originals; optRow and the menu's state by name only.
-                   ('optKeys', 'CtrOptbattle_keys', 'CtrOptbattle_keysOriginal'),
-                   ('optCompose', 'CtrOptbattle_compose', 'CtrOptbattle_composeOriginal'),
+                   # optplan (11-15): now the 3DS Options page's main page and page (CtrOpt3ds_*, z_battletouch.c's
+                   # end), which call the same originals; CtrOptbattle_keys/compose stay in place, unreached.
+                   ('optKeys', 'CtrOpt3ds_keys', 'CtrOptbattle_keysOriginal'),
+                   ('optCompose', 'CtrOpt3ds_compose', 'CtrOptbattle_composeOriginal'),
                    ('optRow', None, 'CtrOptbattle_row'),
                    ('opt', None, 'CtrOptbattle_state')]
     elif source == 'main.c':

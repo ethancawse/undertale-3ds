@@ -270,6 +270,7 @@ OPT_STR(optFmtProbeKey, " opt_probe = %d");
 OPT_STR(optAutopauseName, "autopause.txt");
 OPT_STR(optAutopauseText, "300 3000\n");
 OPT_STR(optLogBuiltin, "optprobe: built-in steps (--ini opt_probe=1), menu at frame 300\n");
+OPT_STR(optLogNoSave, "optprobe: 3DS Options steps (--ini opt_probe=3), menu at frame 300; its close saves nothing\n");
 // One key per press, " = %d" like the other --ini keys, so the lab queue's lint knows them and none is "given twice"
 OPT_STR(optFmtPressAt, " opt_press_at = %d");
 OPT_STR(optFmtPressAt2, " opt_press_at2 = %d");
@@ -279,6 +280,11 @@ OPT_STR(optLogPress, "optprobe: SELECT %s at frame %u%s\n");
 OPT_STR(optLogDown, "down");
 OPT_STR(optLogUp, "up");
 OPT_STR(optLogLegacy, " (as before: open on release, font sampled, no early backlight)");
+#ifdef ENABLE_WAD16
+OPT_STR(optLogLat, "optlat: press read at vblank %lu; compose from +%lu us (vblank +%ld, its buffer scanned %u), copy "
+                   "from +%lu us (vblank +%ld) for %lu us (copied buffer scanned %u); next read +%lu us (vblank +%ld, "
+                   "copied buffer scanned %u), top flips %lu\n");
+#endif
 OPT_STR(optLogOpened, "optmenu: open at frame %u: page shown after %lu us (placed %d), opened in %lu us\n");
 OPT_STR(optLogGlyphs, "optmenu: %u glyphs read from resident tiles (%u of 96) in %lu us\n");
 #endif
@@ -903,6 +909,12 @@ static void optFlushFrame(CtrMenu* menu);
 #define OPT_COPY_SHOWN memcpy
 #define OPT_FLUSH_FRAME optFlush
 #endif
+#if defined(ENABLE_WAD16) && defined(CTRPORT_PLAYER_SHOTS) // E5#13's press timing (change optplan): at the file's end
+static void optLatStep(uint8_t step);
+#define OPT_LAT(step) optLatStep(step)
+#else
+#define OPT_LAT(step) ((void) 0)
+#endif
 #line 879 // menufirst: the numbering before it (the __LINE__ trap)
 OPT_STATIC void optFlush(CtrMenu* menu) {
     if (!menu->open) return;
@@ -913,17 +925,30 @@ OPT_STATIC void optFlush(CtrMenu* menu) {
     bool consolePage = menu->page != MENU_PAGE_OPTIONS || CtrLegal_shown();
     if (!opt.dirty && !consolePage) return;
     CtrLog_beginConsole();
+#ifdef CTRPORT_PLAYER_SHOTS
+    uint64_t t0 = 0, t1 = 0;
+#endif
     if (!consolePage) {
 #ifdef CTRPORT_PLAYER_SHOTS
-        uint64_t t0 = svcGetSystemTick();
+        OPT_LAT(1);
+        t0 = svcGetSystemTick();
         OPT_COMPOSE_PAGE(menu, opt.spareBase);
-        logInfo(optLogCompose, (unsigned long) ((svcGetSystemTick() - t0) / 268u));
+        t1 = svcGetSystemTick();
+        OPT_LAT(2);
 #else
         OPT_COMPOSE_PAGE(menu, opt.spareBase);
 #endif
     }
     OPT_COPY_SHOWN(opt.shownBase, opt.spareBase, OPT_PAGE_BYTES);
     GSPGPU_FlushDataCache(opt.shownBase, OPT_PAGE_BYTES);
+#ifdef CTRPORT_PLAYER_SHOTS
+    // The compose's line after the copy (E5#13), so that the copy follows the compose's vblank wait as in a release
+    // build: no log call between them.
+    if (!consolePage) {
+        OPT_LAT(3);
+        logInfo(optLogCompose, (unsigned long) ((t1 - t0) / 268u));
+    }
+#endif
     CtrLog_endConsole();
     opt.dirty = false;
 }
@@ -1343,6 +1368,7 @@ OPT_CODE CtrMenuAction __wrap_CtrArgui_menuUpdate(CtrMenu* menu, u32 down) {
 #ifdef CTRPORT_PLAYER_SHOTS
     down |= opt.pendingKeys;
     opt.pendingKeys = 0;
+    if (menu->open) OPT_LAT(down != 0 ? 4 : 0);
 #endif
     if (!menu->open) return MENU_ACTION_NONE;
     bool wasTop = CtrOptmenu_onTop;
@@ -1374,6 +1400,9 @@ OPT_STATIC void optProbeLoad(const char* path) {
         unsigned tick = 0;
         unsigned long key = 0;
         OptProbe* p = &opt.probe[opt.probes];
+        // A first line "opt_probe = N" takes --ini opt_probe=N's built-in steps, as a console row's (Azahar can't give
+        // a .3dsx arguments): the same steps, autopause.txt and opt_probe=3's no-save close (change optplan).
+        if (opt.probes == 0 && optProbeBuiltin(line)) break;
         p->done = 0;
         if (sscanf(line, optFmtKey, &tick, &key) == 2) p->kind = 1;
         else if (sscanf(line, optFmtOpenShot, &tick) == 1) p->kind = 2;
@@ -1495,13 +1524,30 @@ static const OptStep optSteps[] OPT_RO = {
     { 90, 1, 0x40 }, { 92, 1, 0x40 }, { 94, 1, 0x40 }, { 96, 1, 0x01 }, { 98, 2, 0x00 }, { 100, 1, 0x02 }, { 104, 1, 0x04 },
     { 20, 3, 0x00 }, { 120, 3, 0x00 },
 };
+// --ini opt_probe=3 (change optplan): the 3DS Options page on every target (its row is the main page's second). Down,
+// A opens the page; A twice on Dialogue, Battles (two values) and Stylus three times (three values), so each change
+// is undone; B back, SELECT to the game. The close writes nothing (CtrOptmenu_probeNoSave, ctr_menu.h: no settings.ini
+// save, no owed text_place line; 11-15: a lab console's settings.ini never changes, even if a run stops in the
+// middle). Keys 10 frames apart and
+// no shot within 7 frames after a key, so each "press's frame and the 7 after it" log line times the page alone;
+// one shot on the page (its last row) and one after the close.
+static const OptStep optSteps3ds[] OPT_RO = {
+    { 10, 1, 0x80 }, { 20, 1, 0x01 }, { 30, 1, 0x01 }, { 40, 1, 0x01 }, { 50, 1, 0x80 }, { 60, 1, 0x01 },
+    { 70, 1, 0x01 }, { 80, 1, 0x80 }, { 90, 1, 0x01 }, { 100, 1, 0x01 }, { 110, 1, 0x01 }, { 120, 2, 0x00 },
+    { 130, 1, 0x02 }, { 140, 1, 0x04 }, { 20, 3, 0x00 },
+};
+
+bool CtrOptmenu_probeNoSave; // ctr_menu.h's CTR_MENU_SAVES
 
 OPT_STATIC bool optProbeBuiltin(const char* line) {
     int value = 0;
-    if (sscanf(line, optFmtProbeKey, &value) != 1 || (value != 1 && value != 2)) return false;
+    if (sscanf(line, optFmtProbeKey, &value) != 1 || value < 1 || value > 3) return false;
     if (opt.probes != 0) return true; // applyIniOverrides runs twice
-    const OptStep* steps = value == 2 ? CtrCtrlui_probe : optSteps; // 2: the Controls page's steps (change ctrlui)
-    uint32_t count = value == 2 ? CtrCtrlui_probeCount : sizeof(optSteps) / sizeof(optSteps[0]);
+    CtrOptmenu_probeNoSave = value == 3; // the 3DS page's console rows: the close writes nothing
+    // 2: the Controls page's steps (change ctrlui); 3: the 3DS Options page's (change optplan)
+    const OptStep* steps = value == 2 ? CtrCtrlui_probe : value == 3 ? optSteps3ds : optSteps;
+    uint32_t count = value == 2 ? CtrCtrlui_probeCount
+                   : value == 3 ? sizeof(optSteps3ds) / sizeof(optSteps3ds[0]) : sizeof(optSteps) / sizeof(optSteps[0]);
     for (uint32_t i = 0; count > i; i++) {
         OptProbe* p = &opt.probe[i];
         p->tick = steps[i].tick; p->kind = steps[i].kind; p->done = 0; p->arg = steps[i].key;
@@ -1515,7 +1561,7 @@ OPT_STATIC bool optProbeBuiltin(const char* line) {
         fclose(f);
         opt.wroteAutopause = true;
     }
-    logInfo(optLogBuiltin);
+    logInfo(value == 3 ? optLogNoSave : optLogBuiltin);
     return true;
 }
 #endif
@@ -2100,4 +2146,59 @@ void CtrFpsdiag_draw(int32_t x, int32_t y, const char* text, uint32_t colour) {
 #if defined(ENABLE_WAD16) && defined(__3DS__)
 // gofps (z_gofps.c): the counter's painted rectangles by name, an exact alias (no C reference, no code change here).
 __asm__(".global CtrFpsbox_rect\n.set CtrFpsbox_rect, fps75Rect\n");
+#endif
+
+#if defined(ENABLE_WAD16) && defined(CTRPORT_PLAYER_SHOTS)
+// E5#13 (menulag's parked visible-frame question, change optplan 11-15; shots builds only): when a press's page reaches
+// the screen. One line a press, logged at the next menu update (the next frame's key read), after the press's frame is
+// over: the press's read (its menu update) as vblank count R and time 0; the compose's start, with whether its buffer
+// was the one scanned then (optComposeShown waits a vblank first if so); the copy's start, right after the compose's
+// vblank wait, and its length; whether the copied buffer was the one scanned just after the copy and again at the next
+// read; the top screen's flips (the pacer's totals) from the read to the next read. Vblanks are citro3d's count for
+// the top screen (the pacer counts every vblank); the screens' vblanks are under 0.2 ms apart. Steps: 4 a key read,
+// 0 an update with none, 1 before the compose, 2 after it, 3 after the copy.
+#include <citro3d.h>
+static struct {
+    uint64_t read, compose, copy, copied;
+    uint32_t vRead, vCompose, vCopy, flips;
+    uint8_t phase, spareScanned, shownScanned;
+} optLat OPT_BSS;
+
+OPT_STATIC void optLatStep(uint8_t step) {
+    uint64_t now = svcGetSystemTick();
+    uint32_t v = C3D_FrameCounter(0);
+    uint32_t side = opt.scr == GFX_TOP ? OPT_TOP_SIDE : 0u;
+    CtrFlipStats flips;
+    if (step == 0u || step == 4u) {
+        CtrPacer_getFlipTotals(&flips);
+        if (optLat.phase == 3u) {
+            logInfo(optLogLat, (unsigned long) optLat.vRead, (unsigned long) ((optLat.compose - optLat.read) / 268u),
+                    (long) (int32_t) (optLat.vCompose - optLat.vRead), (unsigned) optLat.spareScanned,
+                    (unsigned long) ((optLat.copy - optLat.read) / 268u), (long) (int32_t) (optLat.vCopy - optLat.vRead),
+                    (unsigned long) ((optLat.copied - optLat.copy) / 268u), (unsigned) optLat.shownScanned,
+                    (unsigned long) ((now - optLat.read) / 268u), (long) (int32_t) (v - optLat.vRead),
+                    (unsigned) optScanned(opt.shownBase - side), (unsigned long) (flips.flips - optLat.flips));
+        }
+        optLat.phase = 0;
+        if (step == 4u) {
+            optLat.phase = 4;
+            optLat.read = now;
+            optLat.vRead = v;
+            optLat.flips = flips.flips;
+        }
+    } else if (step == 1u && optLat.phase == 4u) {
+        optLat.phase = 1;
+        optLat.compose = now;
+        optLat.vCompose = v;
+        optLat.spareScanned = optScanned(opt.spareBase - side);
+    } else if (step == 2u && optLat.phase == 1u) {
+        optLat.phase = 2;
+        optLat.copy = now;
+        optLat.vCopy = v;
+    } else if (step == 3u && optLat.phase == 2u) {
+        optLat.phase = 3;
+        optLat.copied = now;
+        optLat.shownScanned = optScanned(opt.shownBase - side);
+    }
+}
 #endif

@@ -115,8 +115,10 @@ def layout_file(game):
 # "--no-native"; they are part of the fingerprint, so the code is generated again when they change.
 GMLAOT_EXTRA = []
 # The Python files that generate the code: gmlaot.py and what it imports, and this file, which picks its arguments.
+# data_versions.py reads the table gmlaot.py's undertale_label recognizes UNDERTALE by (the forms depend on it).
 GENERATOR_FILES = ("gmlaot.py", "builtin_audit.py", "corpus.py", "prepare.py", "btnprompt.py", "escape.py",
-                   "late_numeric.py", "typed.py", "typed_priority.py", "padrefs.py", "aacslot.py", "aacslot.json")
+                   "late_numeric.py", "typed.py", "typed_priority.py", "padrefs.py", "aacslot.py", "aacslot.json",
+                   "data_versions.py")
 
 
 def typed_priority_file(game, target):
@@ -147,6 +149,16 @@ def append_file(game, target, chapters=False):
     return path
 
 
+def hot_file(game, target, chapters=False):
+    """Optional first hot entry (gmlaot.py --hot-from) of a padded, statically linked selection with appended units."""
+    path = Path(HERE) / 'selection' / ('%s-%s-hot.txt' % (game, target))
+    if chapters or not path.is_file():
+        return None
+    if append_file(game, target) is None:
+        raise ValueError('Hot units require an appended-units file: ' + str(path))
+    return path
+
+
 def append_count(path):
     fields = ' '.join(line.split('#', 1)[0] for line in path.read_text(encoding='utf-8').splitlines()).split()
     if len(fields) != 1 or not fields[0].isdigit():
@@ -166,8 +178,10 @@ def gmlaot_runs(game, target, found, out, selection, chapters=False, typed=None,
     layout = ["--layout", layout_file(game)] if layout_file(game) else []
     if not chapters:
         append = append_file(game, target)
+        hot = hot_file(game, target)
         return [(out, ["gmlaot.py", out, "--target", target, "--selection", selection, "--data", found] + layout
-                 + (["--append-from", str(append_count(append))] if append else []) + typed_args + GMLAOT_EXTRA)]
+                 + (["--append-from", str(append_count(append))] if append else [])
+                 + (["--hot-from", str(append_count(hot))] if hot else []) + typed_args + GMLAOT_EXTRA)]
     budget = selection_budget(target, selection, chapters=True)
     tag = "aot%gch" % budget
     runs = []
@@ -218,10 +232,16 @@ def fingerprint(game, target, data, selection, chapters=False, runs=(), typed=No
     h = hashlib.sha256()
     for path in [os.path.join(HERE, name) for name in GENERATOR_FILES] + [selection]:
         h.update(Path(path).read_bytes())
+    # The data.wins gmlaot.py recognizes as UNDERTALE (only these get the shrink unit's forms): the table's rows that
+    # undertale_label reads, not its revision or other games' rows, so only a change that can change the code counts.
+    h.update(b"recognized " + repr(gmlaot.undertale_roots(data_versions.load_table()[1])).encode())
     refs = padrefs_file(game, target, chapters)
     h.update(refs.read_bytes() if refs else b'no retained references')
     append = append_file(game, target, chapters)
     h.update(append.read_bytes() if append else b'no appended units')
+    hot = hot_file(game, target, chapters)
+    if hot:   # absent: the fingerprint is the same as before hot units existed
+        h.update(hot.read_bytes())
     if typed:   # gmlaot.py --typed (tools/aot/typed.py); "all" names no file
         for path in (os.path.join(HERE, "typed.py"),) + (() if typed == "all" else (typed,)):
             h.update(Path(path).read_bytes())
@@ -239,6 +259,9 @@ def fingerprint(game, target, data, selection, chapters=False, runs=(), typed=No
     # typed.py's draw_surface_part_ext calls (knightgpu dspe; build.sh, DELTARUNE New) change the code.
     if os.environ.get("CTRPORT_AOT_DSPE", ""):
         h.update(("dspe %s" % os.environ["CTRPORT_AOT_DSPE"]).encode())
+    # gmlaot.py's GMLAOT_SHRINK passes (change aotshrink2) change the code.
+    if os.environ.get("GMLAOT_SHRINK", ""):
+        h.update(("shrink %s" % os.environ["GMLAOT_SHRINK"]).encode())
     for folder, args in runs:
         out = os.path.dirname(folder) if chapters else folder
         h.update(repr([a.replace(out, "<out>").replace(data, "<data>") if isinstance(a, str) else a

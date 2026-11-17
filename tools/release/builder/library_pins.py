@@ -350,6 +350,43 @@ def write_wrapper(folder, tc, sdk, cmake):
     return str(folder)
 
 
+def stable_wrapper(cache, tc, sdk, cmake):
+    """The same toolchain, SDK and builder give the same wrapper folder, so the CMake toolchain file a build folder
+    was configured with doesn't move between runs. A new folder each run made every rerun print CMake's "You have
+    changed variables that require your cache to be deleted" (11-17 playtester). A folder is reused only when its
+    receipt, written last, matches every file in it; a folder that fails that is never touched, and a new one is
+    allocated instead."""
+    with open(__file__, 'rb') as stream:
+        source = hashlib.sha256(stream.read()).hexdigest()
+    key = hashlib.sha256(json.dumps(dict(
+        root=str(Path(tc.root).resolve()), platform=tc.platform, bash=str(tc.bash or ''), sdk=str(Path(sdk).resolve()),
+        cmake=str(cmake or ''), python=str(toolchain.python_exe()), module=str(Path(__file__).resolve()),
+        source=source, libraries={p['package']: digest(library_path(Path(sdk),p))
+                                  for p in PACKAGES if library_path(Path(sdk),p).is_file()}),
+        sort_keys=True).encode()).hexdigest()[:20]
+    for n in range(100):
+        folder = cache/('run-%s%s' % (key, '-%d' % n if n else ''))
+        receipt = folder/'.receipt.json'
+        if not folder.exists():
+            break
+        try:
+            record = json.loads(receipt.read_text(encoding='utf-8'))
+            files = {p.name: digest(p) for p in folder.iterdir() if p.name != receipt.name}
+            if record == dict(key=key, files=files):
+                return str(folder)
+        except (OSError, ValueError):
+            pass                                    # changed or unreadable: left as it is, never reused
+    try:
+        folder.mkdir()
+    except OSError:
+        folder = Path(tempfile.mkdtemp(prefix='run-', dir=cache))
+        receipt = folder/'.receipt.json'
+    write_wrapper(folder, tc, sdk, cmake)
+    files = {p.name: digest(p) for p in folder.iterdir() if p.name != receipt.name}
+    _write_lf(receipt, json.dumps(dict(key=key, files=files), sort_keys=True))
+    return str(folder)
+
+
 def select(tc, work, notify=lambda text: None, *, packages=PACKAGES, run=command, opener=None):
     """Fetch mismatches only; never write devkitPro or use an unqualified fallback."""
     if not tc.root or getattr(tc, 'can_build', True) is False:
@@ -428,8 +465,7 @@ def select(tc, work, notify=lambda text: None, *, packages=PACKAGES, run=command
         for pin in changed:
             notify('Using tested %s %s from the work folder. Your devkitPro is unchanged.' %
                    (pin['package'],pin['version']))
-    shims = Path(tempfile.mkdtemp(prefix='run-',dir=cache))
-    return dict(packages=rows, stack=stack, shims=write_wrapper(shims,tc,sdk,cmake), sdk=str(sdk))
+    return dict(packages=rows, stack=stack, shims=stable_wrapper(cache,tc,sdk,cmake), sdk=str(sdk))
 
 
 def actual_linked(build, platform, packages=PACKAGES):

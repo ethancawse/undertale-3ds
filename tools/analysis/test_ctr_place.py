@@ -2,6 +2,7 @@
 section names, the switch reads only the game and model defines (never the release source URL), a broken define set
 stops the compile, and an Old unit links into the AAC text slot. devkitARM only; no game data."""
 from pathlib import Path
+import json
 import re
 import subprocess
 import sys
@@ -60,10 +61,44 @@ def test_each_game_and_model_gets_its_sections(tmp_path, name):
     assert section_of(obj) == {'probe_fn': text, 'probe_table': rodata}
 
 
+CONST_PROBE = ('#include "ctr_place.h"\n'
+               'UT_COLD_TEXT(probe) __attribute__((noinline)) int probe_fn(int x) { return x * 3 + 1; }\n'
+               'UT_COLD_TEXT_CONST(probe) const int probe_table[4] = {1, 2, 3, 4};\n')
+
+
+@pytest.mark.parametrize('name', CASES)
+def test_text_const_shares_the_text_name(tmp_path, name):
+    """UT_COLD_TEXT_CONST (framelead, stepdrift 11-15): constants in the unit's text name, beside its code, with no
+    section type conflict; no rodata input of the unit at all."""
+    defines, text, _ = CASES[name]
+    result, obj = compile_probe(tmp_path, defines, source=CONST_PROBE)
+    assert result.returncode == 0, result.stderr
+    assert section_of(obj) == {'probe_fn': text, 'probe_table': text}
+    sections = dv.run([READELF, '-W', '-S', obj]).stdout
+    assert 'rodata.probe' not in sections and 'rodata_probe' not in sections
+    assert re.search(r'\s%s\s+PROGBITS\s+\S+\s+\S+\s+\S+\s+\S+\s+AX\s' % re.escape(text), sections), sections
+
+
 def test_host_build_gets_no_section_attribute(tmp_path):
     result, obj = compile_probe(tmp_path, [UT, DR], platform=False)  # the desktop engine defines every game
     assert result.returncode == 0, result.stderr
     assert section_of(obj) == {'probe_fn': '.text.probe_fn', 'probe_table': '.rodata.probe_table'}
+
+
+@pytest.mark.parametrize('name', CASES)
+def test_named_bstall_text_override_leaves_constants_and_other_units_alone(tmp_path, name):
+    defines, _, rodata = CASES[name]
+    result, obj = compile_probe(tmp_path, defines, source=PROBE.replace('(probe)', '(bstall)'))
+    assert result.returncode == 0, result.stderr
+    assert section_of(obj) == {'probe_fn': '.text_bstall', 'probe_table': rodata.replace('probe', 'bstall')}
+    # The probe tests above use an unlisted unit: it still follows the default on all models.
+
+
+def test_named_old_overrides_match_registry():
+    header = HEADER.read_text(encoding='utf-8')
+    overrides = re.findall(r'^#define CTR_PLACE_OLD_OVERRIDE_(\w+) ', header, re.M)
+    registry = json.loads((ROOT / 'tools/analysis/late-order.json').read_text())
+    assert overrides == registry['old_late_text'] == ['bstall']
 
 
 @pytest.mark.parametrize('defines,platform,message', [

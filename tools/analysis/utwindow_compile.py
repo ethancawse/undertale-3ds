@@ -12,6 +12,8 @@ import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vine_extract
+import undlg_routes
+import promonotice_compile
 
 
 def route(text, development=False, size_optimized=False):
@@ -364,12 +366,131 @@ def route_lcd(text):
     return adapter.route(text, 'ctr_renderer.c')
 
 
+# change smoothold (11-16): ctrDrawSprite's asgBegin/asgEnd, drawTextImpl's smartLinearBegin/smartLinearEnd and
+# addHoldDraw's asgHoldDraw become calls of the wrappers at ctr_renderer.c's end (compiled only in the helper pass,
+# CTRPORT_SMOOTHOLD_HELPER), so copy sprites and text join held runs. Only the five operands change: the C calls stay,
+# since calling the wrappers in C changed GCC's choices across the file (smartLinearEnd split, drawTowerStrips past
+# its oomport slot).
+SMO_ROUTES = (('ctrDrawSprite', 'asgBegin', 'CtrRenderer_smoSpriteBegin'),
+              ('ctrDrawSprite', 'asgEnd', 'CtrRenderer_smoSpriteEnd'),
+              ('drawTextImpl', 'smartLinearBegin', 'CtrRenderer_smoTextBegin'),
+              ('drawTextImpl', 'smartLinearEnd', 'CtrRenderer_smoTextEnd'),
+              ('addHoldDraw', 'asgHoldDraw', 'CtrRenderer_smoHoldDraw'))
+SMO_STATE = 'smoothold_state'
+# The table's words, in order: every function the wrappers call. The first five are the routed callees (each must
+# reach an external function, so its callers already assume a full AAPCS call); the wrappers only call through the
+# words, so any function may follow.
+SMO_WORDS = ('asgBegin', 'asgEnd', 'smartLinearBegin', 'smartLinearEnd', 'asgHoldDraw', 'prophecyBatches',
+             'recordingSurface', 'flushBatch')
+SMO_ROUTED = tuple(old for _, old, _ in SMO_ROUTES)
+# Data the wrappers read by name (besides the table): defined once by the ordinary pass where named, or external.
+SMO_DATA = {'bsGpu': '.data_battlesplit', 'asgRun': '.bss.late.asgdraw'}
+SMO_EXTERN = ('__C3D_Context',)
+SMO_HOMES = {'asgBegin': '.text.late.asgdraw', 'asgEnd': '.text.late.asgdraw', 'asgHoldDraw': '.text.late.asgdraw',
+             'smartLinearBegin': '.text.smartLinearBegin', 'smartLinearEnd': '.text.smartLinearEnd',
+             'prophecyBatches': '.text.prophecyBatches', 'recordingSurface': '.text.recordingSurface',
+             'flushBatch': '.text.flushBatch', **SMO_DATA}
+
+
+def smo_body(text, name):
+    scopes = list(re.finditer(r'(?ms)^' + re.escape(name) + r':\r?\n.*?^\s*\.size\s+' + re.escape(name) +
+                              r',\s*\.-' + re.escape(name) + r'\s*$', text))
+    return scopes[0] if len(scopes) == 1 else None
+
+
+def smo_reaches_external(text, root):
+    """Whether root, through direct calls inside this assembly, reaches a function this assembly doesn't define. Then
+    GCC's IPA facts about root (-fipa-ra's clobbers, modref) are the full AAPCS ones, as for any unknown function, so a
+    caller compiled against root may call a plain AAPCS function in its place."""
+    seen, todo = set(), [root]
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        body = smo_body(text, name)
+        if body is None:
+            return True
+        todo += re.findall(r'(?m)^\s*bl?(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?\s+([A-Za-z_][\w.]*)'
+                           r'(?:\(PLT\))?\s*(?:@[^\n]*)?$', body[0])
+    return False
+
+
+def route_smoothold(text, extra):
+    """Check the helper's wrappers (names, sections, every symbol they name) and the ordinary pass's callees and data,
+    then retarget the five call operands. Returns (text, receipt); the caller appends extra."""
+    ordinary, own = label_sections(text), label_sections(extra)
+    globals_ = sorted(n for n in own if not n.startswith('.L'))
+    wrappers = sorted({new for _, _, new in SMO_ROUTES})
+    assert globals_ == sorted(wrappers + [SMO_STATE]), ('smoothold helper labels', globals_)
+    assert all(own[n] == ['.text_smoothold'] for n in wrappers) and own[SMO_STATE] == ['.data_smoothold'], \
+        ('smoothold helper sections', {n: own[n] for n in globals_})
+    for name in globals_:
+        assert name not in ordinary, ('smoothold name already in the ordinary pass', name)
+    for name, home in SMO_HOMES.items():
+        assert ordinary.get(name) == [home], ('smoothold callee or datum', name, ordinary.get(name))
+        assert not re.search(r'(?m)^' + re.escape(name) + r'\.(?:constprop|isra|part)\.', text), ('Clone', name)
+    for name in SMO_EXTERN:
+        assert name not in ordinary and name not in own, ('smoothold external defined here', name)
+    for name in SMO_ROUTED:
+        assert smo_reaches_external(text, name), ('smoothold callee with IPA facts of its own', name)
+    # The table: the words in order, then the two flag bytes (zero, and padding), nothing else.
+    table = re.search(r'(?ms)^' + SMO_STATE + r':\n(.*?)(?=^\s*\.(?:size|section|text|data|bss|global|type|align)\b|\Z)',
+                      extra)
+    assert table, 'smoothold table'
+    rows = [' '.join(l.split('@', 1)[0].split()) for l in table[1].splitlines()]
+    rows = [r for r in rows if r]
+    n = len(SMO_WORDS)
+    assert rows[:n] == ['.word ' + w for w in SMO_WORDS] and rows[n:] in (['.byte 0', '.byte 0', '.space 2'], ['.space 4']), \
+        ('smoothold table words', rows)
+    # Every other line: directives of its own, local labels, and instructions naming no symbol but its own pool words
+    # (the table, SMO_DATA, SMO_EXTERN) and its own local labels. No direct branch out.
+    local = set(re.findall(r'(?m)^(\.L[\w.]+):', extra))
+    names_ok = set(own) | set(SMO_DATA) | set(SMO_EXTERN)
+    for line in extra.splitlines():
+        s = ' '.join(line.split('@', 1)[0].split())
+        if not s or re.fullmatch(r'[\w.]+:', s):
+            continue
+        op, _, rest = s.partition(' ')
+        if op in ('.word', '.4byte', '.long'):
+            assert rest in names_ok or rest in SMO_WORDS or re.fullmatch(r'-?[0-9]+', rest), ('smoothold word', s)
+            continue
+        if op.startswith('.'):
+            continue
+        if re.fullmatch(r'bl?(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?', op):
+            assert rest in local, ('smoothold direct branch', s)
+            continue
+        plain = re.sub(r'(?<![\w.])\.L[\w.]+(?:\+\d+)?', lambda m: ' ' if m[0].split('+')[0] in local else m[0], rest)
+        names = [n for n in re.findall(r'(?<![\w#])\.?[A-Za-z_][\w.]*', plain) if not FUSE_OPERANDS.match(n)]
+        assert not names and '=' not in plain, ('smoothold instruction names a symbol', s)
+    edits, witnesses = [], []
+    for caller, old, new in SMO_ROUTES:
+        body = smo_body(text, caller)
+        assert body is not None, ('smoothold caller', caller)
+        sites = list(re.finditer(r'(?m)^[ \t]+bl?(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?[ \t]+(?P<t>'
+                                 + re.escape(old) + r')(?:\(PLT\))?[ \t]*(?:@[^\n]*)?$', body[0]))
+        assert len(sites) == 1, ('smoothold call sites', caller, old, len(sites))
+        edits.append((body.start() + sites[0].start('t'), body.start() + sites[0].end('t'), old, new))
+        witnesses.append(dict(caller=caller, old=old, new=new))
+    result = text
+    for start, end, old, new in sorted(edits, reverse=True):
+        assert result[start:end] == old
+        result = result[:start] + new + result[end:]
+    restored, shift = result, 0
+    for start, end, old, new in sorted(edits):
+        at = start + shift
+        assert restored[at:at + len(new)] == new
+        restored = restored[:at] + old + restored[at + len(new):]
+    assert restored == text, 'smoothold: non-operand assembly change'
+    return result, dict(routes=witnesses, words=list(SMO_WORDS))
+
+
 def main(args):
     split = args.index('--')
     delegate, command = [a for a in args[:split] if a], args[split + 1:]
     sources = [a for a in command if a.replace('\\', '/').endswith('/ctr_renderer.c')]
     if not sources or '-DENABLE_WAD16' not in command:
-        return run(delegate + command)
+        return undlg_routes.compile_extra(delegate, command)
     assert len(sources) == 1 and '-c' in command and command.count('-o') == 1
     output = Path(command[command.index('-o') + 1])
     # Side files next to the object, with names no longer than ctr_renderer.c.o: CMake keeps object paths within
@@ -390,6 +511,7 @@ def main(args):
     text = route_solid(text)
     text = route_gameover_setup(text)
     text = route_dialogue(text, diagnostic="-DCTRPORT_DLGFLASH_LOG" in command)
+    text, notice_receipt = promonotice_compile.route(text)
     # Helper-only pass retains no ordinary body or data, preserving GCC's
     # pre-existing compiler-local tables and all original slot identities.
     helper_file = output.with_name('dlgwhite2.s')
@@ -400,23 +522,29 @@ def main(args):
             at = helper.index(option)
             del helper[at:at+2]
     helper = [a for a in helper if a not in ('-MD', '-MMD', '-MP')]
-    helper += ['-DCTRPORT_DLGWHITE_HELPER', '-DCTRPORT_DLGFLASH_HELPER', '-fno-section-anchors']
+    helper += ['-DCTRPORT_DLGWHITE_HELPER', '-DCTRPORT_DLGFLASH_HELPER',
+               '-DCTRPORT_PROMONOTICE_HELPER', '-DCTRPORT_SMOOTHOLD_HELPER', '-fno-section-anchors']
     rc = run(helper)
     if rc: return rc
+    smo, _ = vine_extract.late_sections(helper_file.read_text(encoding='utf-8'), 'smoothold')
+    text, smo_receipt = route_smoothold(text, smo)
+    text += '\n' + smo
     extra, sections = vine_extract.late_sections(helper_file.read_text(encoding='utf-8'), 'dlgwhite')
     flash, flash_sections = vine_extract.late_sections(helper_file.read_text(encoding='utf-8'), 'dlgflash')
     top, top_sections = vine_extract.late_sections(helper_file.read_text(encoding='utf-8'), 'dlgtop4')
+    notice, notice_sections = vine_extract.late_sections(helper_file.read_text(encoding='utf-8'), 'promonotice')
     flash = route_gameover_yield(flash)
     # Keep frozen S4 arbitration first; only its terminal layout operand
     # enters the game-over guard. Inactive guard delegates to layout as before.
     top, go_chain_count = re.subn(r'(?m)^([ \t]+b(?:l)?[ \t]+)CtrLayout_chain18(\(PLT\))?([ \t]*(?:@[^\n]*)?)$',
                                   lambda m: m[1]+'CtrGameover_beginFrame'+(m[2] or '')+m[3], top)
     assert go_chain_count == 1, ('S4 to game-over begin seam', go_chain_count)
-    text += '\n'+extra+'\n'+flash+'\n'+top
+    text += '\n'+extra+'\n'+flash+'\n'+top+'\n'+notice
     # The game-over unit is independent: ordinary renderer compilation sees
     # none of its C, preserving all existing instructions and static locals.
     go_file = output.with_name('gos2.s')
-    go_helper = [a for a in helper if a not in ('-DCTRPORT_DLGWHITE_HELPER', '-DCTRPORT_DLGFLASH_HELPER')]
+    go_helper = [a for a in helper if a not in ('-DCTRPORT_DLGWHITE_HELPER', '-DCTRPORT_DLGFLASH_HELPER',
+                                              '-DCTRPORT_PROMONOTICE_HELPER', '-DCTRPORT_SMOOTHOLD_HELPER')]
     go_helper[go_helper.index('-o') + 1] = str(go_file)
     # Keep discarded surrounding bodies at the stock optimization too: -Os
     # exposes a -Wrestrict warning there. GO_CODE sizes only the retained unit.
@@ -424,22 +552,29 @@ def main(args):
     rc = run(go_helper)
     if rc: return rc
     go_extra, go_sections = vine_extract.late_sections(go_file.read_text(encoding='utf-8'), 'gameoverscreen')
+    go_extra = promonotice_compile.route_configure(go_extra)
     go_extra = go_extra.replace('.LFlowery_', '.LGameover_').replace('FloweryLocal_', 'GameoverLocal_')
     go_pattern = r'(?m)^([ \t]+b(?:l)?[ \t]+)ctrDrawSprite(\(PLT\))?([ \t]*(?:@[^\n]*)?)$'
     go_callers = [re.findall(r'(?m)^([A-Za-z_][\w.]*):', text[:m.start()])[-1]
                   for m in re.finditer(go_pattern, text)]
-    assert sorted(go_callers) == sorted(['skipReplayOps', 'aslFineSprite', 'utkDrawSpriteBody',
-                                         'utkDrawSprite', 'utkDrawSprite', 'skipDrawSprite', 'utaFineSprite']), go_callers
+    # A render-timing (profile) build compiles none of the utk/uta/asl fast paths (ctr_renderer.c's guards), so only
+    # the replay and skip paths call ctrDrawSprite there, and nothing calls utkDrawSpriteBody.
+    timing = '-DCTRPORT_RENDER_TIMING' in command
+    assert sorted(go_callers) == (sorted(['skipReplayOps', 'skipDrawSprite']) if timing else
+                                  sorted(['skipReplayOps', 'aslFineSprite', 'utkDrawSpriteBody', 'utkDrawSprite',
+                                          'utkDrawSprite', 'skipDrawSprite', 'utaFineSprite'])), go_callers
     text = re.sub(go_pattern, lambda m: m[1]+'CtrGameover_drawSprite'+(m[2] or '')+m[3], text)
     coarse_pattern = r'(?m)^([ \t]+b(?:l)?[ \t]+)utkDrawSpriteBody(\(PLT\))?([ \t]*(?:@[^\n]*)?)$'
     coarse_callers = [re.findall(r'(?m)^([A-Za-z_][\w.]*):', text[:m.start()])[-1]
                       for m in re.finditer(coarse_pattern, text)]
-    assert coarse_callers == ['utkDrawSprite'], coarse_callers
+    assert coarse_callers == ([] if timing else ['utkDrawSprite']), coarse_callers
     text = re.sub(coarse_pattern, lambda m: m[1]+'CtrGameover_coarseSprite'+(m[2] or '')+m[3], text)
     # After both reroutes, so the fold's own direct calls stay direct and both caller lists above are as they were.
     text, fuse_receipt = route_fuse(text, go_extra, fuse_expected(command), '-DCTRPORT_ASG_PROBE' in command,
                                     fuse_section(command))
     text += '\n'+go_extra
+    text, speech_receipt = undlg_routes.route_renderer(text, diagnostic='-DCTRPORT_DLGFLASH_LOG' in command,
+        model='o3ds' if '-DCTRPORT_TARGET_O3DS' in command else 'n3ds')
     text, lcd_receipt = route_lcd(text)
     with open(routed_file, 'w', encoding='utf-8', newline='\n') as handle:  # write_text(newline=) needs Python 3.10
         handle.write(text)
@@ -456,9 +591,12 @@ def main(args):
     output.with_name('utwindow.json').write_text(json.dumps(dict(
         caller='CtrRenderer_endFrame.part.0', old='blitApp', new='CtrUtWindow_blitApp',
         count=count, exit=rc, original=str(original_file), routed=str(routed_file),
-        lcd=lcd_receipt, fuse=fuse_receipt), indent=2) + '\n', encoding='utf-8')
+        lcd=lcd_receipt, fuse=fuse_receipt, speech=speech_receipt,
+        notice=notice_receipt, smoothold=smo_receipt), indent=2) + '\n', encoding='utf-8')
     print(f'Window motion: {count} final picture call operands routed; warm instructions retained', flush=True)
     print('dimlight LCD call operands: ' + json.dumps(lcd_receipt), flush=True)
     # Every build says whether F1u is fused (an unreviewed fold never gets here: it fails the build, "F1u NOT fused").
     print('F1u slot 25: ' + json.dumps(fuse_receipt), flush=True)
+    print('Notice-only configure: ' + json.dumps(notice_receipt), flush=True)
+    print('smoothold call operands: ' + json.dumps(smo_receipt), flush=True)
     return rc

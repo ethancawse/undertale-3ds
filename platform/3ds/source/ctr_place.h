@@ -19,6 +19,14 @@
 // - the late name to late_reserve.ld and to late-order.json's late list.
 // late_order.py checks the set, every use of these macros, and that no source spells a registered unit's section by
 // hand.
+//
+// UT_COLD_TEXT_CONST(unit) puts constants in the unit's text name (registered as text only), for a unit whose
+// constants must not be an AAC rodata input on UNDERTALE Old: there N8a's release-only reclaim inputs are the rodata
+// slot's last (check_devonly_aac.py), so a later tenant's non-empty rodata input fails the dev-only proof
+// (framelead, stepdrift 11-15). GCC refuses a C constant in a code section, so the name's tail ends GCC's own flags in
+// an ARM assembler comment (@) and the constants share the code's "ax" section (z_battletouch.c's BT_TEXTRO).
+// Exception: old_late_text names approved Old capacity overrides; bstall's N14 text uses its late name on Old
+// too. Its constants still use AAC rodata. No other unit inherits this exception.
 #ifndef CTR_PLACE_H
 #define CTR_PLACE_H
 
@@ -40,13 +48,26 @@
 // Every .aacout name sits under a plain ENABLE_WAD16 guard (test_aacslot_shared.py): DELTARUNE has no AAC slot.
 #if defined(ENABLE_WAD16)
 #if defined(CTRPORT_TARGET_O3DS)
-#define UT_COLD_TEXT(unit) __attribute__((section(".aacout.text." #unit)))
+// Named Old text exceptions: the N14 capacity ruling moves bstall only to ordinary late text.
+// Keep the default for every other unit, including names not yet registered. late-order.json records the same
+// allowlist; late_floor_gate checks the actual linked section names, including suffixes and macro spellings.
+#define CTR_PLACE_OLD_OVERRIDE_bstall ignored, 1
+#define CTR_PLACE_SECOND(a, b, ...) b
+#define CTR_PLACE_OLD_OVERRIDE(...) CTR_PLACE_SECOND(__VA_ARGS__, 0)
+#define CTR_PLACE_OLD_TEXT_0(unit) __attribute__((section(".aacout.text." #unit)))
+#define CTR_PLACE_OLD_TEXT_1(unit) __attribute__((section(".text_" #unit)))
+#define CTR_PLACE_OLD_TEXT_PICK_I(n) CTR_PLACE_OLD_TEXT_##n
+#define CTR_PLACE_OLD_TEXT_PICK(n) CTR_PLACE_OLD_TEXT_PICK_I(n)
+#define UT_COLD_TEXT(unit) CTR_PLACE_OLD_TEXT_PICK(CTR_PLACE_OLD_OVERRIDE(CTR_PLACE_OLD_OVERRIDE_##unit))(unit)
+#define UT_COLD_TEXT_CONST(unit) __attribute__((section(".aacout.text." #unit ",\"ax\",%progbits @")))
 #else
 #define UT_COLD_TEXT(unit) __attribute__((section(".text_" #unit)))
+#define UT_COLD_TEXT_CONST(unit) __attribute__((section(".text_" #unit ",\"ax\",%progbits @")))
 #endif
 #define UT_COLD_RODATA(unit) __attribute__((section(".aacout.rodata." #unit)))
 #else
 #define UT_COLD_TEXT(unit) __attribute__((section(".text_" #unit)))
+#define UT_COLD_TEXT_CONST(unit) __attribute__((section(".text_" #unit ",\"ax\",%progbits @")))
 #define UT_COLD_RODATA(unit) __attribute__((section(".rodata_" #unit)))
 #endif
 
@@ -54,6 +75,7 @@
 #error "ctr_place.h: this 3DS object is built outside ctrport, so it has no game or model define; place the unit in ctrport"
 #else
 #define UT_COLD_TEXT(unit)
+#define UT_COLD_TEXT_CONST(unit)
 #define UT_COLD_RODATA(unit)
 #endif
 

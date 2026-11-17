@@ -1942,3 +1942,571 @@ bool CtrStale_bottomflip(unsigned screen, u32 out[6]) {
     return true;
 }
 #endif
+
+// ===[ framelead: a frame's work starts frame_lead_ms before its slot's vblank (change stepdrift, 11-15; UNDERTALE) ]===
+//
+// maintainer's ruling 11-15 (audit decision 1, "Frame-start offset"): on the Old 3DS a frame may start its work a few ms
+// before the vblank that begins its slot, so every frame has that much more time before its flip is due, at the cost of
+// the same few ms of input delay, a constant (his 10-28 rule, "Low input delay is invariant", is kept: the lead never
+// changes with load). Only the wake moves. The slot, its hold (holdUntil), the flip and every count stay in vblanks
+// as before: the frame is still shown on the vblank it would have been shown on, or later only if it is late anyway.
+// - The slot wait (CtrPacer_waitForSlot, the 2:1 and fixed-rate frames; not Auto's CtrPacer_levelWait, not utfade's
+//   black, not a screen move's wait) waits for vblank events while the game screen's count is short of the slot's
+//   target. Here, when the count is one short (the vblank before the target has begun), the wait for the next vblank
+//   event becomes a wait until frame_lead_ms before that vblank's estimated time (the last vblank's time, stamped by its
+//   callback, plus one vblank), and the next read of the count on the main thread reports the target: the loop leaves
+//   as it would at the vblank, frame_lead_ms early. If the frame is already past that time it returns at once. No lead
+//   without a fresh stamp of the vblank before the target (after a suspend the counts stand still: a stamp over two
+//   vblanks old is stale), or with frame_lead_ms 0.
+// - r4 (c26rev6 FLR3-1): a vblank's callback can begin late, and r3 took its tick as the vblank's time, so a callback
+//   8 ms late moved the next wake 8 ms later: 2 ms after the target vblank at lead 6, where lead 0 starts on it. Now
+//   (1) the stamp is an estimate a late callback can't move (flStamp: the earliest of the last time plus one vblank and
+//   this tick, rising at most 1 us a vblank); (2) the led wait also ends at the target vblank's callback, so a frame
+//   never starts later than it would without the lead (it then starts as it would, not armed); (3) each led wake is
+//   checked against its target vblank's time as that vblank's own callback leaves it (never after the callback began,
+//   whatever the estimate before it said): [lead]'s early and woke-after counts and the mean lead are that check's, and
+//   [lead] also gives the game screen's callbacks' most lateness past the estimate and how many were over 1 ms.
+// - The count read is only changed once, on the main thread, inside that wait; the GSP thread's reads (the vblank
+//   callbacks' releases) and every other read are the real count.
+// - The vblank stamps chain after each screen's own callback (the GPU queue's, after pacebot's VBlank1 link), so the
+//   count stamped is the one that callback just made.
+// - The pacer's slot tick (the start of the slot's busy and done times) is moved to the slot's estimated vblank when the
+//   frame began early, so [pace]'s done and busy keep their meaning (from the slot's vblank: done over 2 vblanks is
+//   still a late flip); a frame woken after that vblank keeps its own start. A led frame can end, or its GPU finish,
+//   before that vblank: the pacer's elapsed times from the slot tick are unsigned, so each reader is shown a slot tick
+//   no later than its own time (c26rev7 FL-1): the slot wait's and Auto's level wait's busy (at their entry, before
+//   they set the next slot's tick), [slow]'s frame time at main.c's "wait for frame" mark (for that call only: the
+//   tick, and heldslow's slot seen at that mark, are put back, so a 2:1 unshown frame after it still counts from that
+//   mark and the next slot wait from the vblank) and done at the game screen's swap (its copy, frameSlotTick, read
+//   once a frame). Such a frame's busy, [slow] time and done are 0 (it is not slow); none of them is ever before 0.
+//   [slow]'s parts of a led slow frame that began before its slot tick are "?" (heldslow keeps a part only from the
+//   slot tick on); its total is right.
+// UNDERTALE Old only (lead 11-15, N13): New and DELTARUNE build none of it (New's frames start on their vblank).
+// frame_lead_ms 0-8 (settings.ini, kept by a save, or --ini for a run; out of range is not a known setting), else
+// FRAMELEAD_DEFAULT_MS, 6: the boards' pick (o3dsxl Sans, o2ds Undyne, creddodge; change stepdrift),
+// the 5-7 ms maintainer said yes to on 11-15. frame_lead_ms = 0 in settings.ini turns it off (his blind check). From N13
+// every Old timing row runs led unless it names frame_lead_ms, so a Step/Draw/GPU-done comparison across N12 and N13
+// pins it (0 or 6) on both arms (queue_lint asks every Old row on a framelead build to name it).
+// Logged once at the first slot ("Frame lead: N ms")
+// and, while on, a [lead] line after each [pace] line: frames begun early, their mean lead, and wakes past their vblank.
+// Readers that need 2 vblanks + the lead: none in the pacer (done keeps its meaning, above). A frame's interval
+// (start to start) may now be up to 2 vblanks + the lead with no frame held; Step + Draw times are unchanged. The
+// boards (tools/analysis/ut_beta_board.py: held cause, sweep play bound and slot edge, tiers, a room change's held
+// vblanks) read the "Frame lead" line. Not changed (lead 11-15, #50): the bench's held-frame line picks frame F+1 over
+// F when F+1's interval is over 2 vblanks + 0.5 ms and F's (ctr_benchheld.inc, benchfix r7); with a lead it can name
+// F+1 for F's hold. Adding the lead there costs 16 B in each of two late inputs, which moved 268 late symbols (RO4,
+// price4-moved), so only the named frame can differ, never a count; at lead 0 nothing differs.
+// Links: CMakeLists.txt (framelead, UNDERTALE Old). Code and constants are placed per model (ctr_place.h; late-order.json
+// per_model, text only): on Old they are the AAC text slot's last input (aacout.cmake), the constants in it too
+// (UT_COLD_TEXT_CONST): an AAC rodata input after N8a's release-only reclaims fails check_devonly_aac. Its 100 B of
+// state are carved from sdmigrate's placeholder after soulahead's (z_sdmigrate.c SM_CARVE_FRAMELEAD, late_reserve.ld),
+// so no late static moves.
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS) && defined(__3DS__)
+#include "ctr_display.h"
+#include "ctr_place.h"
+
+#define FL_TEXT __attribute__((noinline, optimize("Os"))) UT_COLD_TEXT(framelead)
+#define FL_RO UT_COLD_TEXT_CONST(framelead)
+// Carved from smSpare (z_sdmigrate.c). An underscore section name needs explicit NOBITS (z_battletouch.c's BT_BSSM):
+// without it GCC makes it PROGBITS, and ld turns the whole .late.bss into file bytes.
+#define FL_BSS __attribute__((section(".bss_framelead_late,\"aw\",%nobits @")))
+#ifndef FRAMELEAD_DEFAULT_MS
+#define FRAMELEAD_DEFAULT_MS 6
+#endif
+#define FL_MAX_MS 8
+#define FL_TICKS_PER_MS 268112u // SYSCLOCK_ARM11 / 1000, rounded
+#define FL_RISE_TICKS 268u      // the most a vblank's estimated time moves later per vblank: 1 us (flStamp)
+#define FL_PHASE_WITNESS 1
+#define FL_LATE_BOUND_TICKS (2u * FL_TICKS_PER_MS) // r6: 1.25 ms observed max + 0.75 ms margin; below half a period
+#define FL_PUBLISHED(s) (fl.edgeState[s] & 1u)
+_Static_assert(2u * FL_LATE_BOUND_TICKS < VBLANK_TICKS, "framelead recovery bound must be below half a period");
+#ifdef CTRPORT_FRAMELEAD_UNDER_TITANDIAG
+#define FL_SLOT_NAME CtrFramelead_waitForSlot // titandiag's wraps call them (CMakeLists.txt)
+#define FL_LEVEL_NAME CtrFramelead_levelWait
+#else
+#define FL_SLOT_NAME __wrap_CtrPacer_waitForSlot
+#define FL_LEVEL_NAME __wrap_CtrPacer_levelWait
+#endif
+#ifdef CTRPORT_FRAMELEAD_UNDER_SDLAT
+#define FL_STATS_NAME CtrFramelead_logStats // sdlat's wrap calls it (CMakeLists.txt)
+#else
+#define FL_STATS_NAME __wrap_CtrPacer_logStats
+#endif
+
+// The links' next calls, by their symbols: this file's own __real_ names are pointed at the links (CMakeLists.txt:
+// through CtrFramelead_link_* names bound by --defsym, so GCC sees no call into this file and keeps its order).
+u32 flRealCounter(int id) __asm__("__real_C3D_FrameCounter");
+void flRealWait(GSPGPU_Event id, bool nextEvent) __asm__("__real_gspWaitForEvent");
+void flRealSetCallback(GSPGPU_Event id, ThreadFunc cb, void* data, bool oneShot) __asm__("__real_gspSetEventCallback");
+void flRealLoad(CtrDisplaySettings* settings, const char* path, CtrDisplayCaps caps) __asm__("__real_CtrDisplay_load");
+bool flRealOverride(CtrDisplaySettings* settings, const char* line, CtrDisplayCaps caps) __asm__("__real_CtrDisplay_override");
+void flRealSave(const CtrDisplaySettings* settings, const char* path) __asm__("__real_CtrDisplay_save");
+
+static const char flKey[] FL_RO = "frame_lead_ms";
+static const char flFormat[] FL_RO = " %63[^= ] = %d";
+static const char flRead[] FL_RO = "r";
+static const char flAppend[] FL_RO = "a";
+static const char flSaveLine[] FL_RO = "frame_lead_ms = %d\n";
+static const char flBootLine[] FL_RO = "Frame lead: %u ms\n";
+static const char flFallbackLine[] FL_RO = "[lead] fallback screens=%u\n";
+static const char flStatsLine[] FL_RO =
+    "[lead] %u ms: %lu of %lu frames began early, by %.2f ms on average; %lu woke at or after their vblank (worst %.2f ms); "
+    "vblank callbacks up to %.2f ms late, %lu over 1 ms\n";
+
+static struct {
+    volatile uint32_t stampTick[2];  // each screen's last vblank: its time (tick, low word; flStamp's estimate)
+    volatile uint32_t stampCount[2]; // and the count that vblank made (written after the tick)
+    ThreadFunc next[2];              // the callbacks the stamps run first
+    void* main;                      // the main thread's TLS while it is in a slot wait with a lead (else null)
+    LightEvent wake;                 // signalled by waitScreen's stamps while main is set: a led wait's end at its vblank
+    uint32_t leadTicks;              // the lead in ticks (0: off)
+    uint32_t target;                 // the count the main thread's next read reports, while armed
+    uint32_t vblank;                 // this frame's slot vblank, estimated (tick, low word), when it was led
+    uint32_t chkTarget, chkEdge, chkWake; // the check of a led wait: its target count, that vblank's time, its wake
+    uint32_t frames, led, late, ledTicks, lateWorst; // since the last [lead] line
+    uint32_t cbWorst, cbSlow;        // and the game screen's callbacks past their vblank's time: the most, over 1 ms
+    uint8_t ms;                      // the lead in ms
+    uint8_t chkScreen, waitScreen;   // the check's screen; the screen whose stamps signal wake
+    bool armed, ledThis;
+    uint8_t logged;                 // bit 0: boot line; bits 1/2: deferred top/bottom fallback notification
+    volatile uint8_t edgeState[2];   // 0: unseeded; 1: filtered; 2: busy; 3: arrival fallback; 4/6/8: rejected 1/2/3
+    volatile bool chkGot, chkArmed;  // the target vblank's time is taken (GSP thread); the wake is (main)
+    int8_t fileMs, givenMs;          // settings.ini's and --ini's value + 1 (0: none)
+} fl FL_BSS;
+_Static_assert(sizeof(fl) == 100 || sizeof(void*) != 4, "z_sdmigrate.c carves these 100 B from smSpare (SM_CARVE_FRAMELEAD)");
+
+#ifdef CTRPORT_FRAMELEAD_AUDIO
+// The audio lead-in (build.sh "leadaudio", test builds only; 11-15): how long before its picture each sound starts.
+// A sound starts when a voice's first buffer is queued on a channel not playing (ndspChnWaveBufAdd, any thread; the
+// rest of a voice's buffers, within 2 ms on the same channel, and a playing stream's refills are not starts). Each
+// frame's end (CtrPacer_frameEnding, before its flip) marks the sounds queued so far as that frame's or earlier
+// frames'; the vblank that next shows a new picture of the game screen (its count reaching the pacer's lastShown, as
+// read before its callback's release)
+// takes the marked sounds: its tick minus each sound's tick, in 0.5 ms bins. [alead] after each [pace] line: count,
+// median, p95, max (ms); before = a sound queued after its picture's vblank (none expected), over = 127.5 ms or more.
+#define FLA_RING 64u
+static const char flaLine[] FL_RO = "[alead] %u ms: %lu sounds, median %.1f, p95 %.1f, max %.1f ms before their picture; "
+                                    "%lu before, %lu over, %lu dropped\n";
+static struct {
+    uint32_t tick[FLA_RING];
+    uint32_t chTick[24];
+    uint32_t seq, mark, done, shownDone;
+    uint16_t bins[256];
+    uint32_t count, before, over, dropped, maxTicks;
+} fla __attribute__((section(".bss_frameleadaudio_late,\"aw\",%nobits @"))); // test builds only: appended, last
+
+void __real_ndspChnWaveBufAdd(int id, ndspWaveBuf* buf);
+void __wrap_ndspChnWaveBufAdd(int id, ndspWaveBuf* buf);
+FL_TEXT void __wrap_ndspChnWaveBufAdd(int id, ndspWaveBuf* buf) {
+    uint32_t tick = (uint32_t) svcGetSystemTick();
+    if (0 <= id && 24 > id && !ndspChnIsPlaying(id) && tick - fla.chTick[id] > 2u * FL_TICKS_PER_MS) {
+        uint32_t i = __atomic_fetch_add(&fla.seq, 1u, __ATOMIC_RELAXED);
+        fla.tick[i % FLA_RING] = tick;
+        fla.chTick[id] = tick;
+    }
+    __real_ndspChnWaveBufAdd(id, buf);
+}
+
+void flaRealFrameEnding(void) __asm__("__real_CtrPacer_frameEnding");
+FL_TEXT void CtrFramelead_frameEnding(void) {
+    flaRealFrameEnding();
+    fla.mark = __atomic_load_n(&fla.seq, __ATOMIC_RELAXED);
+}
+
+// GSP thread, the game screen's vblank (after its count): a new picture shows now.
+// shown: the pacer's lastShown as the vblank began, before its callback's release could flip the next picture.
+static FL_TEXT void flaShown(uint32_t count, uint32_t tick, uint32_t shown) {
+    if (shown != count || fla.shownDone == count) return;
+    fla.shownDone = count;
+    uint32_t mark = fla.mark;
+    if (mark - fla.done > FLA_RING) {
+        fla.dropped += mark - fla.done - FLA_RING;
+        fla.done = mark - FLA_RING;
+    }
+    for (; fla.done != mark; fla.done++) {
+        int32_t d = (int32_t) (tick - fla.tick[fla.done % FLA_RING]);
+        if (0 > d) {
+            fla.before++;
+            continue;
+        }
+        uint32_t bin = (uint32_t) d / (FL_TICKS_PER_MS / 2u);
+        if (bin > 255u) {
+            fla.over++;
+            bin = 255u;
+        }
+        fla.bins[bin]++;
+        fla.count++;
+        if ((uint32_t) d > fla.maxTicks) fla.maxTicks = (uint32_t) d;
+    }
+}
+
+// The bin (in 0.5 ms) at or below which q of the counted sounds fall.
+static FL_TEXT double flaQuantile(uint32_t q100) {
+    uint32_t need = (fla.count * q100 + 99u) / 100u, seen = 0;
+    for (uint32_t b = 0; 256u > b; b++) {
+        seen += fla.bins[b];
+        if (seen >= need && need != 0) return 0.5 * b + 0.25;
+    }
+    return 0.0;
+}
+#endif
+
+static FL_TEXT void flApply(void) {
+    int ms = fl.givenMs != 0 ? fl.givenMs - 1 : fl.fileMs != 0 ? fl.fileMs - 1 : FRAMELEAD_DEFAULT_MS;
+    fl.ms = (uint8_t) ms;
+    fl.leadTicks = (uint32_t) ms * FL_TICKS_PER_MS;
+}
+
+// 0: another setting; 1: frame_lead_ms with v in range; -1: frame_lead_ms out of range.
+static FL_TEXT int flLine(const char* line, int* v) {
+    char key[64];
+    if (sscanf(line, flFormat, key, v) != 2 || strcmp(key, flKey) != 0) return 0;
+    return 0 <= *v && FL_MAX_MS >= *v ? 1 : -1;
+}
+
+// The settings read (z_benchfid_window.c's call: at boot and before each save): the file's frame_lead_ms.
+FL_TEXT void CtrFramelead_load(CtrDisplaySettings* settings, const char* path, CtrDisplayCaps caps) {
+    flRealLoad(settings, path, caps);
+    fl.fileMs = 0;
+    FILE* f = fopen(path, flRead);
+    if (f != nullptr) {
+        char line[128];
+        int v;
+        while (fgets(line, sizeof(line), f) != nullptr) {
+            if (flLine(line, &v) > 0) fl.fileMs = (int8_t) (v + 1);
+        }
+        fclose(f);
+    }
+    flApply();
+}
+
+// --ini frame_lead_ms=N (z_cut10.c's call): this run only.
+FL_TEXT bool CtrFramelead_override(CtrDisplaySettings* settings, const char* line, CtrDisplayCaps caps) {
+    int v;
+    int kind = flLine(line, &v);
+    if (kind == 0) return flRealOverride(settings, line, caps);
+    if (kind > 0) {
+        fl.givenMs = (int8_t) (v + 1);
+        flApply();
+    }
+    return kind > 0;
+}
+
+// The display's rewrite of settings.ini (battletouch's call) keeps only its own keys: the file's frame_lead_ms goes
+// back as the file had it (none if it had none; never --ini's).
+FL_TEXT void CtrFramelead_save(const CtrDisplaySettings* settings, const char* path) {
+    flRealSave(settings, path);
+    if (fl.fileMs == 0) return;
+    FILE* f = fopen(path, flAppend);
+    if (f != nullptr) {
+        fprintf(f, flSaveLine, fl.fileMs - 1);
+        fclose(f);
+    }
+}
+
+// Only bootstrap/recovery reads hardware. A narrow VCount read is bracketed in ticks; each possible sample time
+// and position within its line must admit the chosen edge within 49.76 us. The remaining 0.24 us covers the
+// nominal pacer period's rounding when predicting the next physical edge. Unsupported timing or a failed/slow
+// read leaves history unpublished. No arrival is silently substituted for a failed physical witness.
+static FL_TEXT bool flPhase(int screen, uint32_t tick, bool bootstrap, uint32_t* edge) {
+    uint32_t regs[22], line;
+    uint32_t base = 0x400400u + (uint32_t) screen * 0x100u;
+    uint32_t irq = 402u + 2u * (uint32_t) screen;
+    if (GSPGPU_ReadHWRegs(base, regs, sizeof(regs)) < 0 || regs[0] != 450u || regs[9] != 413u ||
+        (regs[16] & 0xffffu) != irq) return false;
+    uint64_t begin = svcGetSystemTick(); // Keep the full clock: a long stall must not alias a short read.
+    int32_t result = GSPGPU_ReadHWRegs(base + 0x54u, &line, 4);
+    uint64_t elapsed = svcGetSystemTick() - begin;
+    const uint32_t tolerance = 13341u;
+    if (elapsed > 2u * tolerance - 10824u) return false;
+    if (result < 0 || line > 413u) return false;
+    int32_t lines = (int32_t) line - (int32_t) irq;
+    if (lines < 0) lines += 414;
+    uint32_t low = begin - (lines + 1u) * 10824u;
+    int32_t offset = (int32_t) (tick - low);
+    // A bootstrap arrival certified within half a period cannot alias one omitted edge to the 2 ms continuity
+    // window. Keep that original r5 seed, including all normal bounded arrivals; correct larger bootstrap delays.
+    if (!(bootstrap && offset >= 0 && (uint32_t) offset < (uint32_t) VBLANK_TICKS / 2u)) {
+        int32_t least = (int32_t) elapsed + 10824 - (int32_t) tolerance;
+        if (least < 0) least = 0;
+        if (offset < (int32_t) least) offset = (int32_t) least;
+        if (offset > (int32_t) tolerance) offset = (int32_t) tolerance;
+    }
+    *edge = low + (uint32_t) offset;
+    return true;
+}
+
+// A screen's vblank (GSP thread): its own callback first (it counts the vblank), then the stamp: the vblank's time,
+// then its count. Its callback can begin late (the GSP thread runs events in turn, behind higher priority threads and
+// other events' callbacks; c26rev6 FLR3-1), so the time is an estimate that a late callback can't move: the last
+// vblank's time plus one vblank, or this callback's tick if that is earlier (it never begins before its vblank), and
+// later by at most FL_RISE_TICKS (1 us) a vblank, so a lasting difference of the vblank's period from VBLANK_TICKS is
+// followed while one bounded late callback, or many, move it at most 1 us each. Bootstrap and ambiguous intervals
+// use an independent physical phase witness, then return to this same filter. A count that did not move is not
+// a vblank of the estimate's. Callbacks past
+// the estimate are logged ([lead]: the most, and the count over 1 ms). Then the check of a led wait takes its target
+// vblank's time, and a led wait is woken (CtrFramelead_waitEvent).
+static FL_TEXT void flStamp(int screen, void* data) {
+    extern uint8_t CtrScreens_pacerGame;
+    // GSP callbacks are serial, but libctru's callback setter does not wait for an in-flight callback. Claim before
+    // sampling time. A callback change resets 2 to 0, so this old callback cannot republish history after the reset.
+    uint8_t history = __atomic_exchange_n(&fl.edgeState[screen], 2, __ATOMIC_ACQUIRE);
+    uint32_t tick = (uint32_t) svcGetSystemTick();
+#ifdef CTRPORT_FRAMELEAD_AUDIO
+    extern __typeof__(pace) flaPace __asm__("pace");
+    uint32_t shown = flaPace.lastShownValid ? flaPace.lastShown : 0u;
+#endif
+    fl.next[screen](data);
+    uint32_t count = flRealCounter(screen);
+    uint32_t moved = count - fl.stampCount[screen];
+    uint8_t published = moved != 0u ? (history == 3 ? 3 : 1) : history;
+    if (moved != 0u) {
+        uint32_t edge = tick;
+        int32_t late = (int32_t) (tick - fl.stampTick[screen] - (uint32_t) VBLANK_TICKS);
+        if ((history & 1u) && moved == 1u && late >= 0) {
+            if (screen == CtrScreens_pacerGame) {
+                if ((uint32_t) late > fl.cbWorst) fl.cbWorst = (uint32_t) late;
+                if ((uint32_t) late > FL_TICKS_PER_MS) fl.cbSlow++;
+            }
+            if (history == 1 && late <= (int32_t) FL_LATE_BOUND_TICKS)
+                edge = tick - (uint32_t) late + ((uint32_t) late < FL_RISE_TICKS ? (uint32_t) late : FL_RISE_TICKS);
+        }
+        // Original has no witness IPC; history stays unqualified so a later enable must acquire a fresh seed.
+        if (!fl.leadTicks || !(history & 1u) || moved != 1u || late > (int32_t) FL_LATE_BOUND_TICKS) {
+            published = fl.leadTicks && flPhase(screen, tick, history == 0, &edge);
+            if (fl.leadTicks && !published) {
+                // At most one acquisition per callback. After four rejected acquisitions, the ruled r6
+                // arrival policy resolves this hitch; a distinct later hitch may try physical phase again.
+                published = history >= 4 ? history + 2 : 4;
+                if (published == 10) published = 3;
+            }
+        }
+        __dmb();
+        fl.stampTick[screen] = edge;
+        __dmb();
+        fl.stampCount[screen] = count;
+    }
+    uint8_t busy = 2;
+    if (__atomic_compare_exchange_n(&fl.edgeState[screen], &busy, published,
+                                     false, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+        if (published == 3 && history != 3)
+            __atomic_fetch_or(&fl.logged, (uint8_t) (2u << screen), __ATOMIC_RELAXED);
+        if (moved != 0u && (published & 1u) && screen == fl.chkScreen && count == fl.chkTarget && !fl.chkGot) {
+            fl.chkEdge = fl.stampTick[screen];
+            __dmb();
+            fl.chkGot = true;
+        }
+    }
+    if (fl.main != nullptr && screen == fl.waitScreen) LightEvent_Signal(&fl.wake);
+#ifdef CTRPORT_FRAMELEAD_AUDIO
+    if (screen == CtrScreens_pacerGame) flaShown(count, tick, shown);
+#endif
+}
+
+static FL_TEXT void flOnVBlank0(void* data) {
+    flStamp(0, data);
+}
+
+static FL_TEXT void flOnVBlank1(void* data) {
+    flStamp(1, data);
+}
+
+// A callback change breaks this screen's edge history: its counter can miss even one physical edge (FLR4-1).
+// Also discard its pending wake check; a count in the next callback epoch is not that check's target edge.
+FL_TEXT void CtrFramelead_setEventCallback(GSPGPU_Event id, ThreadFunc cb, void* data, bool oneShot) {
+    if (id == GSPGPU_EVENT_VBlank0 || id == GSPGPU_EVENT_VBlank1) {
+        int screen = id == GSPGPU_EVENT_VBlank1;
+        __atomic_store_n(&fl.edgeState[screen], 0, __ATOMIC_RELEASE);
+        if (screen == fl.chkScreen) fl.chkArmed = fl.chkGot = false;
+        if (cb != nullptr) {
+            fl.next[screen] = cb;
+            cb = screen ? flOnVBlank1 : flOnVBlank0;
+        }
+    }
+    flRealSetCallback(id, cb, data, oneShot);
+}
+
+// The check of the last led wait (main thread), once its target vblank's time is taken (flStamp): a wake before that
+// time began early, by the difference; else it woke after its vblank. The time is the estimate as the target vblank's
+// own callback leaves it, never after that callback began, so a wake the estimate let run late is seen (FLR3-1).
+static FL_TEXT void flSettle(void) {
+    if (!fl.chkArmed || !fl.chkGot) return;
+    __dmb();
+    int32_t early = (int32_t) (fl.chkEdge - fl.chkWake);
+    if (early > 0) {
+        fl.led++;
+        fl.ledTicks += (uint32_t) early;
+    } else {
+        fl.late++;
+        if ((uint32_t) -early > fl.lateWorst) fl.lateWorst = (uint32_t) -early;
+    }
+    fl.chkArmed = false;
+}
+
+// pacebot's gspWaitForEvent link (the event is already the game screen's): in a led slot wait, with the count one
+// short of the slot's target and a fresh stamp of that count's vblank, wait until the lead before the next vblank
+// instead, and arm the count read. The wait also ends at the target vblank's callback, if that comes first: a frame
+// never starts later than it would without the lead (FLR3-1), and then starts as it would (not armed). Its wake is
+// checked against the target vblank's time (flSettle).
+FL_TEXT void CtrFramelead_waitEvent(GSPGPU_Event id, bool nextEvent) {
+    extern __typeof__(pace) flPace __asm__("pace");
+    if (fl.main != nullptr && !nextEvent && (id == GSPGPU_EVENT_VBlank0 || id == GSPGPU_EVENT_VBlank1) &&
+        getThreadLocalStorage() == fl.main) {
+        int screen = id == GSPGPU_EVENT_VBlank1;
+        uint32_t target = flPace.slotStart + flPace.slotLength;
+        // The last check (kept while its vblank is to come; dropped a vblank after it, its time not taken), then this
+        // target's: set before the count is read, so its vblank's stamp is not missed.
+        flSettle();
+        if (fl.chkArmed && 0 < (int32_t) (flRealCounter(fl.chkScreen) - fl.chkTarget)) fl.chkArmed = false;
+        if (!fl.chkArmed) {
+            fl.chkScreen = (uint8_t) screen;
+            fl.chkTarget = target;
+            fl.chkGot = false;
+        }
+        __dmb();
+        uint32_t count = flRealCounter(screen);
+        uint32_t stamped = fl.stampCount[screen];
+        __dmb();
+        uint32_t tick = fl.stampTick[screen];
+        __dmb();
+        // A newer vblank's callback counts before it stamps: if the count moved, the tick may be the newer one's.
+        if (FL_PUBLISHED(screen) && count + 1u == target && stamped == count && flRealCounter(screen) == count &&
+            (uint32_t) svcGetSystemTick() - tick < 2u * (uint32_t) VBLANK_TICKS) {
+            uint32_t vblank = tick + (uint32_t) VBLANK_TICKS;
+            // The event (one-shot: no lock on the GSP thread's side) is signalled by every stamp of this screen while
+            // main is set (an older one's too: the wait then returns at once). A wait that returns has taken the signal,
+            // then the count is read: a stamp after that signals again, and one before it has counted (a callback
+            // counts before it stamps), so the target vblank is never missed.
+            fl.waitScreen = (uint8_t) screen;
+            for (;;) {
+                if (!FL_PUBLISHED(screen) || flRealCounter(screen) != count) break; // reset or target callback
+                int32_t left = (int32_t) (vblank - fl.leadTicks - (uint32_t) svcGetSystemTick());
+                if (left <= 0) {
+                    fl.vblank = vblank;
+                    fl.ledThis = true;
+                    fl.target = target;
+                    fl.armed = true;
+                    break;
+                }
+                // Rounded up: a wait short of the wake time by under a tick would come back to wait 0 ns.
+                int64_t ns = ((int64_t) left * 1000000 + FL_TICKS_PER_MS - 1) / FL_TICKS_PER_MS;
+                LightEvent_WaitTimeout(&fl.wake, ns);
+            }
+            if (!fl.chkArmed && fl.chkTarget == target) {
+                fl.chkWake = (uint32_t) svcGetSystemTick();
+                __dmb();
+                fl.chkArmed = true;
+            }
+            return;
+        }
+    }
+    flRealWait(id, nextEvent);
+}
+
+// pacebot's C3D_FrameCounter link: once armed, the main thread's next read short of the target reports the target.
+FL_TEXT u32 CtrFramelead_frameCounter(int id) {
+    u32 count = flRealCounter(id);
+    if (fl.armed && getThreadLocalStorage() == fl.main && 0 > (int32_t) (count - fl.target)) {
+        fl.armed = false;
+        return fl.target;
+    }
+    return count;
+}
+
+// A reader's view of a slot tick (the slot's vblank, when its frame was led): no later than now (c26rev7 FL-1).
+static FL_TEXT void flNotAhead(uint64_t* tick) {
+    uint64_t now = svcGetSystemTick();
+    if (0 > (int64_t) (now - *tick)) *tick = now;
+}
+
+// The renderer's slot wait (CtrPacer_waitForSlot, called directly: this file defines it): led while the lead is on.
+bool FL_SLOT_NAME(bool catchUp, int32_t skipMax);
+FL_TEXT bool FL_SLOT_NAME(bool catchUp, int32_t skipMax) {
+    extern __typeof__(pace) flPace __asm__("pace");
+    if (!(__atomic_load_n(&fl.logged, __ATOMIC_RELAXED) & 1u)) {
+        __atomic_fetch_or(&fl.logged, 1u, __ATOMIC_RELAXED);
+        LightEvent_Init(&fl.wake, RESET_ONESHOT); // before main is first set: no stamp signals it until then
+        logInfo(flBootLine, (unsigned) fl.ms);
+    }
+    fl.ledThis = false;
+    flNotAhead(&flPace.slotTick);
+    if (fl.leadTicks != 0) fl.main = getThreadLocalStorage();
+    bool shown = CtrPacer_waitForSlot(catchUp, skipMax);
+    fl.main = nullptr;
+    fl.armed = false;
+    fl.frames++;
+    if (fl.ledThis) {
+        int32_t early = (int32_t) (fl.vblank - (uint32_t) flPace.slotTick);
+        if (early > 0) flPace.slotTick += (uint32_t) early;
+    }
+    flSettle(); // a wake after its vblank's callback is checked at once
+    return shown;
+}
+
+// Auto's level wait (wrapped; titandiag's wrap calls it): never led, but it can follow a led slot (Auto turned on).
+bool flRealLevelWait(bool mayskip) __asm__("__real_CtrPacer_levelWait");
+bool FL_LEVEL_NAME(bool mayskip);
+FL_TEXT bool FL_LEVEL_NAME(bool mayskip) {
+    extern __typeof__(pace) flPace __asm__("pace");
+    flNotAhead(&flPace.slotTick);
+    return flRealLevelWait(mayskip);
+}
+
+// main.c's watchdog marks (CtrHeldslow_mark, wrapped): heldslow's [slow] time at "wait for frame" with the slot tick no
+// later than now, for that call only (above).
+void flRealMark(const char* phase) __asm__("__real_CtrHeldslow_mark");
+void __wrap_CtrHeldslow_mark(const char* phase);
+FL_TEXT void __wrap_CtrHeldslow_mark(const char* phase) {
+    extern __typeof__(pace) flPace __asm__("pace");
+    uint64_t slot = flPace.slotTick;
+    if (phase[0] != 'w' || 0 <= (int64_t) (svcGetSystemTick() - slot)) {
+        flRealMark(phase);
+        return;
+    }
+    flNotAhead(&flPace.slotTick);
+    flRealMark(phase);
+    flPace.slotTick = slot;
+    CtrHeldslowState* s = CtrHeldslow_state;
+    if (s != NULL && s != (CtrHeldslowState*) 1) s->seenSlot = slot;
+}
+
+// The frames' swap (the GSP thread; heldslow's wrap calls it by its link name, CMakeLists.txt), then battletouch's:
+// the game screen's done is from frameSlotTick, no later than now while the lead is on.
+void flRealSwap(gfxScreen_t screen, bool hasStereo) __asm__("Battletouch_pacerSwap");
+void CtrFramelead_pacerSwap(gfxScreen_t screen, bool hasStereo);
+FL_TEXT void CtrFramelead_pacerSwap(gfxScreen_t screen, bool hasStereo) {
+    extern __typeof__(pace) flPace __asm__("pace");
+    extern uint8_t CtrScreens_pacerGame;
+    if (fl.leadTicks != 0 && screen == (gfxScreen_t) CtrScreens_pacerGame && flPace.ready) {
+        LightLock_Lock(&flPace.lock);
+        if (!flPace.doneRecorded && flPace.frameSlotTick != 0) flNotAhead(&flPace.frameSlotTick);
+        LightLock_Unlock(&flPace.lock);
+    }
+    flRealSwap(screen, hasStereo);
+}
+
+// [pace]'s line (CtrPacer_logStats, called directly), then [lead]'s while the lead is on.
+void FL_STATS_NAME(void);
+FL_TEXT void FL_STATS_NAME(void) {
+    CtrPacer_logStats();
+    flSettle();
+    if (fl.ms != 0 && fl.frames != 0) {
+        double ms = 1.0 / CPU_TICKS_PER_MSEC;
+        logInfo(flStatsLine, (unsigned) fl.ms, (unsigned long) fl.led, (unsigned long) fl.frames,
+                fl.led != 0 ? (double) fl.ledTicks * ms / fl.led : 0.0, (unsigned long) fl.late, (double) fl.lateWorst * ms,
+                (double) fl.cbWorst * ms, (unsigned long) fl.cbSlow);
+    }
+    if (fl.ms != 0) {
+        unsigned fallback = __atomic_fetch_and(&fl.logged, 1u, __ATOMIC_RELAXED) >> 1;
+        if (fallback != 0) logInfo(flFallbackLine, fallback); // main thread; coalesced screen bits, not an event count
+    }
+    fl.frames = fl.led = fl.late = fl.ledTicks = fl.lateWorst = fl.cbWorst = fl.cbSlow = 0;
+#ifdef CTRPORT_FRAMELEAD_AUDIO
+    logInfo(flaLine, (unsigned) fl.ms, (unsigned long) fla.count, flaQuantile(50u), flaQuantile(95u),
+            (double) fla.maxTicks / CPU_TICKS_PER_MSEC, (unsigned long) fla.before, (unsigned long) fla.over,
+            (unsigned long) fla.dropped);
+    memset(fla.bins, 0, sizeof(fla.bins));
+    fla.count = fla.before = fla.over = fla.dropped = fla.maxTicks = 0;
+#endif
+}
+#endif

@@ -919,8 +919,9 @@ void Utgap_registerAll(VMContext* ctx) {
 
 #endif // ENABLE_WAD16
 
-// Event guards use this lookup even when native AOT bodies are absent.
-#if defined(ENABLE_WAD16) && !defined(CTRPORT_AOT)
+// Event guards (z_evguard.c) use this lookup even when native AOT bodies are absent: no AOT, or the tracing and
+// stress builds above, whose bodies are the generated code alone and so define no utfSlot.
+#if defined(ENABLE_WAD16) && (!defined(CTRPORT_AOT) || defined(ENABLE_VM_TRACING) || defined(CTRPORT_AOT_STRESS))
 RValue* UtFlames_slot(Instance* inst, int32_t varID) UTF_LATE;
 RValue* UtFlames_slot(Instance* inst, int32_t varID) {
     return IntRValueHashMap_findSlot(&inst->selfVars, varID);

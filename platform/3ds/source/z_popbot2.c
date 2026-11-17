@@ -164,6 +164,10 @@ PB_CODE static void pb2Anchor(uint8_t* renderer, float at) {
     memcpy(op + Popbot_layout[L_OP_Y], y, sizeof(y));
 }
 
+// Never read: retain the original anchor's compiler dependency and order.
+// Its four-byte pointer is appended with this unit's ordinary late constants.
+static void (*const phKeep)(uint8_t*,float) __attribute__((used,section(".rodata.popuphome_in_text"))) = pb2Anchor;
+#line 167
 // The outermost drawSprite while a panel or the crossword is moved. The recorder answers per instance (dlgRedirecting
 // keeps its answer until another instance draws), and their Draw mixes the popup with drawing in the room: a panel
 // first draws itself on the wall (draw_sprite at its own x, y), then the floor list (moved), whose last draw is the
@@ -289,8 +293,11 @@ PB_CODE bool CtrPopbot2_allowed(const CtrDialoguePolicy* constPolicy, Runner* ru
     }
     if (shows) {
         if ((state & 1) == 0) logInfo(pb2LogOn);
-        pb2Anchor(renderer, 0.0f);
-        pb2Anchor(renderer, 4095.0f);
+        extern void CtrPopupHome_anchor(uint8_t*, float);
+        CtrPopupHome_anchor(renderer, 0.0f);
+        CtrPopupHome_anchor(renderer, 4095.0f);
+
+#line 294
         state = state < INT32_MAX - 2 ? (state | 1) + 2 : state;
     } else if ((state & 1) != 0) {
         pb2Close(renderer, policy);

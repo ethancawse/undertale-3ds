@@ -31,6 +31,16 @@ CONTEXT = struct.Struct('<HhhH')
 CFLAGS = ['-std=c11', '-O3', '-ffp-contract=off', '-Wall', '-Wextra', '-Werror', '-shared']
 
 
+def _mingw_folders():
+    """MinGW ucrt64 folders for a host-built library: MSYS2's own, and devkitPro's only where DEVKITPRO names it
+    in Windows form (never a fixed devkitPro folder: 11-17, devkitPro can live anywhere)."""
+    folders = [Path('C:/msys64/ucrt64/bin')]
+    root = os.environ.get('DEVKITPRO', '')
+    if root and not root.startswith('/'):
+        folders.append(Path(root) / 'msys2/ucrt64/bin')
+    return folders
+
+
 def native(build=None, library=None):
     """The encoder library: `library` (a prebuilt dspadpcm built from dspadpcm.c with CFLAGS, for hosts without a C
     compiler) or one compiled into `build` (private output) with the host's gcc/clang."""
@@ -45,8 +55,7 @@ def native(build=None, library=None):
     if not library.exists() or not stamp.exists() or stamp.read_text() != signature:
         compiler = shutil.which('gcc') or shutil.which('clang')
         if not compiler and os.name == 'nt':
-            compiler = next((str(p) for p in (Path('C:/msys64/ucrt64/bin/gcc.exe'),
-                Path('C:/devkitPro/msys2/ucrt64/bin/gcc.exe')) if p.is_file()), None)
+            compiler = next((str(p / 'gcc.exe') for p in _mingw_folders() if (p / 'gcc.exe').is_file()), None)
         if not compiler:
             raise RuntimeError('A host C compiler is required for experimental ADPCM conversion')
         subprocess.run([compiler] + CFLAGS + (['-static-libgcc'] if os.name == 'nt' else [])
@@ -67,8 +76,8 @@ def _load(library):
     # MinGW's DLL dependencies live beside the compiler; never alter global PATH.
     dll_dirs = []
     if os.name == 'nt' and hasattr(os, 'add_dll_directory'):
-        for folder in ('C:/msys64/ucrt64/bin', 'C:/devkitPro/msys2/ucrt64/bin'):
-            if Path(folder).is_dir():
+        for folder in _mingw_folders():
+            if folder.is_dir():
                 dll_dirs.append(os.add_dll_directory(folder))
     try:
         lib = ctypes.CDLL(str(library.resolve()))

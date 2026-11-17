@@ -27,3 +27,13 @@ void CtrBsmex_frameX(Renderer* renderer, int32_t room, int32_t group, CtrLayoutP
 // True when this frame's splitY is CtrBsmex_frameF's moved line (a mode 8 scene, Mettaton EX seen, the centred place):
 // battlesplit's by_row draws then keep the band's line (bandY); the moved line is BY_CALL's alone.
 bool CtrBsmex_rowsKept(void);
+
+// bsmexr (change battlesplit2, 11-15; z_bsmex.c's end, AAC): battlesplit's call in place of CtrBsmex_frameX (the same
+// arguments): it, then the whole place's end: held until the menu with his heart cohort gone, then a slide of
+// BSM_SLIDE_FRAMES frames to the centred place (each step the centred place with the lift eased, and CTR_BSMEX_WHOLE so
+// that every draw takes battlesplit's full route).
+void CtrBsmex_frameY(Renderer* renderer, int32_t room, int32_t group, CtrLayoutPlace* place, float viewTop, float perPx,
+                     float* split, uint8_t* whole, uint32_t frames);
+// The slide's height this frame (smoothstep, above 0 and below 1: what the centred place puts on the top screen is shown
+// that far from its whole place, on the bottom screen, to its centred one), 0 when this frame is not a slide step.
+float CtrBsmex_slide(void);

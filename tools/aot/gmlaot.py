@@ -53,6 +53,9 @@ usage:
                    and in parallel
   --append-from N  keep entries 0..N-1 in their original units; emit the remaining entries into aot_append_<n>.c.
                    Static builds link those units after all existing generated and typed units, before padding.
+  --hot-from N     with --append-from: emit entries N.. into aot_hot_<n>.c instead, each with its reference arrays and
+                   their strings in its own text (hot_refs); static builds link them after the appended units, compiled
+                   as the generated files are but without jump tables.
   --tag T          the set's tag in the build ID (default aot<budget MB>, or aot<N>fn without a budget)
   --no-native      accepted for older scripts and does nothing (see --no-utflames)
   --no-utflames    WAD 16 only: leave out the calls to engine/src/z_utflames.c's native fire-bullet bodies
@@ -235,6 +238,34 @@ ARRAY_REFS = True   # Push.v [arraypushaf] and Break pushaf fast paths inline (-
 # aotSiteBreakPopAF; --no-array-writes turns them off)
 ARRAY_WRITES = True
 SHARED_HELPERS = False   # one copy of the AOT_HELPER functions, weak (--shared-helpers)
+# The codeshrink-aot unit's forms (2026-11-16) are qualified for UNDERTALE only (astrarev2 ASHR-3): FORMS is on for a
+# run whose games are all WAD 16, and off for any other (DELTARUNE, WAD 17), whose generated files are then what they
+# were before the unit, byte for byte. On, it brings: the int constant fused with its Conv (and x / k's Div), the
+# SHRINK_DEFAULT passes, the slow halves' one copy in aot_table.c (AOT_SLOW_HALVES_DEFINE), and FORMS_LINE in every
+# generated file, in the place of the empty line above its #include, so no line moves: vm_aot.h keeps the old inline
+# slow halves for a file without it (at the header's end). FORMS_OVERRIDE (True or False; None: decided from the games)
+# is for the tests and for the proof that off reproduces the old generator.
+FORMS = False
+FORMS_OVERRIDE = None
+FORMS_LINE = "#define AOT_SHRINK_FORMS 1"
+# change aotshrink2's passes over the generated code (FORMS runs only). $GMLAOT_SHRINK (a comma list, or "none") names
+# the ones that run; unset, SHRINK_DEFAULT runs (the codeshrink-aot unit, 2026-11-16: the two passes that shorten the
+# hot path too). Naming a pass for a run that is not FORMS stops the run. With none on, the passes' functions are
+# generated as without them, byte for byte (the unit's other forms stay). A pass leaves alone the functions that have a twin in late
+# text (LATE_TWINS and --late-numeric: their text is copied or matched there, and late text must not move).
+#   cstorek   a number constant's push and the Pop.v that stores it in a cached slot or a local, as one store of the
+#             constant (AOT_CSTORE_K, AOT_STORE_K in vm_aot.h)
+#   callz     a Call.i and the Popz that discards its result, as one call of a function that does both
+#             (AOT_CALL_Z, AOT_CALL_SCRIPT_Z, AOT_CALL_BUILTIN_Z; the functions are in aot_table.c)
+#   storetail a cached store's cold half (the pointer is nullptr: insert the variable, store, or take the site when
+#             there is no instance) as one call (AOT_CSTORE_T, AOT_CSTORE_KT; aotStoreMiss is in aot_table.c)
+SHRINK_PASSES = ("cstorek", "callz", "storetail")
+SHRINK_DEFAULT = ("cstorek", "storetail")
+# A call as gen_instr writes it, for callz: macro, depth, instruction word, address, depth after, function index, name.
+CALLZ_CALL = re.compile(r"(AOT_CALL(?:_SCRIPT|_BUILTIN)?)\((\d+), 0x([0-9A-F]{8})u, 0x([0-9A-F]+), (-?\d+)(?:, (\d+))?\);  /\* (.*) \*/")
+SHRINK = set()
+SHRINK_SKIP = set()    # code entry names no pass touches (--late-numeric)
+SHRINK_SITES = {}      # pass -> sites it fused, for the report
 # --typed <list>: the (data.win folder, code entry) pairs whose loops get typed regions (typed.py), or typed.ALL
 # ("--typed all": every code entry compiled), None when off. With it off, nothing here changes what is generated.
 TYPED = None
@@ -304,6 +335,9 @@ GETTEXT_FAST = {
          (38, 2, "c0"), (38, 5, "c1"), (38, 8, "c2"), (38, 11, "c3")),
         "L_00D0:", "L_05E4:", "sha256:5e16f8d0df25df2689f8c33cee3cf762dcae1e6f4aa10435069346406f16b1ad/7"),
 }
+# The digests with a twin in late text, whatever --no-late-copies clears (so that a desktop build without the twins
+# generates these functions as the 3DS build does).
+LATE_TWINS = frozenset(LATE_COPIES) | frozenset(GETTEXT_FAST)
 GETTEXT_OPERANDS = ("arg", "map", "lang", "ja", "find")  # the front's operands, in its array's order
 GETTEXT_TEXTS = []  # the wrappers' C text, for aot_gettext.c
 # The front, once in aot_gettext.c. a: argument's variable index (argument[0], a builtin: the call's first argument),
@@ -867,6 +901,7 @@ class Emitter:
         self.local_math = False   # a per-target typed list's entry: its regions call their own math wrappers (compact_math)
         self.compact_keep = []    # compact: the AOT_PUSH_VAR lines left out, for aotk_<k> (compact_skip)
         self.board = None         # BOARD_NATIVE: board_site's dict
+        self.shrink = frozenset()   # the SHRINK passes on for this function (generate_function)
 
     def L(self, addr):
         return "L_%04X" % addr
@@ -1343,7 +1378,93 @@ class Emitter:
             e("/* %04X %04X */" % (ins.addr, n))
             e("AOT_CMP_K(%d, %s, %d, %s, %s);" % (d, W, (nxt.word >> 8) & 0xFF, kv, kslot))
             return [ins.addr, n]
+        if FORMS and nxt.op == OP_CONV and kint is not None and nxt.t1 == T_INT32 and not self.region_at(n):
+            # An int constant and the Conv that retypes it (change codeshrink-aot). Conv.i.v only sets the stack type
+            # (x = 5): the push stores it. Conv.i.d makes it a real, which is always x / 5's divisor in UNDERTALE:
+            # the divide takes the constant as AOT_ADD_R takes its, and what the push and the Conv would have left
+            # above the stack's top only gets there in the slow half.
+            if nxt.t2 == T_VAR:
+                e("/* %04X %04X */" % (ins.addr, n))
+                e("AOT_PUSH_INT(%d, %d, %d);" % (d, kint, T_VAR))
+                return [ins.addr, n]
+            if nxt.t2 == T_DOUBLE:
+                n2 = nxt.next
+                div = fn.instrs.get(n2)
+                if (div is not None and div.op == OP_DIV and n2 in fn.depth and n2 not in fn.labels and n2 not in fn.stubs
+                        and not self.region_at(n2)):
+                    int_div = div.t1 in (T_INT32, T_INT64) and div.t2 in (T_INT32, T_INT64)
+                    e("/* %04X %04X %04X */" % (ins.addr, n, n2))
+                    e("AOT_DIV_R(%d, 0x%08Xu, %s, %d, %d);" % (d, div.word, kv, div.t2, 1 if int_div else 0))
+                    return [ins.addr, n, n2]
+                e("/* %04X %04X */" % (ins.addr, n))
+                e("AOT_PUSH_INT_REAL(%d, %d);" % (d, kint))
+                return [ins.addr, n]
+        if "cstorek" in self.shrink and nxt.op == OP_POP and not self.region_at(n):
+            return self.fuse_store(ins, nxt, d, kv, kint)
         return None
+
+    def fuse_store(self, ins, pop, d, kv, kint):
+        """A number constant pushed straight into the Pop.v that stores it in a cached slot or a local (cstorek):
+        emits the store of the constant and returns the addresses it covers, or None.
+
+        What the two instructions store is known here: an int constant popped as an int (Pop.v.i, what x = 5
+        compiles to) is the real coerceIntStoreToRealInPlace makes of it, and a double constant is stored as pushed;
+        both are AOT_KR(kv). Any other pair (an int popped as a variable, which stays an int) is left as it was."""
+        fn = self.fn
+        n = pop.addr
+        if pop.t1 != T_VAR or pop.var_type() != VT_NORMAL or fn.depth[n] != d + 1 or fn.after[n] != d:
+            return None
+        if kint is not None and pop.t2 not in (T_INT32, T_INT64, T_INT16):
+            return None
+        v = self.dw.vars[pop.var_index()]
+        state = self.slot_in.get(n, frozenset())
+        cached = (v["varID"] >= 0 and pop.inst in SLOT_SCOPES and SLOTS
+                  and self.slot_cached(n, ("write", pop.inst, v["varID"]), state))
+        if not cached and not (v["varID"] >= 0 and pop.inst == LOCAL):
+            return None
+        if kint is not None:
+            push = "AOT_PUSH_INT(%d, %d, %d)" % (d, kint, T_INT16 if ins.op == OP_PUSHI or ins.t1 == T_INT16 else T_INT32)
+        else:
+            push = "AOT_PUSH_REAL(%d, %s, %d)" % (d, kv, T_DOUBLE)
+        self.emit("/* %04X %04X */" % (ins.addr, n))
+        self.cur_in = state   # the pop's, as gen sets it for an instruction of its own
+        self.gen_pop(pop, d + 1, "0x%08Xu" % pop.word, d, konst=(kv, push))
+        SHRINK_SITES["cstorek"] = SHRINK_SITES.get("cstorek", 0) + 1
+        return [ins.addr, n]
+
+    def fuse_callz(self, ins, d):
+        """A Call.i whose result the next instruction, a Popz, discards (callz): emits the one call that does both and
+        returns the addresses it covers, or None.
+
+        Only the three plain calls (AOT_CALL, AOT_CALL_SCRIPT, AOT_CALL_BUILTIN), as gen_instr chooses between them,
+        and only when the site's word can say what the macro's operands said: the instruction word is Call.i's with
+        the argument count (0xD902<argc>) and the stack after the call is one result above the arguments."""
+        fn = self.fn
+        a, n = ins.addr, ins.next
+        if ins.op != OP_CALL or n not in fn.depth or n in fn.labels or n in fn.stubs or n not in fn.instrs:
+            return None
+        argc = ins.word & 0xFFFF
+        if (fn.instrs[n].op != OP_POPZ or self.region_at(n) or ins.word != (0xD9020000 | argc) or argc > 255
+                or a % 4 != 0 or a >= (1 << 26) or ins.size != 8 or fn.after[a] != d - argc + 1
+                or fn.depth[n] != fn.after[a]):
+            return None
+        saved, self.lines = self.lines, []
+        self.gen_instr(ins, d, fn.stacks[a])
+        made, self.lines = self.lines, saved
+        m = CALLZ_CALL.fullmatch(made[-1].strip()) if len(made) == 2 else None
+        if m is None or (m.group(1) == "AOT_CALL") != (m.group(6) is None):
+            return None   # an inline math call, say: gen emits it as it was
+        if (int(m.group(2)), int(m.group(3), 16), int(m.group(4), 16), int(m.group(5))) != (d, ins.word, a, fn.after[a]):
+            raise Reject("internal: the call at %#x is not the one its text says" % a)
+        self.emit("/* %04X %04X */" % (a, n))
+        self.emit("%s_Z(%d, 0x%X, %d%s);  /* %s */" % (m.group(1), d, a, argc, ", " + m.group(6) if m.group(6) else "", m.group(7)))
+        SHRINK_SITES["callz"] = SHRINK_SITES.get("callz", 0) + 1
+        return [a, n]
+
+    def region_at(self, addr):
+        """Whether a typed region's call or one of its exits' labels goes in front of the instruction at addr: it
+        cannot be emitted together with the one before it then."""
+        return bool((self.typed and addr in self.typed) or (self.typed_exits and addr in self.typed_exits))
 
     def compact_skip(self, ins):
         """An instruction of a compact region, left out (gen): the edge lookups on its edges are not needed, since
@@ -1410,6 +1531,8 @@ class Emitter:
                 continue
             else:
                 group = self.fuse_constant(ins, d)
+                if group is None and "callz" in self.shrink:
+                    group = self.fuse_callz(ins, d)
                 if group is not None:
                     covered.update(group[1:])
                 else:
@@ -1668,7 +1791,9 @@ class Emitter:
         else:
             e("%s;" % push)
 
-    def gen_pop(self, ins, d, W, dA):
+    def gen_pop(self, ins, d, W, dA, konst=None):
+        """konst: (GMLReal expression, the push's text) when the value is a constant whose push is emitted here, with
+        the store (fuse_store, which has checked that the store is one of the two that take it)."""
         e = self.emit
         idx, v = self.var_ref(ins)
         vt = ins.var_type()
@@ -1677,12 +1802,35 @@ class Emitter:
             pop = self.slow_popvar("aotPopVarSlow(ctx, %d, 0x%08Xu, %d)" % (inst, ins.extra, t2), ins, d, dA, inst, t2)
             if v["varID"] >= 0 and inst in (SELF, OTHER, GLOBAL) and SLOTS and self.slot_cached(a, ("write", inst, v["varID"]), self.cur_in):
                 p = self.slot_ptr(inst, v["varID"])
+                if "storetail" in self.shrink and pop.startswith("AOT_SITE_POPVAR("):
+                    # The site's operands (slow_popvar), which aotStoreMiss takes as the site would: the address, the
+                    # scope's code (self, other or global: SLOT_SCOPES), type2 and the variable operand.
+                    site = "0x%X, %d, %d, 0x%08Xu" % (a, {SELF: 0, OTHER: 1, GLOBAL: 2}[inst], t2, ins.extra)
+                    tail = (site, self.alias_refind(inst, v["varID"]), self.refind(self.cur_in | {(inst, v["varID"])}),
+                            v["name"].replace("*/", "* /"))
+                    if konst is not None:
+                        e("AOT_CSTORE_KT(%d, %s, %d, %d, %s, %s, %s, %s, %s);  /* %s */"
+                          % ((d, p, inst, v["varID"], konst[0], konst[1]) + tail))
+                    else:
+                        e("AOT_CSTORE_T(%d, %s, %d, %d, %s, %s, %s);  /* %s */" % ((d, p, inst, v["varID"]) + tail))
+                    SHRINK_SITES["storetail"] = SHRINK_SITES.get("storetail", 0) + 1
+                    return
+                if konst is not None:
+                    e("AOT_CSTORE_K(%s, %d, %d, %s, %s, %s, %s, %s);  /* %s */"
+                      % (p, inst, v["varID"], konst[0], konst[1], pop, self.alias_refind(inst, v["varID"]),
+                         self.refind(self.cur_in | {(inst, v["varID"])}), v["name"].replace("*/", "* /")))
+                    return
                 e("AOT_CSTORE(%d, %s, %d, %d, %d, %s, %s, %s);  /* %s */"
                   % (d, p, inst, v["varID"], t2, pop, self.alias_refind(inst, v["varID"]),
                      self.refind(self.cur_in | {(inst, v["varID"])}), v["name"].replace("*/", "* /")))
+            elif konst is not None and not (v["varID"] >= 0 and inst == LOCAL):
+                raise Reject("internal: a constant's store at %#x that is neither cached nor a local" % a)
             elif v["varID"] >= 0 and inst in (SELF, OTHER, GLOBAL):
                 e("AOT_POP_VAR(%d, %d, %d, %d, %s);  /* %s */" % (d, inst, idx, t2, pop, v["name"].replace("*/", "* /")))
             elif v["varID"] >= 0 and inst == LOCAL:
+                if konst is not None:
+                    e("AOT_STORE_K(&%s, %s);" % (self.local(idx), konst[0]))
+                    return
                 e("AOT_STORE(&%s, %d, %d);" % (self.local(idx), d, t2))
             else:
                 e("%s;  /* %s */" % (pop, v["name"].replace("*/", "* /")))
@@ -1917,6 +2065,7 @@ def parse_args(args):
             if i + 1 >= len(args) or not args[i + 1].startswith("gml_"):
                 raise SystemExit("--late-numeric takes one code entry name (experimental, WAD16 only)")
             opts.setdefault("late_numeric", set()).add(args[i + 1])
+            SHRINK_SKIP.add(args[i + 1])
             i += 2
             continue
         if a == "--shared-helpers":
@@ -1957,6 +2106,8 @@ def parse_args(args):
             opts["chunk"] = int(args[i + 1])
         elif a == "--append-from":
             opts["append_from"] = int(args[i + 1])
+        elif a == "--hot-from":
+            opts["hot_from"] = int(args[i + 1])
         elif a == "--max-size":
             opts["max_size"] = int(args[i + 1])
         elif a == "--budget":
@@ -2722,6 +2873,48 @@ def board_after(em, addr):
     return " if (BoardGrid_after != nullptr) BoardGrid_after(ctx);"
 
 
+def shrink_named():
+    """GMLAOT_SHRINK's passes as a list ("none": empty), None when it is unset; stops on a name that is no pass."""
+    if not os.environ.get("GMLAOT_SHRINK"):
+        return None
+    named = [w.strip() for w in os.environ["GMLAOT_SHRINK"].split(",") if w.strip()]
+    if named == ["none"]:
+        return []
+    if any(w not in SHRINK_PASSES for w in named):
+        raise SystemExit("GMLAOT_SHRINK: %s (the passes: %s, or none)"
+                         % (os.environ["GMLAOT_SHRINK"], ", ".join(SHRINK_PASSES)))
+    return named
+
+
+def set_forms(inputs, named):
+    """FORMS and SHRINK for a run with these inputs, each (WAD version, undertale_label() of the data as read, before
+    any patching), and GMLAOT_SHRINK's passes (shrink_named). FORMS needs every input to be a recognized UNDERTALE
+    (a tested data.win, by its bytes) in WAD 16: an unrecognized WAD 16 (a DELTARUNE demo, a mod) or a mixed run gets
+    the old forms. Both are set again from nothing at every call; a run that is not FORMS takes no pass, and naming
+    one stops it."""
+    global FORMS
+    if FORMS_OVERRIDE is not None:
+        FORMS = FORMS_OVERRIDE
+    else:
+        FORMS = bool(inputs) and all(wad == 16 and label == "Undertale" for wad, label in inputs)
+    SHRINK.clear()
+    if FORMS:
+        SHRINK.update(SHRINK_DEFAULT if named is None else named)
+    elif named:
+        raise SystemExit("GMLAOT_SHRINK: %s: the passes are qualified for a recognized UNDERTALE (WAD 16) only"
+                         % os.environ["GMLAOT_SHRINK"])
+
+
+def shrink_passes(dw, name, fn, blob, entry):
+    """The SHRINK passes for one code entry: all that are on, or none for an entry with a twin in late text."""
+    if not SHRINK or name in SHRINK_SKIP:
+        return frozenset()
+    ends = [ins.next for addr, ins in fn.instrs.items() if addr in fn.depth]
+    if dw.wad == 16 and ends and fnv1a64(blob[entry["offset"]:max(ends)]) in LATE_TWINS:
+        return frozenset()
+    return frozenset(SHRINK)
+
+
 def generate_function(dw, name, k, report):
     """Returns (function C text, table C text, aotEntries line, instruction count) or None when the entry is left to
     the interpreter."""
@@ -2733,6 +2926,7 @@ def generate_function(dw, name, k, report):
     try:
         fn = Function(dw, entry, blob)
         em = Emitter(dw, fn, k)
+        em.shrink = shrink_passes(dw, name, fn, blob, entry)
         if TYPED is not None and typed_mod.selected(TYPED, getattr(dw, "folder", ""), name):
             regions = typed_mod.select_regions(em, report, name)
             em.typed = {r.site: r for r in regions}
@@ -2903,12 +3097,64 @@ def generate_function(dw, name, k, report):
     return func_text, "\n".join(out), line, len(fn.depth)
 
 
+def undertale_roots(known):
+    """What undertale_label recognizes: (size, sha256) of each UNDERTALE root row of data_versions.inc's table
+    (data_versions.load_table()'s rows), sorted. prepare.py's fingerprint hashes it, so a table change that adds or
+    removes a recognized data.win generates the code again (astrarev2 ASHR-4)."""
+    return sorted((size, digest) for game, part, size, digest in known if game == 'undertale' and part == 'root')
+
+
+# Hot entries (--hot-from, change aotmore 2026-11-16): new entries of a padded static selection (UNDERTALE Old) that link
+# after every existing unit and take bytes of the block's text padding, which is large, while its constant, string and
+# zero-data padding is a few hundred bytes. So an entry's reference arrays and their strings go into its own file, in
+# a text section of their own (as padrefs.py does for the table), and aot_table.c keeps only its declarations; the
+# entry's table row (48 B) and part index (1 B) are all it adds to the block's constants. The platform compiles these
+# files without jump tables, which GCC would put in .rodata (platform/3ds/CMakeLists.txt).
+HOT_CONST = '__attribute__((section(".text.aothot_refs"), aligned(4)))'
+HOT_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def hot_refs(table_text, entry_line, k):
+    """(aot_table.c text, aot_hot_<n>.c definitions, table row) for hot entry k. Only a plain entry qualifies: its table
+    text is its declaration and its two reference arrays (no native variant, late copy or text front)."""
+    m = re.fullmatch(r"(RValue aotf_%d\(VMContext\* ctx\) AOT_FN_DECL;)\n"
+                     r"static const AotVarRef aotv_%d\[\] = \{\n((?:    \{[^\n]*\},\n)+)\};\n"
+                     r"static const AotFuncRef aotfn_%d\[\] = \{\n((?:    \{[^\n]*\},\n)+)\};" % (k, k, k), table_text)
+    row = re.fullmatch(r'(    \{ )("(?:[^"\\]|\\.)*")(, \d+, \d+, \d+, 0x[0-9A-F]{16}ULL, aotf_%d, aotv_%d, \d+, aotfn_%d, \d+ \},)'
+                       % (k, k, k), entry_line)
+    if m is None or row is None:
+        raise ValueError("--hot-from: entry %d is not a plain generated entry (native variant, late copy or front)" % k)
+    # One string block per entry, aotq_<k>: the entry's name at offset 0, then each reference's name, each with its
+    # NUL. One object, not one per string: check_layout.py's OBJECT inventory guard allows a few percent of change.
+    literals, offsets = [row.group(2)], [0]
+
+    def name(s):
+        offsets.append(offsets[-1] + c_string_bytes(literals[-1]) + 1)
+        literals.append(s.group(0))
+        return "aotq_%d + %d" % (k, offsets[-1])
+    variables = HOT_STRING.sub(name, m.group(2))
+    functions = HOT_STRING.sub(name, m.group(3))
+    # Adjacent literals with "\0" between them: an octal escape at a literal's end cannot take the next one's digits.
+    block = " \"\\0\"\n    ".join(literals)
+    defs = "\n".join(["const char aotq_%d[] %s =\n    %s;" % (k, HOT_CONST, block),
+                      "const AotVarRef aotv_%d[] %s = {\n%s};" % (k, HOT_CONST, variables),
+                      "const AotFuncRef aotfn_%d[] %s = {\n%s};" % (k, HOT_CONST, functions)])
+    table = "%s\nextern const char aotq_%d[];\nextern const AotVarRef aotv_%d[];\nextern const AotFuncRef aotfn_%d[];" % (
+        m.group(1), k, k, k)
+    return table, defs, row.group(1) + "aotq_%d" % k + row.group(3)
+
+
+def c_string_bytes(literal):
+    """Bytes of a c_string literal without its NUL: c_string writes \\" and \\\\ for one byte, \\ooo for one byte."""
+    body = literal[1:-1]
+    return len(re.sub(r'\\[0-7]{3}|\\.', 'x', body))
+
+
 def undertale_label(dw):
     """Recognize the tested single-table label by data identity, never its path or WAD version."""
     from data_versions import load_table
     _, known = load_table()
-    digests = {digest for game, part, size, digest in known
-               if game == 'undertale' and part == 'root' and size == len(dw.data)}
+    digests = {digest for size, digest in undertale_roots(known) if size == len(dw.data)}
     return 'Undertale' if digests and hashlib.sha256(dw.data).hexdigest() in digests else None
 
 
@@ -2916,6 +3162,8 @@ def main(argv):
     # Isolated Python (-I) omits the script directory from its import path.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     args = list(argv[1:])
+    set_forms((), None)   # a second run in one process (the tests) starts from nothing on
+    named = shrink_named()   # checked now, applied once the games are known (set_forms, below)
     if len(args) < 3:
         print(__doc__)
         return 2
@@ -2940,9 +3188,11 @@ def main(argv):
     games = []        # (group index, DataWin) for the games that can be compiled
     btnprompt_table = None   # UNDERTALE's console prompts (btnprompt.py), from the first WAD 16 game
     late_entries = []  # explicit --late-numeric only; original warm bodies stay in funcs_out
+    inputs = []       # (WAD, undertale_label) of every input, skipped ones too, for set_forms
     for gi, g in enumerate(groups):
         dw = DataWin(g["data_win"])
-        label = undertale_label(dw)
+        label = undertale_label(dw)   # the data's identity as read: before patch_operands and btnprompt change it
+        inputs.append((dw.wad, label))
         import weirdshd
         weirdshd.validate(dw, BOARD_TARGET, label or os.path.basename(os.path.dirname(g["data_win"])))
         sources.append((label or os.path.basename(os.path.dirname(g["data_win"]))) + "/" + os.path.basename(g["data_win"]))
@@ -2964,6 +3214,7 @@ def main(argv):
                           len(dw.vars), len(dw.funcs)))
         games.append((gi, dw))
     group_of = {id(dw): gi for gi, dw in games}
+    set_forms(inputs if games else [], named)
 
     def emit(dw, name):
         late = None
@@ -3080,14 +3331,23 @@ def main(argv):
     append_from = opts.get("append_from", len(funcs_out))
     if not 0 <= append_from <= len(funcs_out):
         raise ValueError("--append-from exceeds the emitted entry count or is negative")
+    hot_from = opts.get("hot_from", len(funcs_out))
+    if "hot_from" in opts and "append_from" not in opts:
+        raise ValueError("--hot-from needs --append-from (a padded static selection)")
+    if not append_from <= hot_from <= len(funcs_out):
+        raise ValueError("--hot-from is before --append-from or past the emitted entry count")
+    hot_defs = {}   # entry index -> its reference arrays and strings, for its aot_hot_<n>.c (hot_refs)
+    for k in range(hot_from, len(funcs_out)):
+        tables_out[k], hot_defs[k], entries[k] = hot_refs(tables_out[k], entries[k], k)
     os.makedirs(out_dir, exist_ok=True)
     for f in os.listdir(out_dir):
-        if re.fullmatch(r"aot_(gen|append)_\d+\.c|aot_table\.c|aot_generated\.inc|aot_typed(_bind|_\d+)?\.c|aot_late\.c|aot_gettext\.c|aot_utold_(loop|regions)\.c", f):
+        if re.fullmatch(r"aot_(gen|append|hot)_\d+\.c|aot_table\.c|aot_generated\.inc|aot_typed(_bind|_\d+)?\.c|aot_late\.c|aot_gettext\.c|aot_utold_(loop|regions)\.c", f):
             os.remove(os.path.join(out_dir, f))
     header = ("// Generated by tools/aot/gmlaot.py from %s.\n"
-              "// Derived from the game's code: keep it in the build directory, never commit or share it.\n\n"
+              "// Derived from the game's code: keep it in the build directory, never commit or share it.\n%s\n"
               "%s#include \"aot/vm_aot.h\"\n\n"
-              "#if VM_HAS_AOT\n\n" % (", ".join(sources), "#define AOT_SHARED_HELPERS 1\n" if SHARED_HELPERS else ""))
+              "#if VM_HAS_AOT\n\n" % (", ".join(sources), FORMS_LINE if FORMS else "",
+                                       "#define AOT_SHARED_HELPERS 1\n" if SHARED_HELPERS else ""))
     footer = "\n\n#endif\n"
 
     # The functions go into files of about --chunk bytecode instructions each, so that no compile unit gets large and
@@ -3103,7 +3363,8 @@ def main(argv):
         return out
 
     chunks = chunked(range(append_from))
-    appended = chunked(range(append_from, len(funcs_out)))
+    appended = chunked(range(append_from, hot_from))
+    hot = chunked(range(hot_from, len(funcs_out)))
     if opts.get("layout_order"):
         # --layout: the functions in its order, the rest after them as they were; aotf_<n> and the table stay as made.
         # A module too big for its region is linked without its last files (platform/3ds/aot/aot_module_link.cmake),
@@ -3126,8 +3387,20 @@ def main(argv):
     for i, (order, n) in enumerate(appended):
         with open(os.path.join(out_dir, "aot_append_%d.c" % i), "w", encoding="utf-8", newline="\n") as f:
             f.write(header + "\n\n".join(funcs_out[j][0] for j in order) + footer)
+    for i, (order, n) in enumerate(hot):
+        # Hot entries (--hot-from): each file holds its entries' reference arrays and strings too, in its own text.
+        with open(os.path.join(out_dir, "aot_hot_%d.c" % i), "w", encoding="utf-8", newline="\n") as f:
+            f.write(header + "\n\n".join(hot_defs[j] + "\n\n" + funcs_out[j][0] for j in order) + footer)
     with open(os.path.join(out_dir, "aot_table.c"), "w", encoding="utf-8", newline="\n") as f:
-        f.write(header)
+        # The one copy of the slow halves the generated code calls (vm_aot.h, AOT_SLOW_HALVES_DEFINE). The define takes
+        # the header's empty line: a line more in aot_table.c would move the __LINE__ of what follows it.
+        # Bits 1 and 2: the callz and storetail passes' functions too (only when the pass is on: unused, they would
+        # still be linked).
+        # It takes FORMS_LINE's place (vm_aot.h: AOT_SLOW_HALVES_DEFINE implies AOT_SHRINK_FORMS); not FORMS, neither.
+        slow_halves = ('#define AOT_SLOW_HALVES_DEFINE %d'
+                       % (1 | (2 if "callz" in SHRINK else 0) | (4 if "storetail" in SHRINK else 0)))
+        assert header.count(FORMS_LINE) == (1 if FORMS else 0)
+        f.write(header.replace(FORMS_LINE, slow_halves) if FORMS else header)
         f.write(utf_resolve_bound("\n\n".join(tables_out), func_keys, entry_parts, entries, report))
         f.write("\n\nstatic const AotEntry aotEntries[] = {\n")
         f.write("\n".join(entries) if entries else "    { \"\", 0, 0, 0, 0, nullptr, nullptr, 0, nullptr, 0 },")
@@ -3205,7 +3478,10 @@ def main(argv):
             f.write("\n\n".join(t[2] for t in TYPED_TEXTS))
             f.write(footer)
         report.append("typed: %d regions in %d functions" % (len(TYPED_TEXTS), len(set(t[1] for t in TYPED_TEXTS))))
-    report.append("%d files of generated code" % (len(chunks) + len(appended)))
+    if SHRINK:
+        report.append("shrink passes (GMLAOT_SHRINK): %s" % ", ".join(
+            "%s %d sites" % (w, SHRINK_SITES.get(w, 0)) for w in SHRINK_PASSES if w in SHRINK))
+    report.append("%d files of generated code" % (len(chunks) + len(appended) + len(hot)))
     report.append("%d functions, %d instructions, %.1f s" % (len(entries), total_instrs, time.time() - t0))
     with open(os.path.join(out_dir, "aot_report.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(report) + "\n")

@@ -143,7 +143,7 @@
     "*z_utflames.o(.text .text.* .rodata .rodata.*)",
     "*(.text.late.utflowey)",
     "*(.rodata.utflowey_in_text)",
-    "*aot_late.o(.text.RValue_* .text.aotToInt32Slow .text.AotLate_toInt32Slow)",
+    "KEEP(*aot_late.o(.text.RValue_* .text.aotToInt32Slow .text.AotLate_toInt32Slow))",
     "*(.text.h1hole.aotlhelp)",
     "*aot_late.o(.text.aotSlotFind* .text.requireMessageFormatted* .text.aotStoreSlow .text.AotLate_storeSlow)",
     "*(.text.h1hole.aotlgen)",
@@ -869,6 +869,17 @@
     "*(.text_soulfly)",
     "*(.text_samestart)",
     "*(.text_btchoice)",
+    "*(.text_mexslide)",
+    "*(.text_popuphome)",
+    "*(.rodata.popuphome_in_text)",
+    "*z_popup_home.o(.rodata .rodata.*)",
+    "*(.text_undlg_speech)",
+    "*(.text_opt3ds)",
+    "*(.text_promonotice)",
+    "*(.text_framelead)",
+    "*(.text_datesplit)",
+    "*(.text_smoothold)",
+    "*(.text_bstall)",
     "*(.repack_test)",
     "*(.repack_test_ro)"
   ],
@@ -967,7 +978,10 @@
     "*(.rodata_sfxlate)",
     "*(.rodata_sfxboost)",
     "*(.rodata_reclaim_menutime)",
-    "*(.rodata_btchoice)"
+    "*(.rodata_btchoice)",
+    "*(.rodata_undlg_speech)",
+    "*(.rodata_opt3ds)",
+    "*(.rodata_bstall)"
   ],
   "data": [
     "*(.data.late.benchromfs)",
@@ -1039,7 +1053,8 @@
     "*(.data.late.noticescroll)",
     "*(.data_dlgflash)",
     "*(.data_letterdraw_memo)",
-    "*(.data_letterdraw_plan)"
+    "*(.data_letterdraw_plan)",
+    "*(.data_smoothold)"
   ],
   "bss": [
     "*(.bss.late.benchromfs)",
@@ -1130,6 +1145,7 @@
     "KEEP(*(.bss.msglock_late))",
     "KEEP(*(.bss.soulahead_late))",
     "KEEP(*(.bss.samestart_late))",
+    "KEEP(*(.bss_framelead_late))",
     "KEEP(*z_sdmigrate.o(.bss.sdmigrate_spare))",
     "*z_sdmigrate.o(.bss .bss.* COMMON)",
     "*(.bss.late.swkbd)",
@@ -1349,6 +1365,9 @@
     "*(.bss_bsflash_late)",
     "*(.bss_bsnap_late)",
     "*(.bss_bshinge_late)",
+    "*(.bss_bsmexr_late)",
+    "*(.bss_undlg_speech)",
+    "*(.bss_frameleadaudio_late)",
     "*(.bss.ballast_late)"
   ],
   "aac_text": [
@@ -1386,7 +1405,12 @@
     ".aacout.text.samestart",
     ".aacout.text.soulahead2",
     ".aacout.text.bshinge",
-    ".aacout.text.btchoice"
+    ".aacout.text.btchoice",
+    ".aacout.text.mexslide",
+    ".aacout.text.undlg_speech",
+    ".aacout.text.opt3ds",
+    ".aacout.text.framelead",
+    ".aacout.text.bstall"
   ],
   "aac_rodata": [
     ".aacout.rodata.dlgtop4",
@@ -1412,6 +1436,9 @@
     ".aacout.rodata.storyentry",
     ".aacout.rodata.bshinge",
     ".aacout.rodata.btchoice",
+    ".aacout.rodata.undlg_speech",
+    ".aacout.rodata.opt3ds",
+    ".aacout.rodata.bstall",
     ".aacout.rodata.n8a_optmenu",
     ".aacout.rodata.n8a_utfadea"
   ],
@@ -1419,7 +1446,12 @@
     "asgfuse",
     "soulfly",
     "samestart",
-    "btchoice"
+    "btchoice",
+    "mexslide",
+    "undlg_speech",
+    "opt3ds",
+    "framelead",
+    "bstall"
   ],
   "devonly": {
     "aac_text": [
@@ -1456,5 +1488,8 @@
         37
       ]
     }
-  }
+  },
+  "old_late_text": [
+    "bstall"
+  ]
 }

@@ -19,10 +19,14 @@ HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE))
 import utold_tile_elf as elf
 from utold_tile_elf import snapshot
-ARM=Path('C:/devkitPro/devkitARM/bin')
+# The devkitARM bin folder: utold_tile_compile sets it from the compiler command CMake runs. Never a fixed
+# install path (11-17 playtester: devkitPro under the user folder).
+ARM=None
 
 def tool(name):
-    path=ARM/('arm-none-eabi-'+name)
+    if ARM is None:
+        raise RuntimeError('utold_tile_place: the devkitARM folder was not given; it comes from the compiler command')
+    path=Path(ARM)/('arm-none-eabi-'+name)
     return str(path.with_suffix('.exe') if path.with_suffix('.exe').exists() else path)
 
 

@@ -19,7 +19,7 @@ import late_order
 
 ROOT = Path(__file__).resolve().parents[2]
 BIN = Path('C:/devkitPro/devkitARM/bin')
-RESERVE = aac_capacity.OLD_RESERVE  # 12,288 B since 11-15 (N13 ruling L2)
+RESERVE = aac_capacity.OLD_RESERVE  # 10,240 B since 11-16 (12,288 B from the 11-15 N13 ruling L2)
 
 
 def run(command, **kwargs):
@@ -175,29 +175,29 @@ def test_old_production_lists_must_leave_the_protected_reserve(tmp_path):
     other = OTHER + '.section .aacout.text.fill,"ax",%progbits\n.space ' + str(filler) + '\n'
     result, _ = link(tmp_path, script, objects(tmp_path, other=other))
     assert result.returncode != 0
-    assert 'Old production lists inside the 12,288 B protected reserve' in result.stderr
+    assert 'Old production lists inside the 10,240 B protected reserve' in result.stderr
 
 
 def test_old_plain_dev_free_floor(tmp_path):
     script = configure(tmp_path)
-    # The tail cap and the reserve leave at least 4,096 B, so the floor fires only if a cap is changed: check it is
+    # The tail cap and the reserve leave at least 2,048 B, so the floor fires only if a cap is changed: check it is
     # emitted for plain Old and absent for the vehicles and New.
     text = script.read_text(encoding='utf-8')
-    assert 'AAC text: Old plain dev under 4,096 B free' in text
+    assert 'AAC text: Old plain dev under 2,048 B free' in text
     for extra, target in (('set(CTRPORT_LABCRASH ON)\n', 'o3ds'), ('set(CTRPORT_BALLAST ON)\n', 'o3ds'), ('', 'n3ds')):
         sub = tmp_path / (target + str(len(extra)))
         sub.mkdir()
         text = configure(sub, target=target, extra=extra).read_text(encoding='utf-8')
-        assert 'Old plain dev under 4,096 B free' not in text
+        assert 'Old plain dev under 2,048 B free' not in text
         assert ('protected reserve' in text) == (target == 'o3ds')
 
 
-RELEASE_RESERVE = 'AAC text: Old release lists inside the 12,288 B dev reserve'
+RELEASE_RESERVE = 'AAC text: Old release lists inside the 10,240 B dev reserve'
 
 
 @pytest.mark.parametrize('filler,ok', [(80260 - RESERVE, True), (80260 - RESERVE + 4, False)])
 def test_old_release_lists_must_leave_the_dev_reserve(tmp_path, filler, ok):
-    """audit F3-1 T7 (lead 11-14): an Old release link keeps the dev reserve (12,288 B since 11-15) too, so a release-only compose
+    """audit F3-1 T7 (lead 11-14): an Old release link keeps the dev reserve (10,240 B since 11-16) too, so a release-only compose
     fails at its own link, not first at the next dev link. ASSERT only: the slot still pads to its fixed end."""
     script = configure(tmp_path, devonly=False, aac_inputs=['.aacout.text.fill'],
                        extra='set(CTRPORT_AACOUT_FIXTURE_NO_FRAME_HOLES TRUE)\n')
@@ -226,7 +226,7 @@ def test_release_reserve_is_old_release_only(tmp_path):
     old.mkdir()
     release = configure(old, devonly=False).read_text(encoding='utf-8')
     # One line added after the overflow ASSERT of the text slot, none in rodata; the rest of the script is unchanged.
-    line = '        ASSERT(__aacout_text_start + 80260 - __aacout_text_used_end >= 12288, "' + RELEASE_RESERVE + '");\n'
+    line = '        ASSERT(__aacout_text_start + 80260 - __aacout_text_used_end >= 10240, "' + RELEASE_RESERVE + '");\n'
     assert release.count(line) == 1
     assert release.index('"AAC text slot overflow");\n' + line) > 0
     assert line not in release.split('__aacout_rodata_start')[1]
@@ -308,10 +308,10 @@ def test_release_reserve_red_control_a_production_input_in_the_block_fails(tmp_p
 def test_release_reserve_script_names_the_block(tmp_path):
     text = configure(tmp_path, devonly=False, aac_inputs=RECLAIM_INPUTS, extra=RECLAIM_EXTRA).read_text(encoding='utf-8')
     line = ('        ASSERT(__aacout_text_start + 80260 - (__aacout_text_used_end - (__latereclaim_end - '
-            '__latereclaim_text_gap_start)) >= 12288, "' + RELEASE_RESERVE + '");\n')
+            '__latereclaim_text_gap_start)) >= 10240, "' + RELEASE_RESERVE + '");\n')
     assert text.count(line) == 1
     assert ('ASSERT(__aacout_text_used_end - (__latereclaim_end - __latereclaim_text_gap_start) <= '
-            '__aacout_text_start + 80260 - 12288, "latereclaim enters protected AAC text reserve");') in text
+            '__aacout_text_start + 80260 - 10240, "latereclaim enters protected AAC text reserve");') in text
 
 
 def test_dev_overflow_still_fails_at_dev_production_end(tmp_path):
@@ -330,8 +330,51 @@ def test_dev_overflow_still_fails_at_dev_production_end(tmp_path):
             assert t['__aacout_text_end'] - t['__aacout_text_devonly_end'] >= aac_capacity.OLD_PLAIN_FREE
         else:
             assert result.returncode != 0
-            assert 'Old production lists inside the 12,288 B protected reserve' in result.stderr
+            assert 'Old production lists inside the 10,240 B protected reserve' in result.stderr
 
+
+# ===[ 11-16 (N14 n14g): the touchtest vehicle is held to the slot's capacity only ]===
+TOUCHTEST = 'set(CTRPORT_TOUCH_TEST ON)\n'
+TOUCHTEST_CAP = 'AAC text: Old touchtest vehicle over the slot capacity'
+
+
+def test_touchtest_vehicle_is_held_to_capacity_only(tmp_path):
+    """TQ (touchtest, with or without touchqueue and testpage) is a test build: no protected reserve, no plain dev floor
+    and no release reserve, only its own named capacity ASSERT on Old. Plain Old dev and New are unchanged."""
+    text = configure(tmp_path, extra=TOUCHTEST).read_text(encoding='utf-8')
+    assert text.count(TOUCHTEST_CAP) == 1
+    for gone in ('protected reserve', 'Old plain dev under', RELEASE_RESERVE):
+        assert gone not in text, gone
+    for name, kwargs in (('plain', {}), ('new', dict(target='n3ds', extra=TOUCHTEST)),
+                         ('release', dict(devonly=False, extra=TOUCHTEST))):
+        sub = tmp_path / name
+        sub.mkdir()
+        other = configure(sub, **kwargs).read_text(encoding='utf-8')
+        assert TOUCHTEST_CAP not in other, name
+        assert RELEASE_RESERVE not in other, name
+        assert ('protected reserve' in other) == (name == 'plain'), name
+        assert ('Old plain dev under 2,048 B free' in other) == (name == 'plain'), name
+
+
+@pytest.mark.parametrize('name,filler,ok', [('reserve', 80260 - RESERVE + 4, True), ('floor', 80260 - 1024, True),
+                                            ('full', 80260, False)])
+def test_touchtest_vehicle_links_inside_the_reserve_and_fails_at_capacity(tmp_path, name, filler, ok):
+    """Production lists 4 B inside the reserve, or a dev tail leaving under the plain floor, link for TQ (both fail a
+    plain dev link); production lists that fill the slot leave no room for the dev-only tail and fail by name."""
+    script = configure(tmp_path, aac_inputs=['.aacout.text.fill'],
+                       extra=TOUCHTEST + 'set(CTRPORT_AACOUT_FIXTURE_NO_FRAME_HOLES TRUE)\n')
+    other = OTHER + '.section .aacout.text.fill,"ax",%progbits\n.space ' + str(filler) + '\n'
+    result, output = link(tmp_path, script, objects(tmp_path, other=other))
+    if ok:
+        assert result.returncode == 0, result.stderr
+        s = symbols(output)
+        assert s['__aacout_text_end'] - s['__aacout_text_production_end'] < RESERVE
+        assert s['__aacout_text_used_end'] <= s['__aacout_text_end']
+        if name == 'floor':
+            assert s['__aacout_text_end'] - s['__aacout_text_devonly_end'] < aac_capacity.OLD_PLAIN_FREE
+    else:
+        assert result.returncode != 0
+        assert TOUCHTEST_CAP in result.stderr, result.stderr
 
 SOURCE = ROOT / 'platform/3ds/source'
 # z_ballast.c's compile as the real ballast build's (CMakeLists.txt: -Os and its section options, CTRPORT_BALLAST).

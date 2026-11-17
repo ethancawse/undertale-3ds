@@ -22,6 +22,9 @@ LATE = re.compile(r'^\.(?:text|rodata|data|bss)\.late\.perfflowery$')
 LATE_LANES = {'dlgtop4': re.compile(r'^\.aacout\.(?:text|rodata)\.dlgtop4$|^\.text\.late\.dlgtop4$|^\.bss\.dlgtop4$|^\.text_dlgretire_late$|^\.text_dlgcloseblack_late$|^\.aacout\.text\.latereclaim_dlg$'),
               'dlgflash': re.compile(r'^\.text_dlgflash$|^\.rodata\.dlgflash_in_text$|^\.data_dlgflash$'),
               'dlgwhite': re.compile(r'^\.text_dlgwhite$'),
+              'promonotice': re.compile(r'^\.text_promonotice$'),
+              # change smoothold's call wrappers and their table (ctr_renderer.c's end; utwindow_compile.py's route_smoothold).
+              'smoothold': re.compile(r'^\.text_smoothold$|^\.data_smoothold$'),
               # asgsmart F1u's fold (ctr_gameoverscreen.inc's UT_COLD_TEXT(asgfuse): .aacout.text.asgfuse on Old,
               # .text_asgfuse on New) comes with the game-over unit's sections; utwindow_compile.py checks and installs it.
               'gameoverscreen': re.compile(r'^\.(?:text|rodata|bss)_gameoverscreen$|^\.text_asgfuse$|^\.aacout\.text\.asgfuse$'),
@@ -66,7 +69,7 @@ def late_sections(text, lane='perfflowery'):
             selected = False
         if selected and not re.match(r'\s*\.(?:file|loc|cfi_\w+)\b', line):
             output.append(line)
-    assert not stack and ('.aacout.text.dlgtop4' if lane == 'dlgtop4' else '.text_'+lane if lane in ('dlgwhite','dlgflash','gameoverscreen') else '.text.late.'+lane) in kinds
+    assert not stack and ('.aacout.text.dlgtop4' if lane == 'dlgtop4' else '.text_'+lane if lane in ('dlgwhite','dlgflash','gameoverscreen','promonotice','smoothold') else '.text.late.'+lane) in kinds
     result = '\n'.join(output)+'\n'
     # GCC can emit .global/.type immediately before switching to an object's
     # section. Preserve declarations for retained definitions wherever they
@@ -87,7 +90,7 @@ def late_sections(text, lane='perfflowery'):
     definitions.update(re.findall(r'(?m)^\s*\.(?:set|equ)\s+(\.L[\w.]+)\s*,', result))
     references = set(re.findall(r'(?<![\w.])(\.L[\w.]+)\b', result))
     assert references <= definitions, ('Late code references excluded local labels', sorted(references-definitions))
-    prefix = '.LDlgtop4_' if lane == 'dlgtop4' else '.LDlgflash_' if lane == 'dlgflash' else '.LFlowery_'
+    prefix = '.LDlgtop4_' if lane == 'dlgtop4' else '.LDlgflash_' if lane == 'dlgflash' else '.LSmoothold_' if lane == 'smoothold' else '.LFlowery_'
     result = re.sub(r'(?<![\w.])\.L([\w.]+)', lambda m: prefix + m[1], result)
     # GCC's function-scope objects (message.42, logged.43, ...) can have the
     # same assembly name as an unrelated object in the independent pass.

@@ -3839,7 +3839,14 @@ static void recordQuad(CtrRenderer* r, CtrSurface* s, int32_t pageId, float sx0,
         worldToPixel(r, px[i], py[i], &op.x[i], &op.y[i]);
         op.c[i] = c[i];
     }
+#ifdef ENABLE_WAD16
+    extern void CtrPopupHome_push(void*, void*, const void*);
+    CtrPopupHome_push(r, s, &op);
+#else
     pushRecOp(r, s, &op);
+#endif
+
+#line 3777
 }
 
 // Clips the span a..b (positions, either order) to [lo, hi], moving the
@@ -25572,6 +25579,14 @@ static __attribute__((unused, noinline, section(".text.late.utkill"))) void utkD
                                                                                         float alpha) {
     ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
 }
+// ctr_gameoverscreen.inc's coarse draw: the plain full draw here, inlined into its one caller, so render-timing
+// (profile) builds compile and the game-over unit needs nothing from the main unit (utwindow_compile.py).
+static inline __attribute__((always_inline, unused)) void utkDrawSpriteBody(Renderer* renderer, int32_t tpagIndex, float x,
+                                                                         float y, float originX, float originY,
+                                                                         float xscale, float yscale, float angleDeg,
+                                                                         uint32_t color, float alpha) {
+    ctrDrawSprite(renderer, tpagIndex, x, y, originX, originY, xscale, yscale, angleDeg, color, alpha);
+}
 #endif
 
 // ===[ Crisp parts' own textures (UNDERTALE only) ]===
@@ -33205,6 +33220,367 @@ __attribute__((noinline, noipa, section(".aacout.text.bsg47"))) bool CtrRenderer
     r->scissor = cut;
     applyViewport(r);
     return true;
+}
+#endif
+#endif
+
+// bsmexr (change battlesplit2, 11-15; z_battlesplit.c's end): Mettaton EX's slide up after his heart turns.
+// CtrRenderer_bsmShift: CtrRenderer_bs47Shift on either layer of the application surface (its own half view, the top
+// layer, or the arena layer), as the slide moves a draw on both. The same move otherwise: dy room px on y for the draws
+// from here on (dy 0: as it was), keep the caller's 17 floats, the projection itself changed (kept aside) and never
+// taken back once the game set another. Appended, per model (ctr_place.h): the AAC text slot's last input on
+// UNDERTALE Old (.aacout.text.mexslide), appended late text on New (.text_mexslide).
+#ifdef ENABLE_WAD16 // AAC tenants carry an explicit guard (test_aacslot_shared.py)
+#ifdef __3DS__
+#include "ctr_place.h"
+__attribute__((noinline, noipa)) UT_COLD_TEXT(mexslide) void CtrRenderer_bsmShift(Renderer* renderer, float dy, float* keep) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    BsGpu* g = bsGpu;
+    Bs47Keep* k = (Bs47Keep*) (void*) keep;
+    bool on = false;
+    if (k->dy != 0.0f) {
+        C3D_Mtx m = k->base;
+        bs47Moved(&m, k->dy);
+        on = memcmp(&m, &r->projection, sizeof m) == 0;
+    }
+    if (g == nullptr || !r->inFrame || !r->gameProjection || r->boundTarget == nullptr ||
+        (r->boundTarget != g->target && r->boundTarget != g->appTarget))
+        dy = 0.0f;
+    if (on && dy == k->dy) return;
+    if (!on && dy == 0.0f) {
+        k->dy = 0.0f;
+        return;
+    }
+    flushBatch(r);
+    if (on) r->projection = k->base;
+    k->dy = 0.0f;
+    if (dy != 0.0f) {
+        k->base = r->projection;
+        bs47Moved(&r->projection, dy);
+        k->dy = dy;
+    }
+    if (r->inFrame && r->gameProjection) uploadProjection(r, &r->projection);
+}
+#endif
+#endif
+
+// Elevator floor-list home; normal source compilation, no launcher adapter.
+#ifdef ENABLE_WAD16
+#include "ctr_popup_home_capacity.h"
+// Keep the private recorder implementation in its original translation unit.
+// Policy lives separately, so this ordinary call does not grow renderer IPA.
+__attribute__((section(".text_popuphome"),noinline,used,optimize("Os")))
+void CtrPopupHome_rawPush(void* renderer, void* surface, const void* operation) {
+    pushRecOp(renderer, surface, operation);
+}
+_Static_assert(_Alignof(CtrRecOp) <= 4, "popup marker stack alignment");
+_Static_assert(sizeof(CtrRecOp) <= CTR_POPUP_HOME_MARKER_CAPACITY, "popup marker stack capacity");
+const uint32_t CtrPopupHome_recOffset[1] __attribute__((used,section(".rodata.popuphome_in_text"))) = {
+    __builtin_offsetof(CtrRenderer, dlg.rec)
+};
+#endif
+
+#include "ctr_promonotice.inc"
+
+// ===[ Runs of copy sprites and of text held as one (change smoothold, 11-16) ]===
+//
+// Runs of fine draws held as one (asgdraw) held only fine sprites drawn from the page. A fine sprite drawn from its
+// item's clean copy (smartCleanCopy, ITEM_BLACKEN) set smart.copy before asgBegin, and asgBegin's continue check and
+// asgState both refused it: so each was a batch of its own, two flushes and two blend words. Asriel's final attack
+// draws some 70 copy stars in a row. Text never came here at all (drawTextImpl called smartLinearBegin and
+// smartLinearEnd): DREAM's shaky speech is 63 one-character draws a frame, two flushes each, all straight.
+//
+// CtrRenderer_smoSpriteBegin and CtrRenderer_smoSpriteEnd (ctrDrawSprite's) hide the copy from the two checks: the
+// copy is put back for the emission (smartCopyQuad reads it), and asgEnd clears it either way. A held batch of a copy
+// samples &copy->tex, which no draw of this frame or the next frees (smartCopySlot, age 2), and runs are drawn in the
+// frame that held them. What else reads smart.copy while a batch is drawn is the Split's top margin (bs22Record, by
+// flushBatch's prophecyBatches; CtrRenderer_bs22Plain refuses a copy's batch, and a held one would be drawn with
+// smart.copy cleared): so in a split frame (bsGpu's layer made, which only CtrRenderer_bsPrepare does, before a frame
+// begins) the sprite wrappers do as before. Text has no such state: its runs are held in split frames too, as asgdraw
+// holds fine sprites there, and bs22Record keeps a held run as it keeps asgdraw's, one batch at its flush.
+//
+// Text (CtrRenderer_smoTextBegin and CtrRenderer_smoTextEnd, drawTextImpl's) has two kinds of run. Premultiplied text
+// goes through asgBegin and asgEnd, as a fine sprite; asgEnd puts the premultiplied blend back before its last flush
+// (asgPremult), so text whose vertices ran the frame so far (makeVertexRoom's runFrameSoFar) is no longer drawn under
+// the game's blend after the split. Straight text (smartTextFine's one-colour fonts: DREAM's) can't go there: asgdraw
+// holds premultiplied runs only (asgBegin's continue check and asgState want the premultiplied blend set, and
+// asgHoldDraw sets it before each batch). Straight text needs no blend of its own: it is the game's bm_normal, set all
+// along. So a straight run is held here the same way, with asgdraw's own state (addHold, asgRun), under that blend.
+// The begin continues it where asgBegin would (nothing drawn or changed since: any state setter or other draw would
+// have drawn it) when the held run is straight text's (smoothold_state.straightRun); the end holds it where asgEnd
+// would, with asgState's checks but the game's blend set and smart.straight (as asgEnd, only when the run starts:
+// a continued draw's state is the run's, by the begin's check); and addHoldDraw's call of asgHoldDraw
+// comes to CtrRenderer_smoHoldDraw, which draws a straight run as asgHoldDraw draws a run, filtered linearly, but
+// leaves the blend (asgHoldDraw's premultiplied blend is its only difference). Each batch is flushed as smartLinearEnd
+// would have flushed it, under the same state, in the same order; only the batch breaks between characters go. A
+// premultiplied run never continues a straight one or the reverse: their blends differ, and each continue checks its
+// own. Not in profile builds (CTRPORT_RENDER_TIMING: asgdraw's counters and state hash) or forced-split tests, where
+// straight text goes the old way.
+//
+// How it is built: ctrDrawSprite, drawTextImpl and addHoldDraw are not changed here. Calling the wrappers in C changed
+// GCC's choices across this whole file (smartLinearEnd split in two, drawTowerStrips 56 B longer than its oomport
+// slot), so utwindow_compile.py (route_smoothold) retargets five call operands in the emitted assembly, and this block
+// is compiled only in its helper pass (CTRPORT_SMOOTHOLD_HELPER, with dlgwhite's) and appended from there. The
+// wrappers reach every function they call through smoothold_state's words, each read through an empty asm (SMO_CALL;
+// GCC otherwise compares a static table's word with its initialiser and calls that function directly, even when it is
+// volatile): so GCC calls each as an unknown function (full AAPCS, no facts about it), and once appended each word
+// names the ordinary pass's own function. The other names read here are bsGpu (battlesplit's pointer), asgRun
+// (asgdraw's) and citro3d's __C3D_Context (CITRO_WORD). Own sections (.text_smoothold, and .data_smoothold: 36 B in
+// the paid late data reserve, explicitly initialised, no BSS). UNDERTALE only: DELTARUNE's call sites are as before.
+#if defined(ENABLE_WAD16) && defined(CTRPORT_SMOOTHOLD_HELPER)
+#define SMO_CODE __attribute__((noinline, noipa, used, section(".text_smoothold")))
+#if !defined(CTRPORT_RENDER_TIMING) && ASG_FORCE_SPLIT == 0
+#define SMO_STRAIGHT 1
+#else
+#define SMO_STRAIGHT 0
+#endif
+enum { SMO_TEXT_OLD, SMO_TEXT_ASG, SMO_TEXT_STRAIGHT };
+static struct {
+    int8_t (*asgBegin)(CtrRenderer* r);
+    void (*asgEnd)(CtrRenderer* r, int8_t keep);
+    int8_t (*linearBegin)(CtrRenderer* r);
+    void (*linearEnd)(CtrRenderer* r, int8_t keep);
+    void (*holdDraw)(CtrRenderer* r, uint32_t from, uint32_t to);
+    bool (*prophecy)(const CtrRenderer* r);
+    CtrSurface* (*recording)(CtrRenderer* r);
+    void (*flush)(CtrRenderer* r);
+    uint8_t text;     // how the open text draw went: SMO_TEXT_OLD (smartLinearBegin), _ASG (asgBegin) or _STRAIGHT
+    bool straightRun; // the run asgRun holds is straight text's
+} volatile smoothold_state __attribute__((used, section(".data_smoothold"))) = {
+    asgBegin, asgEnd, smartLinearBegin, smartLinearEnd, asgHoldDraw, prophecyBatches, recordingSurface, flushBatch,
+    SMO_TEXT_OLD, false,
+};
+#define SMO_CALL(field) ({ __typeof_unqual__(smoothold_state.field) smoFn = smoothold_state.field; __asm__("" : "+r"(smoFn)); smoFn; })
+static inline __attribute__((always_inline)) bool smoSplit(void) {
+    const BsGpu* g = bsGpu;
+    return g != nullptr && g->target != nullptr;
+}
+SMO_CODE int8_t CtrRenderer_smoSpriteBegin(CtrRenderer* r) {
+    const struct SmartCopy* copy = r->smart.copy;
+    if (copy == nullptr || smoSplit()) return SMO_CALL(asgBegin)(r);
+    r->smart.copy = nullptr;
+    int8_t keep = SMO_CALL(asgBegin)(r);
+    r->smart.copy = copy;
+    return keep;
+}
+SMO_CODE void CtrRenderer_smoSpriteEnd(CtrRenderer* r, int8_t keep) {
+    if (!smoSplit()) r->smart.copy = nullptr;
+    SMO_CALL(asgEnd)(r, keep);
+}
+#if SMO_STRAIGHT
+// The game's blend is bm_normal's and is the one set.
+static inline __attribute__((always_inline)) bool smoNormalSet(const CtrRenderer* r) {
+    uint32_t at = r->citroBlendAt;
+    return at != 0 && CITRO_WORD(at) == blendFuncWord(ASG_NORMAL) && asgNormal(r);
+}
+// asgState for straight text: the game's blend set instead of the premultiplied one, and smart.straight.
+static inline __attribute__((always_inline)) bool smoStraightState(CtrRenderer* r) {
+    return smoNormalSet(r) && r->inFrame && r->boundTarget != nullptr && !r->fogEnable && r->smart.straight && r->smart.copy == nullptr &&
+           r->shaderFx == SHADER_FX_NONE && r->palKind == PAL_NONE && r->shrink.batchMode == 0 && r->layer.mode != LAYER_OBJECTS &&
+           r->layer.mode != LAYER_TILES && r->layer.mode != LAYER_MASKED && !r->shoujoBands && !r->colorMask && !r->palSurfPass &&
+           r->crtPass == 0 && !(r->depth.active && r->boundSurface == r->base.runner->applicationSurfaceId) && !SMO_CALL(prophecy)(r) &&
+           SMO_CALL(recording)(r) == nullptr;
+}
+#endif
+SMO_CODE int8_t CtrRenderer_smoTextBegin(CtrRenderer* r) {
+    if (!r->smart.straight) {
+        smoothold_state.text = SMO_TEXT_ASG;
+        return SMO_CALL(asgBegin)(r);
+    }
+#if SMO_STRAIGHT
+    smoothold_state.text = SMO_TEXT_STRAIGHT;
+    CtrAddHold* h = &r->addHold;
+    // asgBegin's continue check and continue, for a straight run.
+    if (smoothold_state.straightRun && asgRun.open && asgRun.word == 0 && h->mode == ADD_HOLD_HELD && h->page == nullptr && h->count != 0 &&
+        r->frame == asgRun.frame && r->boundTarget == asgRun.target && r->batchStart == r->vertexCount && r->smart.copy == nullptr &&
+        !r->smart.emitting && !r->fogEnable && smoNormalSet(r)) {
+        CtrHeldBatch* b = &h->batches[h->count - 1];
+        if (b->start + b->count == r->vertexCount && b->texCount == 1) {
+            h->count--;
+            r->batchStart = b->start;
+            r->batchTex = b->texes[0];
+            r->batchTexB = nullptr;
+            memcpy(r->batchTexes, b->texes, sizeof(r->batchTexes));
+            r->batchTexCount = 1;
+            r->batchMultiOk = false;
+            r->batchPlainOnly = b->plainOnly;
+            r->batchQuads = r->batchQuadsAuto = b->quads;
+        }
+        h->mode = ADD_HOLD_EMITTING;
+        asgRun.cont = true;
+        asgRun.word = 0;
+        int8_t keep = r->filterOverride;
+        r->filterOverride = FILTER_LINEAR;
+        r->smart.emitting = true;
+        return keep;
+    }
+    asgRun.adjacent = r->frame == asgRun.endFrame && r->vertexCount == asgRun.endVertex && r->batchStart == r->vertexCount;
+    int8_t keep = SMO_CALL(linearBegin)(r);
+    asgRun.word = 0;
+    return keep;
+#else
+    smoothold_state.text = SMO_TEXT_OLD;
+    return SMO_CALL(linearBegin)(r);
+#endif
+}
+SMO_CODE void CtrRenderer_smoTextEnd(CtrRenderer* r, int8_t keep) {
+    uint8_t text = smoothold_state.text;
+    if (text == SMO_TEXT_ASG) {
+        SMO_CALL(asgEnd)(r, keep);
+        return;
+    }
+#if SMO_STRAIGHT
+    if (text == SMO_TEXT_STRAIGHT) {
+        // asgEnd's, for a straight run: no premultiplied blend to put back (the game's is set all along).
+        CtrAddHold* h = &r->addHold;
+        bool cont = asgRun.cont;
+        asgRun.cont = false;
+        uint32_t pending = r->vertexCount - r->batchStart;
+        bool ours = cont ? h->mode == ADD_HOLD_EMITTING && r->smart.emitting
+                         : asgRun.adjacent && h->mode == ADD_HOLD_OFF && h->count == 0 && r->smart.emitting;
+        bool batch = pending == 0 ? h->count != 0
+                                  : r->batchTex != nullptr && r->batchTexCount == 1 && r->batchTexB == nullptr && ADD_HOLD_BATCHES > h->count;
+        asgRun.adjacent = false;
+        if (!ours || !batch || (!cont && !smoStraightState(r))) {
+            SMO_CALL(linearEnd)(r, keep);
+            asgRun.endFrame = r->frame;
+            asgRun.endVertex = r->vertexCount;
+            return;
+        }
+        if (!cont) {
+            h->page = nullptr;
+            h->passes = h->firstCount = 0;
+        }
+        if (pending != 0) {
+            CtrHeldBatch* b = &h->batches[h->count++];
+            b->start = r->batchStart;
+            b->count = pending;
+            memcpy(b->texes, r->batchTexes, sizeof(b->texes));
+            b->texCount = 1;
+            b->quads = r->batchQuads;
+            b->plainOnly = r->batchPlainOnly;
+        }
+        r->batchStart = r->vertexCount;
+        r->batchTexes[0] = r->batchTex;
+        r->batchTexCount = 1;
+        r->batchMultiOk = true;
+        r->batchPlainOnly = false;
+        if (r->batchQuadsAuto) r->batchQuads = r->batchQuadsAuto = false;
+        h->mode = ADD_HOLD_HELD;
+        asgRun.open = true;
+        asgRun.frame = asgRun.endFrame = r->frame;
+        asgRun.endVertex = r->vertexCount;
+        asgRun.target = r->boundTarget;
+        smoothold_state.straightRun = true;
+        r->filterOverride = keep;
+        r->smart.copy = nullptr;
+        r->smart.straight = false;
+        r->smart.emitting = false;
+        return;
+    }
+#endif
+    SMO_CALL(linearEnd)(r, keep);
+}
+// addHoldDraw's: a straight run drawn as asgHoldDraw draws a run, without its premultiplied blend; anything else
+// asgHoldDraw draws. The run is straight text's only while it is a live run (asgHoldDraw's run: else the two draw
+// alike) whose last begin set no premultiplied word (asgRun.word 0; asgBegin sets it for every premultiplied draw,
+// after its own flush has drawn what was held), so a flag left by a run the frame's start dropped can't touch one.
+SMO_CODE void CtrRenderer_smoHoldDraw(CtrRenderer* r, uint32_t from, uint32_t to) {
+    bool run = asgRun.open && r->addHold.page == nullptr && r->frame == asgRun.frame;
+    bool straight = smoothold_state.straightRun && run && asgRun.word == 0;
+    smoothold_state.straightRun = false;
+    if (!straight) {
+        SMO_CALL(holdDraw)(r, from, to);
+        return;
+    }
+    asgRun.open = false;
+    int8_t filter = r->filterOverride;
+    r->filterOverride = FILTER_LINEAR;
+    for (uint32_t i = from; to > i; i++) {
+        const CtrHeldBatch* b = &r->addHold.batches[i];
+        r->batchStart = b->start;
+        r->vertexCount = b->start + b->count;
+        r->batchTex = b->texes[0];
+        r->batchTexB = nullptr;
+        memcpy(r->batchTexes, b->texes, sizeof(r->batchTexes));
+        r->batchTexCount = b->texCount;
+        r->batchMultiOk = true;
+        r->batchPlainOnly = b->plainOnly;
+        r->batchQuads = r->batchQuadsAuto = b->quads;
+        SMO_CALL(flush)(r);
+    }
+    r->filterOverride = filter;
+}
+#endif
+
+// bstall (change asgtall, 11-15; z_battlesplit.c's end): the Split's tall space. CtrRenderer_bsTallClip: the top layer's
+// (the application surface's own half view) scissor kept to its rows from row on, inside the game's, in the fields
+// battlesplit17's cut uses (CtrRenderer_bsClip17(renderer, 0) takes it off), as CtrRenderer_bs47Clip keeps the rows
+// above. For the strip's draws at present, below the band's foot. UT_COLD_TEXT(bstall): the named Old capacity
+// override and New both use ordinary late text.
+#ifdef ENABLE_WAD16 // AAC tenants carry an explicit guard (test_aacslot_shared.py)
+#ifdef __3DS__
+#include "ctr_place.h"
+bool CtrRenderer_bsTallClip(Renderer* renderer, int32_t row);
+__attribute__((noinline, noipa)) UT_COLD_TEXT(bstall) bool CtrRenderer_bsTallClip(Renderer* renderer, int32_t row) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    BsGpu* g = bsGpu;
+    if (g == nullptr || g->clip17 || !r->inFrame || r->boundTarget == nullptr || r->base.runner == nullptr) return false;
+    if (r->boundSurface != r->base.runner->applicationSurfaceId || r->boundTarget != g->appTarget) return false;
+    CtrSurface* s = bsApp(r);
+    if (s == nullptr) return false;
+    flushBatch(r);
+    bool wasOn = r->scissorEnabled;
+    CtrRect was = r->scissor;
+    CtrRect cut = { 0, 0, s->width, s->height };
+    if (wasOn) cut = was;
+    int32_t y0 = s->height * row / 240;
+    int32_t y1 = cut.y + cut.h;
+    if (y0 > cut.y) cut.y = y0;
+    cut.h = y1 - cut.y;
+    if (0 > cut.h) cut.h = 0;
+    g->clipWasOn17 = wasOn;
+    g->clipWas17 = was;
+    g->clip17 = true;
+    r->scissorEnabled = true;
+    r->scissor = cut;
+    applyViewport(r);
+    return true;
+}
+
+// bstall's strip on a flash frame (lead 11-15, exact order): the strip (the half view's last rows) already holds the
+// frame's cover notes among its draws in the game's order, so after the flash's present, whose fill went over the top
+// screen's rows below the band, those rows get the strip again: rows rows from the top screen's foot, both eyes, then
+// the target before bound again. Returns whether a present had drawn (skipPresent) on entry; rows 0 copies nothing (the
+// caller's look before the present). Only the copy: nothing the game reads changes.
+bool CtrRenderer_bsTallCopy(Renderer* renderer, int32_t rows);
+__attribute__((noinline, noipa)) UT_COLD_TEXT(bstall) bool CtrRenderer_bsTallCopy(Renderer* renderer, int32_t rows) {
+    CtrRenderer* r = (CtrRenderer*) renderer;
+    bool drew = r->skipPresent;
+    if (!drew || 0 >= rows || r->base.runner == nullptr || r->topTarget == nullptr) return drew;
+    CtrSurface* s = bsApp(r);
+    if (s == nullptr) return drew;
+    int32_t w = s->width / 2, h = s->height / 2;
+    if (rows > h) rows = h;
+    if (rows > TOP_SCREEN_H) rows = TOP_SCREEN_H;
+    float dst[4];
+    dst[0] = floorf(((float) r->topW - (float) w) * 0.5f);
+    dst[1] = (float) (TOP_SCREEN_H - rows);
+    dst[2] = (float) w;
+    dst[3] = (float) rows;
+    C3D_Tex* tex = surfaceTexture(r, r->base.runner->applicationSurfaceId);
+    C3D_RenderTarget* was = r->boundTarget;
+    int32_t id = r->boundSurface;
+    flushBatch(r);
+    bindTarget(r, r->topTarget, -1);
+    blitApp(r, tex, 0.0f, (float) (h - rows), (float) w, (float) rows, 0.0f, 0.0f, dst, false);
+    if (r->stereoActive && r->topRightTarget != nullptr) {
+        bindTarget(r, r->topRightTarget, -1);
+        blitApp(r, tex, 0.0f, (float) (h - rows), (float) w, (float) rows, 0.0f, 0.0f, dst, false);
+    }
+    if (was != nullptr) bindTarget(r, was, id);
+    applyAllState(r);
+    return drew;
 }
 #endif
 #endif

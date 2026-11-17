@@ -15,8 +15,19 @@ import re
 import struct
 import subprocess
 
-ARM = Path('C:/devkitPro/devkitARM/bin')
+# The devkitARM bin folder. Never a fixed install path (11-17 playtester: devkitPro under the user folder);
+# sfxlate_compile sets it from the compiler command CMake runs.
+ARM = None
 ALLOWED = {'.text_sfxlate', '.rodata_sfxlate'}
+
+
+def tool(name):
+    """A devkitARM tool beside the compiler this build runs (ARM, set by sfxlate_compile from the compiler command)."""
+    if ARM is None:
+        raise RuntimeError('sfxlate: the devkitARM folder was not given; it comes from the compiler command CMake runs')
+    path = Path(ARM) / ('arm-none-eabi-' + name)
+    exe = path.with_name(path.name + '.exe')
+    return exe if exe.is_file() else path
 
 
 def run(command):
@@ -193,18 +204,18 @@ def merge(baseline, unit, output, folder, *, allowed=ALLOWED, prefix='sfxlate'):
     allocated = {observed.names[i] for i, s in enumerate(observed.sections) if s[2] & 2 and s[5]}
     assert allocated == allowed, allocated
     objectcopy = folder / (prefix + '-baseline-globals.o')
-    command = [ARM / 'arm-none-eabi-objcopy.exe']
+    command = [tool('objcopy')]
     command += ['--globalize-symbol=' + name for name in exports]
     run(command + [baseline, objectcopy])
     merged = folder / (prefix + '-merged.o')
-    run([ARM / 'arm-none-eabi-ld.exe', '-r', '--unique', objectcopy, unit, '-o', merged])
+    run([tool('ld'), '-r', '--unique', objectcopy, unit, '-o', merged])
     # The appended unit and its original dependencies now share one relocatable
     # object. Restore original local bindings before the executable link, so
     # nm kinds and STT_FILE identities remain those of the frozen object.
     restored = sorted(s['name'] for s in original.symbols
                       if s['name'] in exports and s['info'] >> 4 == 0)
     localized = folder / (prefix + '-localized.o')
-    run([ARM / 'arm-none-eabi-objcopy.exe'] +
+    run([tool('objcopy')] +
         ['--localize-symbol=' + name for name in restored] + [merged, localized])
     merged = localized
     restore_file_blocks(merged, original, restored)

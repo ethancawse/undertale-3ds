@@ -213,4 +213,85 @@ BSM_CODEX void CtrBsmex_frameX(Renderer* renderer, int32_t room, int32_t group, 
 BSM_CODEX bool CtrBsmex_rowsKept(void) {
     return bsmHere != 0 && bsmSeen != 0 && bsmWhole == 0;
 }
+
+// ===[ bsmexr r2 (change battlesplit2, 11-15; the maintainer's EX explosion report, bug-ex-ending-split-1115) ]===
+// maintainer, 11-15 (Split): as his body explodes after a heart turn "it moves around mid explosion", and "kinda telleports
+// to the bottom screen": the place above went from whole to centred in one frame (the routing at once, the lift 8 rows
+// a frame), while his limbs still fell. His rule (confirmed 11-15, for both heart turns, arms and
+// legs): whole through the explosion, the shocked face and the falling limbs; then, once the turn is over and his face
+// is normal, he slides up to the top screen over about half a second, eased; the ratings stay on the top screen.
+// CtrBsmex_frameY: CtrBsmex_frameX, then for the whole place's end:
+// - When: the frame CtrBsmex_frameF leaves the whole place (the enemy's turn over and none of the heart cohort alive:
+//   the hearts, the bursts, the falling limbs and the leg lines, so his face is normal and no limb changes screens
+//   mid-fall, maintainer's pick) with global.mnfight 0 (the menu: the box has grown back to the menu box; on PC its last step
+//   is the step before mnfight 0, arms turn 291/292, legs turn 418/419). On PC that is step 293 after the arms turn (the
+//   last arm gone) and 450 after the legs turn (the last leg gone).
+// - Held until then: CtrBsmex_frameF leaves the whole place as soon as the enemy's turn is over and the cohort is gone,
+//   the box possibly still growing (mnfight 3); then the whole place is kept here (its lines, the flag, the lift toward 0)
+//   until mnfight is 0. Not when his turns changed this frame (a new turn's speech takes CtrBsmex_frameF's place).
+// - The slide: BSM_SLIDE_FRAMES frames from that frame, step k (1 to 14) at p = smoothstep(k / 15); step 15 is the
+//   centred place itself (CtrBsmex_frameF's: the lift reaches the scene's at its step). Each step is the centred place
+//   (its lines as CtrBsmex_frameX's ending block takes them) with the lift at p of the scene's, and the flag
+//   CTR_BSMEX_WHOLE, so every draw takes battlesplit's full route, where bsRouteAtR (z_battlesplit.c's end) draws what the
+//   centred place puts on the top screen on both screens at the slide's height (CtrBsmex_slide gives it p).
+// - Ends at once (the place CtrBsmex_frameX made): a heart turn's speech (the whole place again), his ending, Mettaton
+//   EX gone, a new split or group.
+// Presentation only, as the rest of this file. Per model (ctr_place.h): AAC text on UNDERTALE Old
+// (.aacout.text.mexslide), appended late text on New (.text_mexslide); no constants; one byte of late state
+// (.bss_bsmexr_late).
+#include "ctr_place.h"
+#define BSM_CODER __attribute__((noinline, noipa, optimize("Os"))) UT_COLD_TEXT(mexslide)
+#define BSM_SLIDE_FRAMES 15     // the slide's frames, its last the centred place itself (half a second at 30)
+#define BSM_SLIDE_WHOLE CTR_BSMEX_WHOLE // the whole flag, held and in the slide's steps (battlesplit's full route)
+static uint8_t bsmSlide __attribute__((section(".bss_bsmexr_late,\"aw\",%nobits @"))); // the slide's step, 0 none
+
+// The slide's height at step k (1 to 14): smoothstep(k / 15), 0 to 1.
+static BSM_CODER float bsmEase(int32_t k) {
+    float t = (float) k / (float) BSM_SLIDE_FRAMES;
+    return t * t * (3.0f - 2.0f * t);
+}
+
+BSM_CODER float CtrBsmex_slide(void) {
+    return bsmSlide != 0 && bsmHere != 0 ? bsmEase(bsmSlide) : 0.0f;
+}
+
+BSM_CODER void CtrBsmex_frameY(Renderer* renderer, int32_t room, int32_t group, CtrLayoutPlace* place, float viewTop, float perPx,
+                               float* split, uint8_t* whole, uint32_t frames) {
+    int32_t was = -place->bottomDy; // the lift before CtrBsmex_frameF moves it
+    float bandY = split[1];
+    bool fresh = frames == 0 || bsmFor != place || bsmGroup != group;
+    uint8_t held = bsmWhole, k = bsmSlide;
+    int8_t turns = bsmTurns;
+    bsmSlide = 0;
+    CtrBsmex_frameX(renderer, room, group, place, viewTop, perPx, split, whole, frames);
+    Runner* runner = renderer != nullptr ? renderer->runner : nullptr;
+    if (fresh || bsmHere == 0 || runner == nullptr || !(0.0f < perPx)) return;
+    Instance* ex = bsmLive(runner, BSM_EX);
+    if (ex == nullptr || bsmEnding(runner->vmContext, ex)) return;
+    if (k != 0) {
+        if (bsmWhole != 0 || BSM_SLIDE_FRAMES <= ++k) return; // a heart turn's speech, or landed: CtrBsmex_frameX's place
+    } else {
+        if (held == 0 || bsmWhole != 0) return; // not left this frame
+        if (bsmInt(runner->vmContext->globalScopeInstance, bsmVar[1]) != 0) {
+            if (turns != bsmTurns) return; // a new turn's: CtrBsmex_frameX's place
+            // CtrBsmex_frameF left the whole place before the menu: kept, as its whole place (the lift toward 0)
+            bsmWhole = 1;
+            was = was > BSM_STEP ? was - BSM_STEP : 0;
+            place->bottomDy = (int16_t) -was;
+            split[2] = viewTop + perPx * (float) was;           // hideY
+            split[0] = split[1] = viewTop - 240.0f * perPx;     // splitY and bandY: a screen above the view
+            *whole = BSM_SLIDE_WHOLE;
+            return;
+        }
+        k = 1;
+    }
+    bsmSlide = k;
+    bsmWhole = 0;
+    int32_t rise = (int32_t) (bsmEase(k) * (float) bsmLift + 0.5f);
+    place->bottomDy = (int16_t) -rise;
+    split[2] = viewTop + perPx * (float) rise; // hideY: the bottom screen's first row, at the slide's lift
+    split[1] = bandY;                         // bandY: the band's, as before the call
+    split[0] = split[2];                       // splitY: BY_CALL's line there too (he is seen)
+    *whole = BSM_SLIDE_WHOLE;                  // every draw the full way (battlesplit's slide route)
+}
 #endif // ENABLE_WAD16

@@ -58,8 +58,19 @@
 # btchoice (change battletouch btchoice, maintainer 11-15: the two-button choice screens with the stylus, drag then tap;
 # z_battletouch.c's end) follows bshinge (N13 compose order; originally after bsg47), text and rodata alike. Per model (ctr_place.h, as asgfuse): its text input
 # links on UNDERTALE Old only (New: late text, .text_btchoice); its rodata input (24 B of names) on both.
+# bsmexr (battlesplit2, 11-15: Mettaton EX's slide back up to the top screen after his heart turns, his
+# ratings on the top screen in them; z_bsmex.c's, z_battlesplit.c's and ctr_renderer.c's ends) follows btchoice (N14 compose order; originally after bshinge).
+# Per model (ctr_place.h, as asgfuse): its text input links on UNDERTALE Old only (New: late text, .text_mexslide);
+# no constants, so no rodata input.
+# framelead (stepdrift, 11-15: ctr_frame_pacer.c's end, a frame's work starts frame_lead_ms before its slot's
+# vblank) follows opt3ds (N14 compose order; originally after bsg47), on UNDERTALE Old only: placed per model (ctr_place.h, late-order.json per_model), and New
+# builds none of it, so its input is empty there. Text only: its constants sit in its text input (UT_COLD_TEXT_CONST),
+# as N8a's release-only rodata inputs must stay the rodata slot's last (check_devonly_aac.py).
+# bstall (N14 rebase): append after opt3ds; constants before the release-only reclaim suffix.
 # S4 occupies part of the retired Frame hole. Its padding stays fixed, so
 # battlesplit14 and every existing tenant retain their dv8q addresses.
+# opt3ds (options3ds, N14): page code is an appended AAC tenant on Old and late text on New;
+# constants append to AAC rodata on both, through ctr_place.h. No earlier tenant moves.
 set(aacout_text_hole_inputs
     .aacout.text.dlgtop4
 )
@@ -101,6 +112,11 @@ set(aacout_text_inputs
     .aacout.text.soulahead2
     .aacout.text.bshinge
     .aacout.text.btchoice
+    .aacout.text.mexslide
+    .aacout.text.undlg_speech
+    .aacout.text.opt3ds
+    .aacout.text.framelead
+    .aacout.text.bstall
 )
 set(aacout_rodata_inputs
     .aacout.rodata.bootahead
@@ -125,6 +141,9 @@ set(aacout_rodata_inputs
     .aacout.rodata.storyentry
     .aacout.rodata.bshinge
     .aacout.rodata.btchoice
+    .aacout.rodata.undlg_speech
+    .aacout.rodata.opt3ds
+    .aacout.rodata.bstall
 )
 # Release-only reclaim inputs (review decision 11-16, N13 option A): N8a's two readonly inputs, linked into AAC rodata by
 # UNDERTALE Old's shipping release only (CTRPORT_N8A_RODATA below; dev and New keep them in late text/rodata). They
@@ -222,10 +241,19 @@ if(aacout_native_count GREATER 0)
     endforeach()
 endif()
 # UNDERTALE Old's protected AAC text reserve (lead 11-14, audit F3-1 T7; lead 11-15 N13 ruling L2): the plain dev-only
-# tail's 8,192 B cap plus plain Old dev's free floor, 4,096 B since 11-15 (was 8,192: nothing occupied it; it stays as
-# dev-probe and hotfix headroom). tools/analysis/aac_capacity.py is the tools' copy (test_aac_capacity.py).
-set(aacout_old_plain_free 4096)
-set(aacout_old_reserve 12288)
+# tail's 8,192 B cap plus plain Old dev's free floor, 2,048 B since 11-16 (lead, for framelead; 4,096 B from 11-15,
+# 8,192 B before: nothing occupied it; it stays as dev-probe and hotfix headroom). tools/analysis/aac_capacity.py is the tools' copy (test_aac_capacity.py).
+set(aacout_old_plain_free 2048)
+set(aacout_old_reserve 10240)
+# The touchtest vehicle (CTRPORT_TOUCH_TEST, with or without touchqueue and testpage; 11-16, N14 n14g): a test
+# build, never a release (CMakeLists.txt refuses it with a release source URL), whose touch-test code adds ~824 B to
+# Old's production lists. Like the ballast, labcrash and AAC test tenant vehicles it is held to the slot's capacity
+# only: no protected reserve and no plain dev floor, which protect shipped-build headroom. Instead it gets its own named
+# capacity ASSERT, so it fails loudly when the slot is full rather than through the generic overflow.
+set(aacout_touchtest_vehicle FALSE)
+if(CTRPORT_TOUCH_TEST)
+    set(aacout_touchtest_vehicle TRUE)
+endif()
 set(aacout_toolchain_ld "${CTRPORT_DKA_BIN}/../arm-none-eabi/lib/3dsx.ld")
 file(READ "${aacout_toolchain_ld}" aacout_ld)
 foreach(kind text rodata)
@@ -270,6 +298,11 @@ foreach(kind text rodata)
     else()
         # 23,530 B vendor payload, plus its original 2 B internal alignment.
         set(aacout_capacity 23532)
+        if(CTRPORT_TARGET STREQUAL "o3ds")
+            # oldspace [R] prototype: the four pages go to Old ordinary late text.
+            # Keep this independent of the release URL; Old dev gets the same exchange.
+            set(aacout_capacity 7148)
+        endif()
         set(aacout_match "*(.rodata)")
         set(aacout_flags "SHF_ALLOC & !SHF_WRITE & !SHF_EXECINSTR")
     endif()
@@ -382,8 +415,8 @@ foreach(kind text rodata)
     if(CTRPORT_DEVONLY_AAC)
         # The dev-only tail and its budgets (c26rev2's contracts, 11-11): the plain dev tail, alignment included,
         # at most 8,192 B of text; build.sh's labcrash (LG_CRASHTEST's ~0.9 KB more) at most 9,216 B, its own budget.
-        # Old plain dev keeps at least 4,096 B of the text slot free, and Old's production lists leave the 12,288 B
-        # protected reserve. Test vehicles (ballast, labcrash, the AAC test tenant) are held to the slot's capacity only.
+        # Old plain dev keeps at least 2,048 B of the text slot free, and Old's production lists leave the 10,240 B
+        # protected reserve. Test vehicles (ballast, labcrash, the AAC test tenant, touchtest) are held to the slot's capacity only.
         string(APPEND aacout_inputs "        __aacout_${kind}_devonly_start = ABSOLUTE(.);\n")
         # u0-tailalign (lead 11-15): the tail's first input starts at the largest tail-input alignment of its kind
         # today, so a production growth that is not a multiple of it moves every tail input by one delta
@@ -410,29 +443,31 @@ foreach(kind text rodata)
             # The cap counts the dev-only tail from its own start: ballast and the AAC test tenant sit between
             # production_end and devonly_start and are held to the slot's capacity, not to this cap (c26rev2 DDUNIT-1).
             string(APPEND aacout_inputs "        ASSERT(__aacout_text_devonly_end - __aacout_text_devonly_start <= ${aacout_devonly_budget}, \"AAC text: ${aacout_devonly_label} dev-only tail over ${aacout_devonly_budget} B\");\n")
-            if(CTRPORT_TARGET STREQUAL "o3ds")
-                string(APPEND aacout_inputs "        ASSERT(__aacout_text_start + ${aacout_capacity} - __aacout_text_production_end >= ${aacout_old_reserve}, \"AAC text: Old production lists inside the 12,288 B protected reserve\");\n")
+            if(CTRPORT_TARGET STREQUAL "o3ds" AND aacout_touchtest_vehicle)
+                string(APPEND aacout_inputs "        ASSERT(__aacout_text_used_end <= __aacout_text_start + ${aacout_capacity}, \"AAC text: Old touchtest vehicle over the slot capacity\");\n")
+            elseif(CTRPORT_TARGET STREQUAL "o3ds")
+                string(APPEND aacout_inputs "        ASSERT(__aacout_text_start + ${aacout_capacity} - __aacout_text_production_end >= ${aacout_old_reserve}, \"AAC text: Old production lists inside the 10,240 B protected reserve\");\n")
                 if(NOT CTRPORT_LABCRASH AND NOT CTRPORT_BALLAST AND NOT CTRPORT_AACSLOT_TEST)
-                    string(APPEND aacout_inputs "        ASSERT(__aacout_text_start + ${aacout_capacity} - __aacout_text_devonly_end >= ${aacout_old_plain_free}, \"AAC text: Old plain dev under 4,096 B free\");\n")
+                    string(APPEND aacout_inputs "        ASSERT(__aacout_text_start + ${aacout_capacity} - __aacout_text_devonly_end >= ${aacout_old_plain_free}, \"AAC text: Old plain dev under 2,048 B free\");\n")
                 endif()
             endif()
         endif()
     endif()
-    # Old release keeps the same 12,288 B after its production lists that the dev link asserts above (lead 11-14,
-    # audit F3-1 T7). That room is dev's: the 8,192 B dev-only tail plus plain dev's 4,096 B free. A release-only
+    # Old release keeps the same 10,240 B after its production lists that the dev link asserts above (lead 11-14,
+    # audit F3-1 T7). That room is dev's: the 8,192 B dev-only tail plus plain dev's 2,048 B free. A release-only
     # compose fails here, not first at the next dev link. It is measured at dev's production end (lead 11-15, N13
     # ruling L1): the latereclaim block and its phase pad (__latereclaim_text_gap_start to __latereclaim_end, release
     # only; dev links those inputs in late text and pays for them there) do not count against the dev reserve. Every
     # byte of the block is pinned by the latereclaim ASSERTs above (offsets and sizes), so nothing else can be
-    # excluded. Test vehicles (ballast, the AAC test tenant) are held to the slot's capacity only, as in dev.
+    # excluded. Test vehicles (ballast, the AAC test tenant, touchtest) are held to the slot's capacity only, as in dev.
     set(aacout_release_reserve "")
     if(kind STREQUAL "text" AND CTRPORT_TARGET STREQUAL "o3ds" AND NOT CTRPORT_DEVONLY_AAC AND NOT CTRPORT_BALLAST
-       AND NOT CTRPORT_AACSLOT_TEST)
+       AND NOT CTRPORT_AACSLOT_TEST AND NOT aacout_touchtest_vehicle)
         set(aacout_release_used "__aacout_text_used_end")
         if(aacout_latereclaim)
             set(aacout_release_used "(__aacout_text_used_end - (__latereclaim_end - __latereclaim_text_gap_start))")
         endif()
-        set(aacout_release_reserve "        ASSERT(__aacout_text_start + ${aacout_capacity} - ${aacout_release_used} >= ${aacout_old_reserve}, \"AAC text: Old release lists inside the 12,288 B dev reserve\");\n")
+        set(aacout_release_reserve "        ASSERT(__aacout_text_start + ${aacout_capacity} - ${aacout_release_used} >= ${aacout_old_reserve}, \"AAC text: Old release lists inside the 10,240 B dev reserve\");\n")
     endif()
     set(aacout_region "${aacout_prefix}
         . = ALIGN(4);

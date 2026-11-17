@@ -103,6 +103,8 @@
     {"room": "room_battle", "group": 140, "split": true, "band": 139, "entries": ["by_call:obj_sorrybody", "bottom:obj_doodleball", "bottom:obj_doodlebullet", "bottom:obj_sorry_trashball", "cover:obj_flasher"]},
     {"room": "room_floweybattle", "split": true, "band": 130, "lift": 0, "entries": ["by_call:obj_floweydraw", "by_call:obj_guidearrows", "by_call:obj_friendlypellet", "bottom:obj_fakepellet", "bottom:obj_fakeheart"]},
     {"room": "room_flowey_endchoice", "split": true, "band": 130, "lift": 0, "entries": ["bottom:obj_anybt", "bottom:obj_fakeheart"]},
+    {"room": "room_papdate", "split": true, "band": 240, "lift": 80, "entries": ["by_call:obj_papdate"]},
+    {"room": "room_adate", "split": true, "band": 240, "lift": 80, "entries": ["by_call:obj_adate"]},
     {"room": "room_shop1", "split": false, "band": 120, "lift": 0, "mode": 1},
     {"room": "room_shop2", "split": false, "band": 120, "lift": 0, "mode": 1},
     {"room": "room_shop3", "split": false, "band": 120, "lift": 0, "mode": 1},

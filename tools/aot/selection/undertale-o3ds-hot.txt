@@ -1,0 +1,6 @@
+# First hot entry (gmlaot.py --hot-from; change aotmore 2026-11-16): the entries from this index on are the worst-frame
+# functions appended after snowfloor_Create_0 (undertale.txt's `extra` roots at the end). They go to aot_hot_<n>.c,
+# compiled at the generated files' -O2 without jump tables, linked after the appended units and before the padding;
+# their reference arrays and strings sit in their own text. The full layout and original-function address gates
+# remain mandatory.
+374

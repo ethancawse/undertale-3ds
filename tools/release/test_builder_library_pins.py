@@ -121,6 +121,20 @@ class LibraryPinsTests(unittest.TestCase):
         self.assertEqual(len(self.requests),2)
         self.assertTrue((Path(state['shims'])/'cmake').is_file())
 
+    def test_a_rerun_keeps_the_toolchain_file_path_and_a_changed_folder_is_never_reused(self):
+        # 11-17 playtester: a new wrapper folder per run moved CMAKE_TOOLCHAIN_FILE, so every rerun printed CMake's
+        # "You have changed variables that require your cache to be deleted".
+        with mock.patch('urllib.request.urlopen',side_effect=AssertionError('no network')):
+            first=self.select()['shims']
+            self.assertEqual(self.select()['shims'],first)
+            toolchain_file=Path(first)/'toolchain.cmake'
+            toolchain_file.write_text(toolchain_file.read_text()+'# changed\n')
+            second=self.select()['shims']
+            self.assertEqual(self.select()['shims'],second)                   # the new folder is stable in turn
+        self.assertNotEqual(second,first)
+        self.assertTrue(toolchain_file.read_text().endswith('# changed\n'))     # left as found
+        self.assertFalse((Path(second)/'toolchain.cmake').read_text().endswith('# changed\n'))
+
     def test_matching_install_does_not_open_or_unpack_bundles(self):
         self.original.write_bytes(b'QUALIFIED LIBRARY')
         self.tc.package_versions['libctru']='2.7.0-1'

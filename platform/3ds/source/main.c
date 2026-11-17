@@ -1376,7 +1376,7 @@ startGame:
             if (action == MENU_ACTION_CHANGED) {
                 display = menu.settings;
             } else if (action == MENU_ACTION_RESUME || action == MENU_ACTION_QUIT || action == MENU_ACTION_PERF_TEST) {
-                if (menu.edited) {
+                if (menu.edited && CTR_MENU_SAVES) {
                     // Only the menu's changes: settings given with --ini stay for this run.
                     CtrBtnprompt_saveEdits(&displayAtMenuOpen, &display, SETTINGS_PATH, CtrRenderer_capsAuditfixh(renderer));
                     logInfo("Display settings saved to %s\n", SETTINGS_PATH);

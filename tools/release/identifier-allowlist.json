@@ -30,7 +30,7 @@
     {
       "member": "tools/aot/selection/undertale.txt",
       "class": "aot-selection",
-      "sha256": "7868252a43323596eed1ee4bc8fcb659d4c9d04d9aa1750dc23098ff7365ee55",
+      "sha256": "ddf1c8f03eaf5d7e868dc20c306952aaa4a44d092b05cf93a838f47a6cc1502c",
       "justification": "Names-only selection keys for compiling the players own code."
     },
     {
@@ -54,8 +54,8 @@
     {
       "member": "platform/3ds/data_versions.inc",
       "class": "data-versions",
-      "sha256": "a2e3cc313cb747ee02a5c2bca9fa9c1b773785c982dbfa1e232f418dc2ef51e9",
-      "justification": "Sizes and digests select verified player data and compile-time profiles."
+      "sha256": "470a901fada525decafd185d8874716aff74abb8192b03aef04412b39e1cbb4d",
+      "justification": "Sizes and digests select verified player data and compile-time profiles; the Steam-only include mode reuses the existing row without adding or changing any version value."
     },
     {
       "member": "tools/release/music-versions.json",
@@ -201,8 +201,8 @@
     {
       "member": "platform/3ds/source/ctr_renderer.c",
       "class": "engine-lookups",
-      "sha256": "272bdaa4f78195d08f11b4e7085bfe1f4a0c8997099405996f24fda6a0e7fd60",
-      "justification": "Shader, object and sprite lookup names select renderer compatibility paths.",
+      "sha256": "b40ef133069f563916c7a47747b7364db38e9e63ba29a0765468cce84b03fcfb",
+      "justification": "Shader, object and sprite lookup names select renderer compatibility paths. N14 compose adds the elevator-only recordQuad call and its ordinary appended recorder bridge with one layout offset (dlgtop r617); smoothold (11-16) appends its five call wrappers after it; no game content added. N14 bstall Old placement ruling: comment-only placement description correction; exact identifier findings unchanged. N14 AOT arm D (aotmore): adds the inline utkDrawSpriteBody profile-build draw helper; exact identifier findings unchanged.",
       "evidence_sha256": [
         "3ed79f9b7583c83142de5f28eacb6d2f2812841561d123ca4eeb55dc4a503d84"
       ]
@@ -219,8 +219,8 @@
     {
       "member": "platform/3ds/source/z_popbot2.c",
       "class": "engine-lookups",
-      "sha256": "90f5dd555d7843437b677be4dce97182d0c1dce65bed8f2928207d8e14cd65d4",
-      "justification": "Object lookup names select which overworld popups (steps 5 and 6: elevator panels, the True Lab tape list, the crossword sheet, the gold panel) follow the dialogue box to the bottom screen; the writer object is tested as the game tests it.",
+      "sha256": "d315a41db692520e503ac56f394c3c3204e5f9e695ddb7892f458a26b5d5672a",
+      "justification": "Existing reviewed popup lookup identifiers unchanged; two ordinary anchor call operands use elevator-only admission, with a never-read late pointer retaining the original anchor compiler order. No game content added.",
       "evidence_sha256": [
         "415ac4fc6e7d5f7f3e0d85cc4db2a2cd75f762e48939ce60d893440c0f70d44e"
       ]
@@ -246,7 +246,7 @@
     {
       "member": "platform/3ds/source/main.c",
       "class": "engine-lookups",
-      "sha256": "e6186470da353571751cffc516052684124f30bc42c0b70230abf4a157530d9f",
+      "sha256": "5f5335d50622262977e3c572bcbe780e3204a15b54412b7215759a403332ac86",
       "justification": "Intro and title room names select startup rooms in player data.",
       "evidence_sha256": [
         "beff7c970aaeadca3f94aedfe4901d446f31340c60d5b22c361461f1f3cc2cdc"
@@ -814,8 +814,8 @@
     {
       "member": "platform/3ds/source/z_battlesplit.c",
       "class": "engine-lookups",
-      "sha256": "4947c357bc4c0f1d6d5f768fb26799afd26d0dcc536d0adb4b6d39756571dd14",
-      "justification": "battlesplit (lead approved 2026-11-08): names used only as runtime lookups, as z_battletouch.c: battle object names (bullets and their parents, the SOUL and its shots, the battle controller, the target and name bars, the text writer, the box borders, the faders, and the fight-specific objects of its encounter tables) sort a battle's draws between the two screens; the battle room names and the battle group variable find the rooms and the fight; with touch on, Omega Flowey's room and the room after it pick the screen that fight is drawn on (the Omega unit, lead 2026-11-15); no game text, art or generated code; exported with UNDERTALE only. The exact names are bound by the evidence hash and listed in the commit that added this entry.",
+      "sha256": "a6347a449138c15cea15f2cf4bd2ea158672d291156b5cf5435bd58d5f9f3d31",
+      "justification": "battlesplit (lead approved 2026-11-08): names used only as runtime lookups, as z_battletouch.c: battle object names (bullets and their parents, the SOUL and its shots, the battle controller, the target and name bars, the text writer, the box borders, the faders, and the fight-specific objects of its encounter tables) sort a battle's draws between the two screens; the battle room names and the battle group variable find the rooms and the fight; with touch on, Omega Flowey's room and the room after it pick the screen that fight is drawn on (the Omega unit, lead 2026-11-15); no game text, art or generated code; exported with UNDERTALE only. The exact names are bound by the evidence hash and listed in the commit that added this entry. N14 bstall Old placement ruling: comment-only placement description correction; exact identifier findings unchanged.",
       "evidence_sha256": [
         "ef079571c9ea70a3d5f04deff2c381b30551c2b4d3493bfba37cae937b53a388"
       ]
@@ -823,10 +823,10 @@
     {
       "member": "tools/layout/undertale-scenes.json",
       "class": "engine-lookups",
-      "sha256": "4380eceb9e3f5244ba75bf726e7927f8f67854d7da8f0437017d7dca9fb6ee4b",
-      "justification": "layout S3 (lead approved 2026-11-08, ruling 5: a names-only spec resolved at build time): the battle object names and the battle room name z_battlesplit.c's approved lookups use, as the scene table's spec; build.sh resolves them against the player's own data.win into romfs:/layout/undertale.lst (numbers only, never committed); no game text, art, numbers or generated code; exported with UNDERTALE only. The exact names are bound by the evidence hash.",
+      "sha256": "938d5145d6ad4408a122eb63e37039d4ce1ba828c1c47b7becca06e97cc4094a",
+      "justification": "layout S3 (lead approved 2026-11-08, ruling 5: a names-only spec resolved at build time): the battle object names and the battle room name z_battlesplit.c's approved lookups use, as the scene table's spec; build.sh resolves them against the player's own data.win into romfs:/layout/undertale.lst (numbers only, never committed); no game text, art, numbers or generated code; exported with UNDERTALE only. The exact names are bound by the evidence hash. Datesplit (lead implementation GO 2026-11-16): two date-room rows and their controllers route the agreed bottom-screen date box, including the dump continuation; four additional runtime lookup names only.",
       "evidence_sha256": [
-        "0603787f8bdf2d9f29059000304b41a3d15890e2b93e4b0f6df3d4f0c2902b5d"
+        "d4c4fab8a86dda8eef5c694766d3e05591f88701f6279023fc2541c2df626418"
       ]
     },
     {
@@ -916,7 +916,7 @@
     {
       "member": "tools/aot/gmlaot.py",
       "class": "engine-lookups",
-      "sha256": "b93006bb9cf0cb92856043e277a7e80ff26f8fc290a167c57005cbebc8b2bdf2",
+      "sha256": "d3c26e9b13cf37df1b51f0ab5e7f28239c2013e02ff3d3f6360c85af9ce4eec6",
       "justification": "One lava script lookup selects an audited generic sprite-part builtin redirect. No game body, game instruction sequences or generated code from them, resource IDs, assets or text are embedded: the native bodies (UTF_NATIVE) and the text front (GETTEXT_FAST) are matched by SHA-256 or FNV digests computed from the player's data.win at build time; the only instruction words left are the VM's generic opcode encodings the compiler decodes.",
       "evidence_sha256": [
         "ec6d5c493df4c8b53e57dd4a2ce27ce563d52ee9ccf95083c9135cec002574aa"
@@ -929,12 +929,12 @@
       "evidence_sha256": [
         "ec6d5c493df4c8b53e57dd4a2ce27ce563d52ee9ccf95083c9135cec002574aa"
       ],
-      "sha256": "909ff81138f0c21b0c729b48ab4781596534d2fa400a35f8ef45dfc281edf7b8"
+      "sha256": "020b1d236d6147d3c02a65f809ad850427236da8b6facb730635f16a90e65947"
     },
     {
       "member": "tools/buildcache/launch_dispatch_check.py",
       "class": "engine-symbols",
-      "sha256": "1ee01cf45ebf15fa8195f6ac0aad0af39d18fef658069f05408d7aa7243233fc",
+      "sha256": "175b0208789234ffb6c6f178fda2c3e1ed2baf7cd00770c58e3deccaf6cdb2b3",
       "justification": "buildfast identity checker: the flagged name is the ELF section-header type field it reads; prefix overlap is not a game asset.",
       "evidence_sha256": [
         "18ecdaf31888c2de321b900dbf2eb3f15e093af15594d8c087ac84fa527fb11e"
@@ -1000,7 +1000,7 @@
     {
       "member": "engine/src/z_utflames.c",
       "class": "engine-lookups",
-      "sha256": "48586bf77e91819857535ead6c7b7d65b45ab91eef8b37ad12a28a2f25ab92d1",
+      "sha256": "73a92f0fa0969b76f103346b6323fdf1e36fda725ca2c5178dd67d73ec848887",
       "justification": "A section comment names the room whose snow floor collision_circle's native no-hit answer serves (comment only; UNDERTALE only, utflames circle af36f9670).",
       "evidence_sha256": [
         "5ba75d9207f269aac4ebb0473447bf55bac5fb0cc3bb0ff2f73c41b3923717d3"
@@ -1140,7 +1140,7 @@
     {
       "member": "tools/aot/weirdshd.py",
       "class": "engine-lookups",
-      "sha256": "d12cb67dc5c8f277de0fe775e1efde1d2b8a3e5301424085c1186c998f04332d",
+      "sha256": "3ad25d35ea0048f29bc619d46cb3139649af9772bc5eb377d580405605c7ffd4",
       "justification": "Two code-entry lookup keys select player-owned Create/Draw bodies for builder-generated event wrappers. Original game bodies stay in private generated modules. Only the measured revision from the pinned public registry enables wrappers; an unknown revision or metadata mismatch leaves the effect off. No duplicate player-data digest or game instruction sequence is embedded.",
       "evidence_sha256": [
         "f5e69ec4d8582c3d80b8a89977da23fd875b39b91efd6b2901ef8b5c46a72c61"
@@ -1195,7 +1195,7 @@
     {
       "member": "platform/3ds/source/z_battletouch.c",
       "class": "engine-lookups",
-      "sha256": "c7d277a73fdf69e781e4f2181a3b7f42b312a71085db1ce0cf773df11f06c628",
+      "sha256": "f80c1b5fc357ebc2607baf1d5af6861a22270c39fea413db8b4e8e900e903e40",
       "justification": "battletouch (lead approved 2026-11-08; the game-over room lookup added for r1c, lead approved 2026-11-14): battle object names used only as runtime lookups for stylus hit areas and the SOUL's position, and the game-over room's name, compared with the current room's so that a tap there presses Z; the three story screens' room names (a tap there presses what the writer takes) and two battle object names (no story tap while either is alive), lead approved 2026-11-15; Omega Flowey's room name, its heart's object name (with that heart's variable, read by name) and its buttons' parent object name, so that the pen moves that heart and presses a lit button there (the Omega unit, lead 2026-11-15); the two-button choice screens' heart object name (the choice's buttons' object name is the story screens' one above), so that the pen moves that heart and a tap on a lit button presses Z there (btchoice, lead 2026-11-15); no game text or art. The battle menu's and the SOUL's variables are read by name the same way; UNDERTALE only, compiled empty for DELTARUNE.",
       "evidence_sha256": [
         "7cb83e48804c305a1fa9dfa40a30882a9dd1b7c9a354c9bb62e7e88672395619"
@@ -1277,6 +1277,15 @@
       "justification": "Game-over screen unit (lead approved 2026-11-10): room and object lookup keys select presentation and SOUL/shard translation in the player's own data; no game text, logic or art.",
       "evidence_sha256": [
         "14d150128220737f71a206c9a52776353d38d8af359bc82525bd530019925c25"
+      ]
+    },
+    {
+      "member": "platform/3ds/source/z_undlg_speech.c",
+      "class": "dialogue-objects",
+      "sha256": "13fb99cb5193b71460fdf9f62276e12ff847f3f840bfed6c0341315e2a65bcc7",
+      "justification": "Names-only runtime lookup keys for simultaneous writer/controller admission; no game content.",
+      "evidence_sha256": [
+        "4550b788e2d8982da4802ecb4d902977799b964142f9d4b3d5f2be3aa7c95bf6"
       ]
     }
   ],

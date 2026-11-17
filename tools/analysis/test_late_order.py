@@ -147,6 +147,7 @@ def per_model(kinds=('text',), keep=False):
     """Live registry plus one per-model unit 'probe' with both names for each kind, and a source using it."""
     registry = copy.deepcopy(late_order.load())
     registry['per_model'] = ['probe']  # live units' sources are not in these trees
+    registry['old_late_text'] = []
     body = ['#include "ctr_place.h"\n']
     for kind in kinds:
         aac, late = late_order.place_names(kind, 'probe')
@@ -451,6 +452,16 @@ class PerModelTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     late_order.load(path)
 
+    def test_registry_rejects_unknown_or_duplicate_old_text_overrides(self):
+        for overrides in (['unknown'], ['bstall', 'bstall'], 'bstall', [7]):
+            registry = copy.deepcopy(late_order.load())
+            registry['old_late_text'] = overrides
+            with tempfile.TemporaryDirectory() as folder, self.subTest(overrides=overrides):
+                path = Path(folder) / 'bad.json'
+                path.write_text(json.dumps(registry), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'old_late_text'):
+                    late_order.load(path)
+
     def test_cli_runs_the_per_model_check(self):
         registry = copy.deepcopy(late_order.load())
         registry['per_model'].append('probe')
@@ -461,6 +472,17 @@ class PerModelTests(unittest.TestCase):
                                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(result.stdout.splitlines(), ['FAIL: per_model probe: registers neither text nor rodata names'])
+
+    def test_cli_rejects_a_header_registry_override_mismatch(self):
+        registry = copy.deepcopy(late_order.load())
+        registry['old_late_text'] = []
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'unit.json'
+            path.write_text(json.dumps(registry), encoding='utf-8')
+            result = subprocess.run([sys.executable, '-I', str(Path(late_order.__file__)), '--registry', str(path)],
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('old_late_text: registry and ctr_place.h named overrides differ', result.stdout)
 
 
 if __name__ == '__main__':

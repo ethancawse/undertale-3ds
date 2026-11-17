@@ -1299,6 +1299,18 @@ if [ -e "$build/CMakeCache.txt" ]; then
     fi
 fi
 release_source=(-DCTRPORT_RELEASE_SOURCE_URL="$release_source_url")
+# The builder's archive step (tools/release/builder/arwrap.py, set by the builder only): ar and ranlib run in a private
+# folder and the finished archive is moved into place (11-17 playtester: ar could not create its temporary file beside
+# one archive). The archive bytes are the same; unset, CMake's own rules apply.
+archive_rules=()
+if [ -n "${CTRPORT_ARCHIVE_WRAPPER:-}" ]; then
+    archive_step="\"$python_executable\" -X utf8 -I \"$(native_path "$CTRPORT_ARCHIVE_WRAPPER")\""
+    for lang in C ASM; do
+        archive_rules+=("-DCMAKE_${lang}_ARCHIVE_CREATE=$archive_step create <CMAKE_AR> qc <TARGET> <LINK_FLAGS> <OBJECTS>"
+                        "-DCMAKE_${lang}_ARCHIVE_APPEND=$archive_step append <CMAKE_AR> q <TARGET> <LINK_FLAGS> <OBJECTS>"
+                        "-DCMAKE_${lang}_ARCHIVE_FINISH=$archive_step finish <CMAKE_RANLIB> <TARGET>")
+    done
+fi
 gog_compat=OFF
 if [ "$game" = undertale ]; then
     gog_args=(--build-flag)
@@ -1326,6 +1338,7 @@ cmake -S "$here" -B "$build" -G "Unix Makefiles" \
     -DCMAKE_INTERMEDIATE_DIR_STRATEGY=FULL \
     ${prefix_map[@]+"${prefix_map[@]}"} \
     ${release_source[@]+"${release_source[@]}"} \
+    ${archive_rules[@]+"${archive_rules[@]}"} \
     -DCTRPORT_PYTHON_EXECUTABLE="$python_executable" \
     -DCMAKE_C_COMPILER_LAUNCHER="$launcher" \
     -DCTRPORT_LAUNCH_DISPATCH="$launch_dispatch" \

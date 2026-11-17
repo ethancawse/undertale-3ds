@@ -90,13 +90,21 @@ static struct {
 #endif
 #if defined(ENABLE_WAD16)
 // samestart's state (ctr_samestart.inc sameStart, .bss.samestart_late: 24 voices x 12 B + the publication count,
-// 4-aligned), the last tenant, after soulahead (which ends 8-aligned), so no pad.
+// 4-aligned), after soulahead (which ends 8-aligned), so no pad.
 #define SM_CARVE_SAMESTART 292
 #else
 #define SM_CARVE_SAMESTART 0
 #endif
+#if defined(ENABLE_WAD16) && defined(CTRPORT_TARGET_O3DS)
+// framelead's state (ctr_frame_pacer.c's end, fl: 100 B, 4-aligned; .bss_framelead_late; UT Old only), after samestart
+// (N14 compose order): samestart ends 4-aligned, so no pad.
+#define SM_CARVE_FRAMELEAD 100
+#else
+#define SM_CARVE_FRAMELEAD 0
+#endif
 #define SM_CARVE_BYTES (SM_CARVE_BONEGATE + SM_CARVE_BOXCACHE + SM_CARVE_BOTTOMPAINT + \
-                        SM_CARVE_MSGLOCK + SM_CARVE_SOULAHEAD + SM_CARVE_SAMESTART)
+                        SM_CARVE_MSGLOCK + SM_CARVE_SOULAHEAD + SM_CARVE_SAMESTART + \
+                        SM_CARVE_FRAMELEAD)
 static unsigned char smSpare[SM_BSS_BYTES - sizeof(hf) - SM_CARVE_BYTES] __attribute__((used, section(".bss.sdmigrate_spare")));
 
 #ifdef ENABLE_WAD17

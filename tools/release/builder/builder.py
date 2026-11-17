@@ -256,6 +256,7 @@ CLI_WORDING = (
      "Run the devkitPro installer again and select 3DS Development."),
     ("Or use Install beside the 3DS tools on the compiler page.",
      "Then install the 3DS compiler using the builder's setup steps."),
+    ("then click Try again.", "then run the same command again."),
     ("then click Check again.", "then run the same command again."),
     ("Then click Check again.", "Then run the same command again."),
     ("Click Update devkitPro to refresh it", "Update devkitPro to refresh it"),

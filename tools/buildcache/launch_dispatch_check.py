@@ -130,7 +130,16 @@ def build_system(name):
 # ------------------------------------------------------------------------------------------- unpacked outputs
 
 def devkitpro():
-    for d in (os.environ.get('DEVKITPRO'), 'C:/devkitPro', '/opt/devkitpro'):
+    """DEVKITPRO, then the builder's own install discovery (registry, user folders, standard roots). Never a fixed
+    folder here (11-17: devkitPro can live under the user folder)."""
+    roots = [os.environ.get('DEVKITPRO')]
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'release/builder'))
+        import toolchain
+        roots += toolchain.candidate_roots()
+    except ImportError:
+        pass                                # a mirrored build tree has no builder; DEVKITPRO alone then
+    for d in roots:
         if d and Path(native(d)).is_dir():
             return Path(native(d))
     return None
@@ -385,7 +394,9 @@ def plain_diff(a, b):
     return list(difflib.unified_diff(la, lb, 'A', 'B', lineterm='', n=0))
 
 
-DEVKITPRO_BASH = 'C:/devkitPro/msys2/usr/bin/bash.exe'
+def devkitpro_bash():
+    root = devkitpro()
+    return str(root / 'msys2/usr/bin/bash.exe') if root else ''
 
 
 def native(token):
@@ -1908,7 +1919,7 @@ def main(argv):
     p = sub.add_parser('identity')
     p.add_argument('--label', required=True)
     p.add_argument('--out', required=True)
-    p.add_argument('--bash', default=DEVKITPRO_BASH if Path(DEVKITPRO_BASH).exists() else 'bash')
+    p.add_argument('--bash', default=devkitpro_bash() if devkitpro_bash() and Path(devkitpro_bash()).exists() else 'bash')
     p.add_argument('--env', action='append', default=[])
     p.add_argument('--slots', type=int, default=0, help='start each build only while fewer cmake.exe run')
     p.add_argument('words', nargs='+')

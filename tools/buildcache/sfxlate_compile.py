@@ -8,6 +8,7 @@ from pathlib import Path
 import hashlib
 import json
 import struct
+import shutil
 import subprocess
 import sys
 
@@ -66,7 +67,7 @@ def append_unit(command, output):
     with assembly.open('w', encoding='utf-8', newline='\n') as stream:
         stream.write(frozen.selected_assembly(raw.read_text(encoding='utf-8')))
     unit = folder / 'sfc-product.o'
-    frozen.run([frozen.ARM / 'arm-none-eabi-gcc.exe', '-march=armv6k', '-mfloat-abi=hard', '-mfpu=vfp',
+    frozen.run([frozen.tool('gcc'), '-march=armv6k', '-mfloat-abi=hard', '-mfpu=vfp',
                 '-Wa,--fatal-warnings', '-c', '-x', 'assembler', assembly, '-o', unit])
     obj = frozen.Object(unit)
     sizes = {name: sum(s[5] for n, s in zip(obj.names, obj.sections) if n == name) for name in frozen.ALLOWED}
@@ -83,6 +84,9 @@ def main(args):
     split = args.index(MARKER)
     delegate, command = [a for a in args[:split] if a], args[split + 1:]
     status = subprocess.run(delegate + command, stdin=subprocess.DEVNULL, timeout=1800).returncode
+    compiler = shutil.which(command[0]) if command else None
+    if compiler:
+        frozen.ARM = Path(compiler).resolve().parent     # the tools beside the compiler this build runs
     if status or '-c' not in command:
         return status
     required = {'-DENABLE_WAD16', '-DCTRPORT_TARGET_O3DS', '-DCTRPORT_HAVE_TREMOR'}

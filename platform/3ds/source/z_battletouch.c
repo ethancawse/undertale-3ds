@@ -3741,3 +3741,355 @@ __asm__(".global Battletouch_obRowGrey\n.set Battletouch_obRowGrey, btObRowGrey\
 #endif
 
 #line 3120
+
+// ===[ 3DS Options (change optplan; the maintainer's go-ahead, 11-15) ]===
+//
+// The options menu's main page loses Dialogue box, Battle layout and Battle stylus and gains one row, 3DS Options (its
+// value the battle mode), which opens a page of three rows, each relative to Game screen and never grey: Dialogue (With
+// the game / Other screen: text_place's meaning, with the game on either screen), Battles (Original / 3DS Mode; Top
+// screen is gone, and ctr_battlesplit.h's CTR_BATTLE_LAYOUT_COUNT refuses a saved 3), Stylus (battletouch's row, its
+// values and order), then Back and a picture of two little consoles, Walking and Fights, drawn from the predicates the
+// game uses: the player's game below (layout's Dialogue box row grey), CtrLayout_places (of the menu's settings),
+// CtrBattlesplit_setting and CtrBattletouch_touchMoves (the stylus rule, battletouch's name, here).
+//
+// builderx_compile.py routes optKeysHeard's call of optKeys and optComposeShown's call of optCompose here, in place of
+// CtrOptbattle_keys and CtrOptbattle_compose, which stay in place, unreached (UNDERTALE builds define
+// CTRPORT_NO_BOTTOMFRAME, so the retired bottomframe adapters that also call them are not compiled). Other pages, and
+// every press on optmenu's own rows but Up and Down, go to optmenu's originals unchanged. optmenu's main cursor sits on
+// the row's own index, and on OPT_MAIN_DIALOGUE (no longer on the page) for 3DS Options and while its page is up:
+// btm.onPage says the page is up and btm.pageRow is its cursor (the first slot's Battles page state, unused since that
+// page went, and Way B's cursor, unused once its keys are unreached). The menu's open puts optmenu's cursor on Game
+// screen, which ends the page. Only global names are called (no new call edge into this file's statics), and every
+// constant is in opt3ds's appended AAC rodata input. Code uses ctr_place.h: AAC text on Old, appended late text on
+// New. Existing tenants retain their order. Menu code: runs only while the options menu is open.
+#ifdef ENABLE_WAD16 // (the AAC tenant's own guard, as test_aacslot_shared asks)
+#ifdef __3DS__
+#include "ctr_place.h"
+#define O3_CODE UT_COLD_TEXT(opt3ds) __attribute__((noinline, noipa, used, optimize("Os")))
+bool CtrLayout_chainOverride(CtrDisplaySettings* settings, const char* line, CtrDisplayCaps caps);
+bool CtrBattletouch_touchMoves(void);
+extern const char LoadScreen_settingsPath[];
+CtrMenuAction CtrOpt3ds_keys(CtrMenu* menu, u32 down);
+void CtrOpt3ds_compose(const CtrMenu* menu, uint16_t* fb);
+
+enum { O3_PARK = 1 }; // ctr_optmenu.c's OPT_MAIN_DIALOGUE: optmenu's cursor for 3DS Options and its page
+// btm.pageRow's top bit: a text_place line is owed at the menu's close (o3Dialogue, o3Owed); the cursor is below it.
+enum { O3_OWED = 0x80, O3_CURSOR = 0x7F };
+enum { O3_PAGE_DIALOGUE, O3_PAGE_BATTLES, O3_PAGE_STYLUS, O3_PAGE_BACK, O3_PAGE_ROWS };
+// The main page, top to bottom, by optmenu's row index (O3_PARK is 3DS Options), and each row's y. First Game screen
+// and last Quit game, as optmenu's held-key repeat expects (optHoldMoves: a list's ends are its first and last index).
+#ifdef CTRPORT_TARGET_O3DS
+enum { O3_ROWS = 10 };
+#define O3_ORDER { 0, 1, 4, 2, 3, 5, 6, 7, 8, 9 }
+#define O3_Y { 8, 22, 36, 55, 69, 88, 102, 116, 182, 196 }
+#else
+enum { O3_ROWS = 11 };
+#define O3_ORDER { 0, 1, 5, 2, 3, 4, 6, 7, 8, 9, 10 }
+#define O3_Y { 8, 22, 36, 55, 69, 83, 102, 116, 130, 182, 196 }
+#endif
+// The strings, NUL-separated in this order; the main page's order and y; the page's rows' y.
+enum { O3_LBL, O3_HLP, O3_VAL_SPLIT, O3_VAL_ORIGINAL, O3_LBL_DIALOGUE, O3_LBL_BATTLES, O3_LBL_STYLUS, O3_LBL_BACK,
+       O3_WITH, O3_OTHER, O3_HLP_WITH, O3_HLP_BOTTOM, O3_HLP_TOP, O3_HLP_TOUCH, O3_HLP_BACK, O3_WALKING, O3_FIGHTS,
+       O3_GAME, O3_TEXT, O3_ENEMIES, O3_BOX, O3_BATTLE, O3_OFF, O3_INI_WITH, O3_INI_OTHER, O3_HEART, O3_EMPTY,
+       O3_APPEND, O3_ZOOM, O3_STATS };
+const char o3Text[] UT_COLD_RODATA(opt3ds) =
+    "3DS Options\0"
+    "Dialogue, battle screens and stylus.\0"
+    "3DS Mode  >\0"
+    "Original  >\0"
+    "Dialogue\0"
+    "Battles\0"
+    "Stylus\0"
+    "Back\0"
+    "< With the game >\0"
+    "< Other screen >\0"
+    "Dialogue stays in the game.\0"
+    "Dialogue and menus move to the bottom.\0"
+    "Dialogue and menus move to the top.\0"
+    "The whole battle on the touch screen.\0"
+    "Back to the options.\0"
+    "Walking\0"
+    "Fights\0"
+    "Game\0"
+    "Text\0"
+    "Enemies\0"
+    "Box\0"
+    "Battle\0"
+    "off\0"
+    "text_place = 0\0"
+    "text_place = 1\0"
+    "\1\0" "\0" "a\0Zoom\0Stats";
+const uint8_t o3Order[] UT_COLD_RODATA(opt3ds) = O3_ORDER;
+const uint8_t o3Y[] UT_COLD_RODATA(opt3ds) = O3_Y;
+const uint8_t o3PageY[] UT_COLD_RODATA(opt3ds) = { 8, 22, 36, 55 };
+
+static O3_CODE const char* o3Nth(uint32_t i) {
+    const char* s = o3Text;
+    for (; i != 0; i--) s += strlen(s) + 1;
+    return s;
+}
+
+// The stylus rule (battletouch's name, its body one line, 11-15): any stylus setting takes an Original fight to the
+// touch screen, bsTouchOn's read outside a bench. The page's picture and Battles help read it.
+O3_CODE bool CtrBattletouch_touchMoves(void) {
+    return CtrBattletouch_modeNow() != CTR_BATTLETOUCH_OFF;
+}
+
+// The text's place in the menu's own settings (layout's reading, CtrLayout_places): a press changes them at once, and
+// a refusal's revert goes into them too (CtrLayout_menuRefused). CtrLayout_otherText reads main's display instead,
+// which takes the menu's settings only after the update that drew the page (main.c, MENU_ACTION_CHANGED), so a page
+// drawn from it kept the old place until the next press redrew it (#68 Azahar captures, 11-15).
+static O3_CODE bool o3Other(const CtrMenu* menu) {
+    CtrLayoutPlaces places;
+    CtrLayout_places(&menu->settings, &places);
+    return places.text == CTR_LAYOUT_OTHER;
+}
+
+// The Dialogue row's step: the other place, with the game on either screen. text_place's meaning, marked known from now
+// on as an --ini line marks it (so the places read it with the game below too); a refused place reverts
+// (CtrLayout_menuRefused). The menu's save writes text_place with dialogue_bottom when the bit differs from the menu's
+// open (CtrLayout_chainSaveEdits), else the file's own text_place line again. One case has no line and no change to
+// the bit: a dialogue_bottom = 1 from before text_place, hidden while the game is below (dsplan E4: read as With the
+// game until a text_place line says otherwise), so Other screen keeps the bit (lead 11-15: the page reaches that
+// state, so it closes it). That press only marks the line owed (O3_OWED, in RAM); o3Owed adds it at the menu's close.
+// No file call here: a press stays a menu frame (lead 11-15: his card's settings writes took 953-1520 ms).
+static O3_CODE void o3Dialogue(CtrMenu* menu) {
+    bool other = o3Other(menu);
+    if (menu->settings.dialogueBottom && !other) btm.pageRow |= O3_OWED;
+    CtrLayout_chainOverride(&menu->settings, o3Nth(other ? O3_INI_WITH : O3_INI_OTHER), menu->caps);
+}
+
+// The menu's close by a key (Resume, B or SELECT, Quit game, the performance test), in the frame main.c saves the
+// menu's edits, just before that save: an owed text_place line goes into settings.ini if the places still say Other
+// screen with the bit set, so the save (CtrLayout_chainSaveEdits: the file's own text_place again) keeps it. With the
+// game again, the bit differs from the open and the save writes text_place itself. settings.ini's writes once listed
+// go to gamedir's copy in RAM and its worker writes the card after the save's own (z_gamedir.c, gdOpenWrite and
+// gdWorker), as the save's do. A close by no key (HOME's Close with the menu open, a test's scheduled close) adds
+// nothing, and the save then keeps With the game, as before this page.
+static O3_CODE void o3Owed(const CtrMenu* menu) {
+    bool owed = (btm.pageRow & O3_OWED) != 0;
+    btm.pageRow &= (uint8_t) ~O3_OWED;
+    if (!owed || !menu->edited || !CTR_MENU_SAVES || !o3Other(menu)) return; // (Other: the bit set, either screen)
+    FILE* f = fopen(LoadScreen_settingsPath, o3Nth(O3_APPEND));
+    if (f == nullptr) return;
+    fputc('\n', f);
+    fputs(o3Nth(O3_INI_OTHER), f);
+    fputc('\n', f);
+    fclose(f);
+}
+
+// The player's game is below: layout's Dialogue box row is grey exactly then (the game below, or a battle's move up
+// with the game below), as the main page's Game screen row then shows Bottom.
+static O3_CODE bool o3Below(const CtrMenu* menu) {
+    ObRow d;
+    CtrLayout_optRow(menu, 0, O3_PARK, &d);
+    return d.dis;
+}
+
+// The main page's row k: optmenu's row (with layout's note), or 3DS Options.
+static O3_CODE void o3MainRow(const CtrMenu* menu, uint32_t k, ObRow* r) {
+    uint32_t id = o3Order[k];
+    if (id != O3_PARK) {
+        CtrLayout_optRow(menu, 0, id, r);
+        return;
+    }
+    r->dis = false;
+    r->label = o3Nth(O3_LBL);
+    r->value = o3Nth(CtrBattlesplit_setting() != CTR_BATTLE_LAYOUT_ORIGINAL ? O3_VAL_SPLIT : O3_VAL_ORIGINAL);
+    r->help = o3Nth(O3_HLP);
+}
+
+// The page's row i. Dialogue shows the place the menu's settings give (o3Other), as the picture does.
+static O3_CODE void o3PageRow(const CtrMenu* menu, uint32_t i, ObRow* r) {
+    r->dis = false;
+    r->value = o3Nth(O3_EMPTY);
+    const char* note = CtrLayout_menuNoteFor(CTR_LAYOUT_ROW_TEXT);
+    if (i == O3_PAGE_DIALOGUE) {
+        bool other = o3Other(menu);
+        r->label = o3Nth(O3_LBL_DIALOGUE);
+        r->value = o3Nth(other ? O3_OTHER : O3_WITH);
+        r->help = note != nullptr ? note : o3Nth(!other ? O3_HLP_WITH : o3Below(menu) ? O3_HLP_TOP : O3_HLP_BOTTOM);
+    } else if (i == O3_PAGE_BATTLES) {
+        bool split = CtrBattlesplit_setting() != CTR_BATTLE_LAYOUT_ORIGINAL;
+        r->label = o3Nth(O3_LBL_BATTLES);
+        r->value = Battletouch_obValue(split ? OB_SPLIT : OB_ORIGINAL);
+        r->help = Battletouch_obHelp18(OB_HLP_ORIGINAL); // the refusal note, else Original's or 3DS Mode's line
+        if (!split && note == nullptr && CtrBattletouch_touchMoves()) r->help = o3Nth(O3_HLP_TOUCH);
+    } else if (i == O3_PAGE_STYLUS) {
+        uint32_t mode = (uint32_t) CtrBattletouch_mode();
+        r->label = o3Nth(O3_LBL_STYLUS);
+        r->value = Battletouch_obValue(OB_OFF + mode);
+        r->help = Battletouch_obHelp(OB_HLP_OFF + mode);
+    } else {
+        r->label = o3Nth(O3_LBL_BACK);
+        r->help = o3Nth(O3_HLP_BACK);
+    }
+}
+
+// The page's keys. B, and A on Back: the main page, the cursor on 3DS Options. Up and Down wrap only on a press: a held
+// key's repeat (optHoldTick: the key still held, not newly down) stops at the list's end, with no sound.
+static O3_CODE CtrMenuAction o3PageKeys(CtrMenu* menu, u32 down, u32 folded) {
+    ObState* o = &CtrOptbattle_state;
+    uint32_t row = btm.pageRow & O3_CURSOR;
+    if ((down & KEY_B) || (row == O3_PAGE_BACK && (down & KEY_A) && !(folded & 0xF0u))) {
+        btm.onPage = false; // silent, as leaving any page (maintainer 11-08, CtrMenuquiet_press)
+        o->dirty = true;
+        return MENU_ACTION_NONE;
+    }
+    u32 move = folded & (KEY_DUP | KEY_DDOWN);
+    if (move != 0) {
+        bool press = (CTR_MENU_FOLD(hidKeysDown()) & move) != 0 || (CTR_MENU_FOLD(hidKeysHeld()) & move) == 0;
+        uint32_t to = row;
+        if (move & KEY_DUP) to = row != 0 ? row - 1u : press ? O3_PAGE_ROWS - 1u : row;
+        else to = row + 1u != O3_PAGE_ROWS ? row + 1u : press ? 0u : row;
+        if (to == row) return MENU_ACTION_NONE;
+        btm.pageRow = (uint8_t) (to | (btm.pageRow & O3_OWED));
+        o->dirty = true;
+        CtrOptmenu_pressSound();
+        return MENU_ACTION_NONE;
+    }
+    int32_t dir = (folded & KEY_DRIGHT) ? 1 : ((folded & KEY_DLEFT) ? -1 : 0);
+    if ((dir == 0 && !(down & KEY_A)) || row == O3_PAGE_BACK) return MENU_ACTION_NONE;
+    o->dirty = true;
+    if (row == O3_PAGE_DIALOGUE) {
+        o3Dialogue(menu);
+    } else if (row == O3_PAGE_BATTLES) {
+        // Original and 3DS Mode; layout takes or lets go the pair at once (battletouch18's step without Top screen).
+        CtrBattlesplit_setSetting(CtrBattlesplit_setting() != CTR_BATTLE_LAYOUT_ORIGINAL ? CTR_BATTLE_LAYOUT_ORIGINAL
+                                                                                          : CTR_BATTLE_LAYOUT_A);
+        if (bt.runner != nullptr) CtrLayout_pick18(bt.runner->renderer);
+    } else {
+        // Off, Menus and SOUL, Menus: Right and A forward, Left back; stored values 0, 2, 1 (battletouch's row).
+        int32_t v = CtrBattletouch_mode() - (dir < 0 ? -1 : 1);
+        bt.menuValue = (int8_t) (v > 2 ? 0 : (0 > v ? 2 : v));
+    }
+    menu->edited = true;
+    return MENU_ACTION_CHANGED;
+}
+
+// The main page's keys and the page's (optKeysHeard's call; its sound for an action or a changed optmenu cursor, this
+// code's for a press that changes only the page or its cursor).
+static O3_CODE CtrMenuAction o3Keys(CtrMenu* menu, u32 down) {
+    ObState* o = &CtrOptbattle_state;
+    if (menu->page != MENU_PAGE_OPTIONS || CtrLegal_shown() || o->page != 0) return CtrOptbattle_keysOriginal(menu, down);
+    if (o->cur[0] != O3_PARK) btm.onPage = false; // the menu's open ended the page
+    u32 folded = CTR_MENU_FOLD(down);
+    if (btm.onPage && !(down & KEY_SELECT)) return o3PageKeys(menu, down, folded);
+    if (down & (KEY_SELECT | KEY_B)) return CtrOptbattle_keysOriginal(menu, down);
+    if (folded & (KEY_DUP | KEY_DDOWN)) {
+        // Up and Down wrap, and pass over grey rows (as optKeys).
+        uint32_t k = 0;
+        while (O3_ROWS - 1u > k && o3Order[k] != o->cur[0]) k++;
+        for (uint32_t n = 0; O3_ROWS > n; n++) {
+            if (folded & KEY_DUP) k = k == 0 ? O3_ROWS - 1u : k - 1u;
+            else k = k + 1u == O3_ROWS ? 0u : k + 1u;
+            ObRow r;
+            o3MainRow(menu, k, &r);
+            if (!r.dis) break;
+        }
+        o->cur[0] = o3Order[k];
+        o->dirty = true;
+        return MENU_ACTION_NONE;
+    }
+    if (o->cur[0] != O3_PARK) return CtrOptbattle_keysOriginal(menu, down);
+    // 3DS Options opens its page on A or Right (rows that open a page take Right as A).
+    if (!(down & KEY_A) && !(folded & KEY_DRIGHT)) return MENU_ACTION_NONE;
+    btm.onPage = true;
+    btm.pageRow &= O3_OWED;
+    o->dirty = true;
+    CtrOptmenu_pressSound();
+    return MENU_ACTION_NONE;
+}
+
+// optKeysHeard's call: the keys, then an owed text_place line at a close (main.c saves in this frame, just after).
+O3_CODE CtrMenuAction CtrOpt3ds_keys(CtrMenu* menu, u32 down) {
+    CtrMenuAction action = o3Keys(menu, down);
+    if (action == MENU_ACTION_RESUME || action == MENU_ACTION_QUIT || action == MENU_ACTION_PERF_TEST) o3Owed(menu);
+    return action;
+}
+
+// A frame's line on the page (x across, y down; the framebuffer is the bottom screen's, column-major from the bottom).
+static O3_CODE void o3Line(uint16_t* fb, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t col) {
+    for (int32_t x = x0; x1 >= x; x++) {
+        for (int32_t y = y0; y1 >= y; y++) fb[x * 240 + (239 - y)] = (uint16_t) col;
+    }
+}
+
+// One little screen: its frame and word (white in use, grey "off"), centred, and the heart where the SOUL follows the pen.
+static O3_CODE void o3Screen(uint16_t* fb, int32_t cx, int32_t y0, int32_t w, uint32_t word, bool heart) {
+    uint32_t col = word == O3_OFF ? 0x8410u : 0xFFFFu;
+    int32_t x0 = cx - w / 2, x1 = x0 + w - 1;
+    o3Line(fb, x0, y0, x1, y0, col);
+    o3Line(fb, x0, y0 + 47, x1, y0 + 47, col);
+    o3Line(fb, x0, y0, x0, y0 + 47, col);
+    o3Line(fb, x1, y0, x1, y0 + 47, col);
+    const char* s = o3Nth(word);
+    int32_t n = (int32_t) strlen(s) + (heart ? 2 : 0);
+    int32_t x = cx - n * 7 / 2;
+    CtrOptmenu_text(fb, x, y0 + 18, s, col);
+    if (heart) CtrOptmenu_text(fb, x + (n - 1) * 7, y0 + 18, o3Nth(O3_HEART), 0xF800u);
+}
+
+// Walking and Fights: what each screen shows with these settings.
+static O3_CODE void o3Picture(const CtrMenu* menu, uint16_t* fb) {
+    o3Line(fb, 11, 76, 308, 76, 0xFFFFu);
+    o3Line(fb, 11, 207, 308, 207, 0xFFFFu);
+    o3Line(fb, 11, 76, 11, 207, 0xFFFFu);
+    o3Line(fb, 308, 76, 308, 207, 0xFFFFu);
+    o3Line(fb, 160, 82, 160, 201, 0x8410u);
+    bool below = o3Below(menu);
+    uint32_t text = O3_TEXT;
+    if (!o3Other(menu)) {
+        CtrBottomMode mode = menu->settings.bottomMode;
+        text = mode == BOTTOM_MODE_OFF ? O3_OFF : mode == BOTTOM_MODE_CONSOLE ? O3_STATS : O3_ZOOM;
+    }
+    o3Screen(fb, 85, 81, 80, below ? text : O3_GAME, false);
+    o3Screen(fb, 85, 133, 64, below ? O3_GAME : text, false);
+    CtrOptmenu_text(fb, 85 - 7 * 7 / 2, 189, o3Nth(O3_WALKING), 0xFFFFu);
+    bool soul = CtrBattletouch_mode() == CTR_BATTLETOUCH_MENUS_SOUL;
+    uint32_t top = O3_ENEMIES, bottom = O3_BOX;
+    if (CtrBattlesplit_setting() == CTR_BATTLE_LAYOUT_ORIGINAL) {
+        bool down = below || CtrBattletouch_touchMoves(); // the whole battle on the game's screen, or the pen's
+        top = down ? O3_OFF : O3_BATTLE;
+        bottom = down ? O3_BATTLE : O3_OFF;
+        soul = soul && down;
+    }
+    o3Screen(fb, 234, 81, 80, top, false);
+    o3Screen(fb, 234, 133, 64, bottom, soul);
+    CtrOptmenu_text(fb, 234 - 6 * 7 / 2, 189, o3Nth(O3_FIGHTS), 0xFFFFu);
+}
+
+// The main page and the 3DS Options page, drawn off screen (optComposeShown's call): argui's frame, the line above the
+// help, each row's label and value, the cursor's heart and help line (as optCompose); another page as before.
+O3_CODE void CtrOpt3ds_compose(const CtrMenu* menu, uint16_t* fb) {
+    const ObState* o = &CtrOptbattle_state;
+    if (o->page != 0) {
+        CtrOptbattle_composeOriginal(menu, fb);
+        return;
+    }
+    uint16_t* p = fb;
+    for (uint32_t x = 0; 320u > x; x++) {
+        for (uint32_t y = 0; 240u > y; y++) *p++ = (x - 2u >= 316u || y - 2u >= 236u || y == 25u) ? 0xFFFFu : 0u;
+    }
+    bool page = btm.onPage && o->cur[0] == O3_PARK;
+    uint32_t rows = page ? O3_PAGE_ROWS : O3_ROWS, sel = page ? btm.pageRow & O3_CURSOR : 0;
+    if (!page) {
+        while (O3_ROWS - 1u > sel && o3Order[sel] != o->cur[0]) sel++;
+    }
+    for (uint32_t k = 0; rows > k; k++) {
+        ObRow r;
+        if (page) o3PageRow(menu, k, &r);
+        else o3MainRow(menu, k, &r);
+        int32_t y = page ? o3PageY[k] : o3Y[k];
+        uint32_t col = r.dis ? 0x8410u : (k == sel ? 0xFFE0u : 0xFFFFu);
+        CtrOptmenu_text(fb, 24, y, r.label, col);
+        CtrOptmenu_text(fb, 148, y, r.value, col);
+        if (k == sel) {
+            CtrOptmenu_text(fb, 11, y, o3Nth(O3_HEART), 0xF800u);
+            CtrOptmenu_text(fb, 12, 221, r.help, 0xFFFFu);
+        }
+    }
+    if (page) o3Picture(menu, fb);
+}
+#endif
+#endif

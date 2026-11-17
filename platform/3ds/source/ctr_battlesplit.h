@@ -9,9 +9,11 @@
 
 // settings.ini battle_layout (and --ini battle_layout=N): 0 Original, 1 Split A, 2 Split C, 3 Top screen (the whole
 // battle on the top screen: Original, with the game moved up for it when the player's game is below, and no step 3b
-// move down with the game on top; ctr_layout.h's CTR_LAYOUT_BATTLE_TOP).
+// move down with the game on top; ctr_layout.h's CTR_LAYOUT_BATTLE_TOP). Top screen left the menu with the 3DS
+// Options page (optplan, maintainer 11-15), so 3 is refused like any value out of range: a release build loads Original, a
+// dev build its default (devsplit's Split; dev builds are lab-only). Its code paths stay, unreached.
 enum { CTR_BATTLE_LAYOUT_ORIGINAL = 0, CTR_BATTLE_LAYOUT_A = 1, CTR_BATTLE_LAYOUT_C = 2, CTR_BATTLE_LAYOUT_TOP = 3,
-       CTR_BATTLE_LAYOUT_COUNT = 4 };
+       CTR_BATTLE_LAYOUT_COUNT = 3 };
 
 // Where the two layers land, in screen pixels.
 typedef struct {

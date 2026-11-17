@@ -310,7 +310,8 @@ def source_wanted(relative, game=None):
         # of sprite name hashes (build.sh halfart, products.HALFART).
         # flowervramg_palette_retry.py: vine_old_parent.py imports it, and CMake makes ctr_renderer.c depend on it.
         if parts[2:] in (["vine_extract.py"], ["vine_old_observer_compile.py"], ["vine_old_parent.py"],
-                         ["flowervramg_palette_retry.py"], ["utwindow_compile.py"],
+                         ["flowervramg_palette_retry.py"], ["utwindow_compile.py"], ["undlg_routes.py"],
+                         ["promonotice_compile.py"],
                          ["cheaplevers_kick_compile.py"]):  # the GPU kick's launcher (DELTARUNE New CMake)
             return True
         return game != "deltarune" and parts[2:] in (["halfart_pack.py"], ["halfart", "undertale.txt"])
@@ -471,7 +472,8 @@ def mirror_source(src_root, dest_root, game=None, *, source_digest=None):
         if not invalidated:
             build = os.path.join(dest_root, 'build')
             if os.path.lexists(build):
-                shutil.rmtree(build)
+                # Read-only leftovers (a stale archive) must not stop a fresh start (11-17 playtester).
+                remove_build_tree(build, os.path.dirname(os.path.abspath(dest_root)))
             invalidated = True
 
     def changed_input(path):
@@ -892,6 +894,55 @@ def format_eta(est):
 # ---------------------------------------------------------------------------------------------------------------------
 # Support log
 
+# Paths may be outside the current home: external Steam libraries, mounted Windows homes, and named Mac volumes.
+# A path starts at a drive, a UNC prefix, a root slash (not inside a word, a relative path or a redaction marker) or a
+# compiler flag glued to it, or at the %USERPROFILE% marker the home replacement left.
+_PATH_START = re.compile(r"%USERPROFILE%|(?:(?<![\w:/\\.>%])|(?<=-[ILF]))(?:[A-Za-z]:[\\/]|\\\\|/(?=[^\s/]))")
+# A path can hold spaces, so it ends only where a tool's message starts: a gcc/ld/make/cmake location (":12",
+# ":12:5") or a colon before a space or the line's end. No ':' can sit inside a Windows path after its drive.
+_PATH_END = re.compile(r":\d+(?::\d+)?(?=[:,)\]\s]|$)|:(?=\s|$)")
+_PATH_CLOSERS = {"'": "'", '"': '"', '`': "'`", '\u2018': "\u2019'", '\u201c': '\u201d"', '\u201e': '\u201c\u201d"',
+                 '\u00ab': '\u00bb'}
+# Basenames a support reader needs and that can't name a person: toolchain programs and build-tree source kinds.
+# One with a space never matches, so a private folder or file name with spaces never survives.
+_SAFE_BASENAME = re.compile(
+    r"(?:arm-none-eabi-)?(?:ar|as|ld|ld\.bfd|gcc|g\+\+|c\+\+|cpp|cc1|cc1plus|collect2|lto-wrapper|ranlib|nm|objcopy"
+    r"|strip|make|cmake|ninja|bash|sh)(?:\.exe)?|CMakeLists\.txt|Makefile|Makefile2"
+    r"|[A-Za-z0-9_.+-]+\.(?:c|h|cc|cpp|hpp|s|S|inc|o|obj|a|ld|specs|mk|make|cmake)")
+
+
+def redact_paths(line):
+    """Replace each path with <path> (or %USERPROFILE%) and keep the tool's message after it.
+
+    `C:/X/devkitARM/.../ar.exe: libfoo.a: Permission denied` becomes `<path>/ar.exe: libfoo.a: Permission denied`;
+    a quoted path ends at its closing quote; a path with no message after it runs to the end of the line, as before."""
+    out = []
+    pos = 0
+    while True:
+        m = _PATH_START.search(line, pos)
+        if not m:
+            out.append(line[pos:])
+            return "".join(out)
+        start = m.start()
+        out.append(line[pos:start])
+        home = m.group() == "%USERPROFILE%"
+        body = m.end() if home else start + (2 if line[start + 1:start + 2] == ":" else 0)
+        closers = _PATH_CLOSERS.get(line[start - 1]) if start else None
+        if closers:
+            ends = [i for i in (line.find(c, body) for c in closers) if i >= 0]
+            end = min(ends) if ends else len(line)
+        else:
+            e = _PATH_END.search(line, body)
+            end = e.start() if e else len(line)
+        token = line[start:end].rstrip()
+        base = re.split(r"[\\/]", token)[-1]
+        marker = "%USERPROFILE%" if home else "<path>"
+        if token != "%USERPROFILE%" and _SAFE_BASENAME.fullmatch(base):
+            marker += ("/.../" if home else "/") + base
+        out.append(marker + line[start + len(token):end])
+        pos = max(end, start + 1)
+
+
 class SupportLogFilter:
     """State survives separate emit() calls, including argsaves' multi-line PC-save section."""
 
@@ -923,10 +974,7 @@ class SupportLogFilter:
             for h in {self.home, self.home.replace("\\", "/")}:
                 if h and len(h) > 3:
                     line = line.replace(h, "%USERPROFILE%")
-            line = re.sub(r"%USERPROFILE%[^\r\n]*", "%USERPROFILE%", line)
-            # Paths may be outside the current home: external Steam libraries, mounted Windows homes,
-            # and named Mac volumes. Drop the path and its tail rather than leaking a basename with spaces.
-            line = re.sub(r"(?:(?<![\w:/\\])|(?<=-[ILF]))(?:[A-Za-z]:[\\/]|\\\\|/(?=[^\s/]))[^\r\n]*", "<path>", line)
+            line = redact_paths(line)
             line = re.sub(r"\b\d{17}\b", "<account>", line)
             for digest in hashes:
                 if digest not in line:
@@ -945,6 +993,26 @@ def filter_log(text, home=None):
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Running a build
+
+def remove_build_tree(build, work):
+    """Delete a stale build folder: rename it aside first (one step, so a half-deleted tree is never built in),
+    then delete it, clearing read-only flags. A leftover that can't be deleted stays aside and is never reused."""
+    aside = next(c for c in (os.path.join(work, "stale-build-%d-%d" % (os.getpid(), n)) for n in range(10**6))
+                 if not os.path.lexists(c))
+    try:
+        os.rename(build, aside)
+    except OSError as error:
+        raise BuildFailed("The build stopped: the old build folder could not be replaced (%s).\n" % error
+                          + ARCHIVE_HINT) from error
+
+    def writable(func, path, _exc):
+        try:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            func(path)
+        except OSError:
+            pass
+    shutil.rmtree(aside, onerror=writable)
+
 
 class BuildFailed(Exception):
     def __init__(self, message, log_path=None, details=''):
@@ -998,6 +1066,18 @@ def game_files_refusal(log_path, title):
 
 
 FAILED = "The build stopped.\nClick Try again, or click Copy log to report the error."
+# The archive step (arwrap.py) or ar itself could not write an archive (11-17 playtester).
+ARCHIVE_FAILURES = ("could not create temporary file whilst writing archive", "archive step: FAILED")
+ARCHIVE_HINT = ("This is usually antivirus (look in its Protection history), Controlled Folder Access (Windows "
+                "Security, Ransomware protection) or OneDrive holding or blocking the folder.\n"
+                "Exclude the builder's work folder and the devkitPro folder from them, then click Try again. "
+                "Click Copy log to report the error.")
+ARCHIVE_MESSAGE = ("The build stopped (exit code %d): Windows would not let the 3DS archive tool write a file in the "
+                   "build folder.\n" + ARCHIVE_HINT)
+# What built an existing build folder (Build.fresh_build_tree). Anything that differs means a fresh folder: CMake's
+# "You have changed variables that require your cache to be deleted" must never reach a player's build.
+BUILD_STAMP = ".u3ds-build-stamp.json"
+ARCHIVE_WRAPPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arwrap.py")
 # A failing step's own words, so the command line can say what failed (B2). Warnings are never the cause.
 _ERROR_LINE = re.compile(r"(?:^|\s)(?:fatal )?error:|: error\b|overfilled|undefined reference|^ld: |"
                          r"^make(?:\[\d+\])?: \*\*\*|^CMake Error|^Traceback ", re.I)
@@ -1437,6 +1517,8 @@ class Build:
             copied, removed = mirror_source(self.source_root, os.path.join(self.work, "src"), self.product.key,
                                             source_digest=self.release_source['source_sha256'])
             write_python_shims(os.path.join(self.work, "bin"), toolchain.python_exe())
+            os.makedirs(os.path.join(self.work, "bin"), exist_ok=True)
+            shutil.copyfile(ARCHIVE_WRAPPER, os.path.join(self.work, "bin", "arwrap.py"))
             os.makedirs(os.path.join(self.work, "tools", "bin"), exist_ok=True)
             try:
                 self.libraries = library_pins.select(self.tc, self.work, self.on_line)
@@ -1452,6 +1534,48 @@ class Build:
         finally:
             if not getattr(self, '_running', False):
                 self.finish_ownership()
+
+    def build_stamp(self, version):
+        """What a build folder was configured from: the kit's source, the toolchain and its CMake toolchain file,
+        and the archive step. Staged game inputs and caches live outside the build folder and never count."""
+        root = self.tc.root or ""  # Discovery always sets it; an empty root still stamps consistently.
+        with open(ARCHIVE_WRAPPER, "rb") as f:
+            wrapper = hashlib.sha256(f.read()).hexdigest()
+        # The builder's library wrapper (library_pins.stable_wrapper) is the toolchain file CMake sees when present.
+        shims = (getattr(self, "libraries", None) or {}).get("shims")
+        toolchain_file = (os.path.join(shims, "toolchain.cmake") if shims
+                          else os.path.join(root, "cmake", "3DS.cmake") if root else "")
+        return {"schema": 1, "game": self.product.key, "target": self.target, "version": version,
+                "source_sha256": (getattr(self, "release_source", None) or {}).get("source_sha256"),
+                "devkitpro": os.path.normcase(os.path.abspath(root)) if root else "",
+                "toolchain_file": os.path.normcase(os.path.abspath(toolchain_file)) if toolchain_file else "",
+                "archive_step": wrapper}
+
+    def fresh_build_tree(self, version):
+        """Keep the build folder only when the same kit source and toolchain made it; otherwise start a new one.
+        Returns what happened, for the log."""
+        build = os.path.join(self.work, "src", "build", "3ds-%s-%s" % (self.product.key, self.target))
+        stamp = self.build_stamp(version)
+        path = os.path.join(build, BUILD_STAMP)
+        if os.path.isdir(build):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    old = json.load(f)
+            except (OSError, ValueError):
+                old = None
+            if old == stamp:
+                return "kept (same source and toolchain)"
+            changed = (sorted(k for k in stamp if old.get(k) != stamp[k]) if isinstance(old, dict)
+                       else [])
+            remove_build_tree(build, self.work)
+            what = ("replaced (%s changed)" % ", ".join(changed) if isinstance(old, dict)
+                    else "replaced (it had no build stamp)")
+        else:
+            what = "new"
+        os.makedirs(build, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(stamp, f, sort_keys=True)
+        return what
 
     def finish_ownership(self):
         snapshot = self.__dict__.pop('_cleanup_snapshot', None)
@@ -1476,6 +1600,8 @@ class Build:
         # Player builds never run optional lab qualification, including when a
         # reused mirror still has an old ON CMake cache entry.
         env["CTRPORT_PLAYER_BUILD"] = "1"
+        env["CTRPORT_ARCHIVE_WRAPPER"] = os.path.join(self.work, "bin", "arwrap.py")
+        env["CTRPORT_ARCHIVE_TMP"] = os.path.join(self.work, "artmp")
         env.pop("CTRPORT_SMDH_SOURCE", None)
         env.pop("CTRPORT_SMDH_RELEASE", None)
         stamp = smdh_source(self.release_source)
@@ -1595,6 +1721,8 @@ class Build:
 
             def output(line):
                 log.write(line)
+                if any(marker in line for marker in ARCHIVE_FAILURES):
+                    self.archive_failed = True
                 self.progress.feed(line)
                 self.on_line(line.rstrip("\r\n"))
                 self.on_progress(self.progress)
@@ -1602,6 +1730,9 @@ class Build:
                     # relsimple: the easy path promises a recognised AOT build, never a quiet interpreter build.
                     log.write("builder: stopping, the build would go on without AOT\n")
                     self.cancel()
+            self.archive_failed = False
+            log.write("builder: build folder %s\n" % self.fresh_build_tree(version))
+            log.flush()
             rc = self.run_contained(argv, log, output, env=env, text=True, encoding="utf-8", errors="replace",
                                     bufsize=1)
         if self.cancelled and not self.progress.no_aot:
@@ -1621,6 +1752,8 @@ class Build:
                                       '\n'.join(lines[index:]))
         if rc is None:
             raise BuildFailed("The build was stopped.\nClick Try again when ready.", self.log_path)
+        if rc != 0 and getattr(self, 'archive_failed', False):
+            raise BuildFailed(ARCHIVE_MESSAGE % rc, self.log_path)
         if rc != 0:
             raise BuildFailed("The build stopped (exit code %d).\n"
                               "Click Try again, or click Copy log to report the error." % rc, self.log_path)

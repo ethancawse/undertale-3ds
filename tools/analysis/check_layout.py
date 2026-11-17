@@ -57,7 +57,7 @@ AAC_CAPACITIES = {'text': aac_capacity.TEXT['n3ds'], 'rodata': aac_capacity.RODA
 # The capacities a slot may have (aac_capacity.py): UNDERTALE New 59,780 B of AAC text since N10 rider R9 (43,396 B
 # before), UNDERTALE Old 80,260 B since the Old 1.0 envelope (relready-resize.md, dv8q). A layout pair must still
 # have the same extent on both sides, so a pair across R9 fails here by design (accepted once, review decision 11-15).
-AAC_CAPACITY_SETS = {'text': aac_capacity.TEXT_KNOWN, 'rodata': (aac_capacity.RODATA,)}
+AAC_CAPACITY_SETS = {'text': aac_capacity.TEXT_KNOWN, 'rodata': aac_capacity.RODATA_KNOWN}
 PAGE = 0x1000
 
 
@@ -206,6 +206,18 @@ def aac_append_regions(base: Layout, cand: Layout) -> list[tuple[int, int]]:
                or ('X' in section.flags) != (kind == 'text') for section in sections):
             raise ValueError(f'AAC {kind}: slot is not inside its read-only output section')
         regions.append((used, cused))
+    # astrarev3 AR3-RC1 (N14): occupancy is granted only with the whole slot family, as check_aacslot_leaks requires,
+    # so a known rodata capacity without its text slot (no pair to check) grants nothing.
+    if regions and len(regions) != len(AAC_CAPACITIES):
+        raise ValueError('AAC slots: incomplete slot family (text and rodata markers are both required)')
+    # [R] (oldspace, N14): a known rodata capacity alone is not enough; the slot pair must be one aac_capacity.py
+    # names, so Old's 7,148 B rodata slot never reads with New's or an unknown text slot.
+    for layout in (base, cand):
+        names = [f'__aacout_{kind}_{part}' for kind in ('text', 'rodata') for part in ('start', 'end')]
+        if all(name in layout.plain for name in names):
+            ts, te, rs, re_ = (layout.plain[name] for name in names)
+            if not aac_capacity.known_capacity_pair(te - ts, re_ - rs):
+                raise ValueError(f'AAC slots: capacity pair text {te - ts} B, rodata {re_ - rs} B is not known')
     return regions
 
 

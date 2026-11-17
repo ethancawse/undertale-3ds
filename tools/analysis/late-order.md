@@ -44,7 +44,10 @@ Its `per_model` key lists the units placed through `platform/3ds/source/ctr_plac
 as `.aacout.text.<unit>` on UNDERTALE Old (dev and release alike) and in late text as
 `.text_<unit>` on UNDERTALE New and in DELTARUNE. `UT_COLD_RODATA(unit)` puts constants
 in the AAC rodata slot as `.aacout.rodata.<unit>` on both UNDERTALE models and in late
-rodata as `.rodata_<unit>` in DELTARUNE. For each kind a unit uses, register both
+rodata as `.rodata_<unit>` in DELTARUNE. `UT_COLD_TEXT_CONST(unit)` puts constants in the
+unit's text name instead (the text kind): on UNDERTALE Old, N8a's release-only reclaim
+inputs must stay the AAC rodata slot's last (check_devonly_aac.py), so a unit with
+constants there keeps them in its text input (framelead). For each kind a unit uses, register both
 names: the AAC name in `aac_<kind>` (and aacout.cmake), and exactly one late selector,
 `*(.<kind>_<unit>)` or `KEEP(*(.<kind>_<unit>))`, in that kind's late list (and
 late_reserve.ld). Each model links one name; the other matches nothing there.

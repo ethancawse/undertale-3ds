@@ -33,7 +33,8 @@ PLACE_MACRO = {'text': 'UT_COLD_TEXT', 'rodata': 'UT_COLD_RODATA'}
 SOURCE_DIRS = ('platform/3ds/source', 'engine/src')
 SOURCE_SUFFIXES = ('.c', '.h', '.inc', '.cpp')
 C_LEXEME = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
-PLACE_USE = re.compile(r'\bUT_COLD_(TEXT|RODATA)\b\s*(?:\(\s*([^()]*?)\s*\))?')
+# UT_COLD_TEXT_CONST(unit) is the text kind too: constants in the unit's text name (ctr_place.h).
+PLACE_USE = re.compile(r'\bUT_COLD_(TEXT_CONST|TEXT|RODATA)\b\s*(?:\(\s*([^()]*?)\s*\))?')
 
 
 def linker_inputs(text, kind):
@@ -60,12 +61,15 @@ def linker_inputs(text, kind):
 
 def load(path=REGISTRY):
     value = json.loads(Path(path).read_text(encoding='utf-8'))
-    if value.get('schema') != 1 or set(value) != {'schema', *KINDS, *AAC_KINDS, 'per_model', 'devonly'}:
+    if value.get('schema') != 1 or set(value) - {'old_late_text'} != {'schema', *KINDS, *AAC_KINDS, 'per_model', 'devonly'}:
         raise ValueError('late-order.json: expected schema 1, four late lists, two AAC lists, per_model and devonly')
     units = value['per_model']
     if not isinstance(units, list) or any(not isinstance(u, str) or not UNIT.fullmatch(u) for u in units) or (
             len(set(units)) != len(units)):
         raise ValueError('late-order.json: per_model is a list of distinct unit names ([A-Za-z0-9_]+)')
+    overrides = value.get('old_late_text', [])
+    if not isinstance(overrides, list) or any(not isinstance(u, str) or u not in units for u in overrides) or len(set(overrides)) != len(overrides):
+        raise ValueError('late-order.json: old_late_text is a list of distinct per_model unit names')
     for kind in KINDS:
         entries = value[kind]
         if not isinstance(entries, list) or not entries or any(
@@ -364,7 +368,7 @@ def check_per_model(registry, sources, warnings=None):
         text, runs = lex(spliced)
         for match in PLACE_USE.finditer(text):
             line = line_of(text, joins, match.start())
-            kind, unit = match[1].lower(), match[2]
+            kind, unit = match[1].lower().removesuffix('_const'), match[2]
             if unit is None or not UNIT.fullmatch(unit):
                 errors.append('%s:%d: UT_COLD_%s needs one plain unit name' % (rel, line, match[1]))
             elif (kind, unit) not in registered:
@@ -410,6 +414,11 @@ def main():
                             args.ld.read_text(encoding='utf-8'), registry)
     warnings = []
     errors += check_per_model(registry, read_sources(args.root), warnings)
+    header_path = args.root / PLACE_HEADER
+    header = header_path.read_text(encoding='utf-8') if header_path.is_file() else ''
+    overrides = re.findall(r'^#define CTR_PLACE_OLD_OVERRIDE_(\w+) ', header, re.M)
+    if sorted(overrides) != sorted(registry.get('old_late_text', [])):
+        errors.append('old_late_text: registry and ctr_place.h named overrides differ')
     for error in errors:
         print('FAIL:', error)
     for warning in warnings:

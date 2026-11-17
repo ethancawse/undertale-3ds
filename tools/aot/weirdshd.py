@@ -15,7 +15,7 @@ EVENTS=('gml_Object_obj_ch5_LW20W_rotate_Create_0',
 # Pin the public metadata file, then use its measured chapter row. This is a
 # SOURCE-file digest, not a second embedded player-data digest. A developer
 # test requires deliberate re-pinning; player builds simply leave the effect off.
-VERSION_TABLE_SHA256='a2e3cc313cb747ee02a5c2bca9fa9c1b773785c982dbfa1e232f418dc2ef51e9'
+VERSION_TABLE_SHA256='470a901fada525decafd185d8874716aff74abb8192b03aef04412b39e1cbb4d'
 
 
 def expected_input():

@@ -221,6 +221,7 @@ platform/3ds/hotpin/check_knfuse_size.cmake
 platform/3ds/late_reserve.ld
 platform/3ds/legal.cmake
 platform/3ds/link_objects.cmake
+platform/3ds/aot_hole.cmake
 platform/3ds/python.sh
 platform/3ds/release_contract.cmake
 platform/3ds/source/ctr_aot_module.c
@@ -540,6 +541,7 @@ tools/aot/selection/undertale-hints.txt
 tools/aot/selection/undertale-n3ds.txt
 tools/aot/selection/undertale-o3ds-pad.txt
 tools/aot/selection/undertale-o3ds-append.txt
+tools/aot/selection/undertale-o3ds-hot.txt
 tools/aot/selection/undertale.txt
 tools/aot/typed.py
 # ADPCM tools and diagnostic sources; playback and release selection stay disabled.
@@ -641,6 +643,7 @@ tools/release/builder/ftp_saves.py
 tools/release/builder/cleanup.py
 tools/release/builder/discover.py
 tools/release/builder/gui.py
+tools/release/builder/arwrap.py
 tools/release/builder/pipeline.py
 tools/release/builder/products.py
 tools/release/builder/path_hygiene.py
@@ -907,6 +910,7 @@ engine/src/z_utexact_alarm.h
 platform/3ds/source/ctr_utwindow.h
 platform/3ds/source/z_utwindow.c
 tools/analysis/utwindow_compile.py
+tools/analysis/undlg_routes.py
 tools/analysis/test_utwindow_compile.py
 tools/release/test_smdh_metadata.py
 
@@ -1054,6 +1058,8 @@ tools/release/test_builder_ftp_save_listing.py
 tools/release/test_builder_host_safety.py
 tools/release/test_builder_local_file_safety.py
 tools/release/test_builder_polish.py
+tools/release/test_builder_archive_step.py
+tools/release/test_builder_no_fixed_devkitpro.py
 tools/release/test_builder_pubdocs.py
 tools/release/test_builder_r372.py
 
@@ -1104,6 +1110,10 @@ tools/analysis/test_gmlstubs.py
 platform/3ds/source/z_gmlstubs.h
 # dlgwhite: independent recorded-fill correctness fix and exact-byte gate.
 platform/3ds/source/ctr_dlgwhite.inc
+platform/3ds/source/ctr_promonotice.inc
+tools/analysis/promonotice_compile.py
+tools/analysis/test_promonotice.py
+tools/analysis/check_promonotice_layout.py
 tools/analysis/check_dlgwhite_layout.py
 tools/analysis/test_dlgwhite.py
 tools/release/test_dlgwhite_gate.py
@@ -1269,3 +1279,9 @@ tools/analysis/test_ctr_place.py
 # gofps: the move up's page copy without the FPS counter and its CMake include.
 platform/3ds/gofps.cmake
 platform/3ds/source/z_gofps.c
+
+platform/3ds/source/ctr_popup_home.inc
+platform/3ds/source/ctr_popup_home_capacity.h
+platform/3ds/source/z_popup_home.c
+platform/3ds/source/z_undlg_speech.c
+platform/3ds/source/ctr_undlg_version.inc

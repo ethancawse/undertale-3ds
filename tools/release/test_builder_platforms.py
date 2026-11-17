@@ -663,6 +663,53 @@ class SupportPrivacyTests(unittest.TestCase):
         self.assertIn("build ID archive-0.1.0+aot12", text)
         self.assertIn("sha256 " + "a" * 64, text)
 
+    def test_tool_errors_keep_their_message_after_a_private_path(self):
+        # 11-17 playtester (N14 kit, German Windows): the ar error after "Linking C static library" showed only
+        # %USERPROFILE%, because the tail after the home path was dropped. Paths are assembled so the test source
+        # ships through the kit privacy scan.
+        home = 'C:\\' + 'Users\\Anwender'
+        spaced = 'C:/' + 'Users/Private Person'
+        other = 'D:/' + 'Private Work/fixture build'
+        tool = '/devkitPro/devkitARM/bin/../lib/gcc/arm-none-eabi/16.1.0/../../../../arm-none-eabi/bin/'
+        build = '/work/src/build/3ds-undertale-o3ds'
+        cases = (
+            (home.replace('\\', '/') + tool + 'ar.exe: libbenchromfs_mount.a: Permission denied',
+             '%USERPROFILE%/.../ar.exe: libbenchromfs_mount.a: Permission denied'),
+            (spaced + tool + "ar.exe: unable to rename '" + spaced + build + "/libbenchromfs_mount.a'; reason: "
+             'Permission denied',
+             "<path>/ar.exe: unable to rename '<path>/libbenchromfs_mount.a'; reason: Permission denied"),
+            (other + build + '/platform/3ds/source/main.c:653:5: error: expected ";" before "}" token',
+             '<path>/main.c:653:5: error: expected ";" before "}" token'),
+            ('In file included from ' + spaced + '/work/src/engine/src/vm.h:3,',
+             'In file included from <path>/vm.h:3,'),
+            (spaced + tool + 'ld.exe: ' + spaced + build + '/CMakeFiles/x.dir/main.c.obj: in function `boot\':',
+             "<path>/ld.exe: <path>/main.c.obj: in function `boot':"),
+            (spaced + build + '/../src/engine/src/vm.c:12:(.text+0x8): undefined reference to `missing\'',
+             "<path>/vm.c:12:(.text+0x8): undefined reference to `missing'"),
+            (spaced + tool + 'ld.exe: cannot find -lctru: No such file or directory',
+             '<path>/ld.exe: cannot find -lctru: No such file or directory'),
+            ('make[2]: *** [CMakeFiles/benchromfs_mount.dir/build.make:97: libbenchromfs_mount.a] Fehler 1',
+             'make[2]: *** [CMakeFiles/benchromfs_mount.dir/build.make:97: libbenchromfs_mount.a] Fehler 1'),
+            ('make[2]: *** [' + spaced + build + '/CMakeFiles/b.dir/build.make:97: libb.a] Error 1',
+             'make[2]: *** [<path>/build.make:97: libb.a] Error 1'),
+            ('make[2]: Verzeichnis \u201e' + home.replace('\\', '/') + build + '\u201c wird verlassen',
+             'make[2]: Verzeichnis \u201e%USERPROFILE%\u201c wird verlassen'),
+            ('CMake Error at ' + spaced + '/work/src/CMakeLists.txt:12 (add_library):',
+             'CMake Error at <path>/CMakeLists.txt:12 (add_library):'),
+            ('CMake Error: The source directory "' + other + '/src" does not exist.',
+             'CMake Error: The source directory "<path>" does not exist.'),
+            ('-- Build files have been written to: ' + spaced + build, '-- Build files have been written to: <path>'),
+            (spaced + '/My Secret Folder: Access is denied.', '<path>: Access is denied.'),
+            (spaced + '/Private Name.c:3: error: x', '<path>:3: error: x'),
+        )
+        for raw, want in cases:
+            with self.subTest(raw=want):
+                filtered = pipeline.filter_log(raw + '\n', home=home)
+                self.assertEqual(filtered, want + '\n')
+                for private in ('Anwender', 'Private', 'Secret', 'fixture build', 'devkitPro', 'Users'):
+                    self.assertNotIn(private, filtered)
+                self.assertEqual(pipeline.filter_log(filtered, home=home), filtered)
+
     def test_owner_probe_writes_sanitized_argsaves_dry_run(self):
         import types
         fixture = (('PC saves (C:\\' + 'Users\\Fixture Person\\UNDERTALE): 1\n  file0 2026-10-20  Player Fixture, LV 7\n\nCompiler: devkitARM 66-1\nFound: /Volumes/Fixture Person/Steam/game\nSteam account 76561190000000001\n')

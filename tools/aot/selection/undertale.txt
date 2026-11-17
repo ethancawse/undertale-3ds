@@ -398,3 +398,20 @@ root gml_Script_scr_saveprocess
 # Append only; original entry indexes and native wrappers keep their bindings.
 # The padded-AOT layout gate must prove every non-AOT symbol stays fixed.
 root gml_Object_obj_snowfloor_Create_0
+# aotmore (2026-11-16): worst-frame functions that ran interpreted, compiled into part of the unit's hole as hot units
+# (undertale-o3ds-hot.txt). Append only, after snowfloor_Create_0: every earlier entry keeps its index and binding.
+root gml_Object_blt_dummymissle_Step_0 extra
+root gml_Object_blt_dummymissle_Draw_0 extra
+root gml_Script_scr_bwall extra
+root gml_Object_obj_flamedrawer_Draw_0 extra
+root gml_Object_blt_crybullet2_Create_0 extra
+root gml_Object_obj_6knife_act_Create_0 extra
+root gml_Object_obj_flowey_master_Alarm_11 extra
+root gml_Object_obj_orangefire_Step_2 extra
+root gml_Object_obj_6shoe_master_Draw_0 extra
+root gml_Object_obj_stormstar_Other_13 extra
+root gml_Object_obj_melontooth_Step_0 extra
+root gml_Object_blt_avoidfire_Step_2 extra
+root gml_Object_obj_afinal_body_Draw_0 extra
+root gml_Object_obj_ultimabullet_Other_11 extra
+root gml_Object_obj_maddum_drawer_Draw_0 extra

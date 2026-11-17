@@ -385,7 +385,11 @@ SECTIONS
        (AOTLHELP_TEXT_PHASE); then the generated copies (aotl_<n>) and the constants, aotl_31 on stage75zd's phase
        (AOTLGEN_TEXT_PHASE), the constants last. The same in the cold-only build, where aot_late.o keeps its own
        copies. DELTARUNE: 0 B. */
-    *aot_late.o(.text.RValue_* .text.aotToInt32Slow .text.AotLate_toInt32Slow)
+    /* codeshrink-aot (2026-11-16): kept when nothing calls it. The generated slow halves became calls into the
+       main code (vm_aot.h, AOT_SLOW_HALVES_DEFINE), so aot_late.o's conversion helper lost its last caller and
+       the link dropped its 36 B, which moved the aotlhelp hole's code. KEEP holds its place; a later unit may
+       drop it together with a hole or phase change of its own. */
+    KEEP(*aot_late.o(.text.RValue_* .text.aotToInt32Slow .text.AotLate_toInt32Slow))
     *(.text.h1hole.aotlhelp)
     __aotlhelp_text_gap_start = ABSOLUTE(.);
     . += __aotlhelp_text_gap_start <= /* AOTLHELP_TEXT_LIMIT */ __aotlhelp_text_gap_start
@@ -2416,6 +2420,30 @@ SECTIONS
        btChHeart, btReadCh, btSoulCh): append only. UNDERTALE Old places it in the AAC text slot instead
        (UT_COLD_TEXT, .aacout.text.btchoice, aacout.cmake). */
     *(.text_btchoice)
+    /* bsmexr (battlesplit2, 11-15, after btchoice in N14 compose order: Mettaton EX's slide up after his heart turns; z_bsmex.c's, z_battlesplit.c's and
+       ctr_renderer.c's ends): append only. UNDERTALE New only: on Old, UT_COLD_TEXT puts it in the AAC text slot
+       (.aacout.text.mexslide, aacout.cmake). */
+    *(.text_mexslide)
+    *(.text_popuphome)
+    *(.rodata.popuphome_in_text)
+    *z_popup_home.o(.rodata .rodata.*)
+    *(.text_undlg_speech)
+    /* options3ds: New's page code; Old uses the AAC text slot through ctr_place.h. */
+    *(.text_opt3ds)
+    /* promobugs: screenshot notices retain dialogue ownership and screen targets. */
+    *(.text_promonotice)
+    /* framelead (stepdrift, 11-15; ctr_frame_pacer.c's end): placed per model, UNDERTALE Old only, so on Old
+       UT_COLD_TEXT puts it in the AAC text slot (.aacout.text.framelead, aacout.cmake) and no other build has it: this
+       selector is empty everywhere (kept for the per_model pair, late_order.py). */
+    *(.text_framelead)
+    /* Dates: the room-scene seam tail, after existing text on both models. */
+    *(.text_datesplit)
+    /* smoothold (11-16): copy sprites and text joining held runs of fine draws (ctr_renderer.c's end: the five
+       CtrRenderer_smo* wrappers ctrDrawSprite, drawTextImpl and addHoldDraw call); UNDERTALE only, empty in DELTARUNE;
+       append only. */
+    *(.text_smoothold)
+    /* bstall: named Old capacity override; ordinary late text on both models. N14 append order. */
+    *(.text_bstall)
     *(.repack_test)
     *(.repack_test_ro)
   }
@@ -2695,6 +2723,10 @@ SECTIONS
     *(.rodata_reclaim_menutime)
     /* btchoice's names, DELTARUNE only (UT_COLD_RODATA: UNDERTALE uses .aacout.rodata.btchoice); append only. */
     *(.rodata_btchoice)
+    *(.rodata_undlg_speech)
+    *(.rodata_opt3ds)
+    /* bstall: unused DR selector; UT constants use AAC rodata. */
+    *(.rodata_bstall)
     __late_rodata_end = ABSOLUTE(.);
   }
   /* 8 KiB (at first 4 KiB): late code's constants are mostly log formats; heapfrag's are 472 B, and
@@ -2859,6 +2891,10 @@ SECTIONS
     *(.data_letterdraw_memo)
     /* letterdraw plan variants (lead 11-11, L1; UNDERTALE Old only): one pointer to its heap block, 4 bytes. */
     *(.data_letterdraw_plan)
+    /* smoothold (smoothold, 11-16; UNDERTALE only): the wrappers' table (eight words naming the functions they
+       call) and two flag bytes, 36 B, explicitly initialised (ctr_renderer.c's end, from utwindow_compile.py's
+       helper pass). Last, so nothing moves. */
+    *(.data_smoothold)
     __late_data_end = ABSOLUTE(.);
   }
   __late_data_limit = __late_data_start + 0x1000;
@@ -3054,6 +3090,11 @@ SECTIONS
     /* samestart (audiomain 11-15, UT): ctr_samestart.inc's 292 B state, carved the same way after soulahead
        (z_sdmigrate.c SM_CARVE_SAMESTART; 4-aligned after soulahead's 8-aligned end, so no pad). */
     KEEP(*(.bss.samestart_late))
+    /* framelead (stepdrift, 11-15, UT Old): ctr_frame_pacer.c's 100 B of state, carved the same way after
+       samestart (z_sdmigrate.c SM_CARVE_FRAMELEAD; 4-aligned after samestart's 4-aligned end, so no pad;
+       N14 compose order). Named outside
+       .bss.late.*, so the sorted catch-all above leaves it here. */
+    KEEP(*(.bss_framelead_late))
     KEEP(*z_sdmigrate.o(.bss.sdmigrate_spare))
     __sdmigrate_block_end = .;
     *z_sdmigrate.o(.bss .bss.* COMMON)
@@ -3563,6 +3604,11 @@ SECTIONS
     *(.bss_bsnap_late)
     /* battlesplit2 hinge: the hinge rows in effect and settings.ini's line (UNDERTALE only). */
     *(.bss_bshinge_late)
+    /* battlesplit2 bsmexr: the step of Mettaton EX's slide up after his heart turns (UNDERTALE only). */
+    *(.bss_bsmexr_late)
+    *(.bss_undlg_speech)
+    /* framelead's audio lead (build.sh leadaudio, UT Old test builds only, empty in every other build). */
+    *(.bss_frameleadaudio_late)
     /* ballast (build.sh ballast test builds only, empty in every release build): z_ballast.c's state, last, so a
        ballast build keeps every late static's address of the release build. Keep this line last in late .bss; new
        appends go above this comment. Its code and constants are in the AAC slots (aacout.cmake). */
