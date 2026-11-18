@@ -282,7 +282,7 @@
     {
       "member": "tools/release/builder/gui.py",
       "class": "engine-lookups",
-      "sha256": "a2fe07de788f3f060f39667ac94c760ad36799f806711a93c2e85f0b7e44005f",
+      "sha256": "920905c01958ded2cef19d4e984a72aff358f4bdee732c4544b523cd562ea04c",
       "justification": "A sprite lookup extracts the cursor from the players own game.",
       "evidence_sha256": [
         "1b62cafb12b9229024771f28d5dab2c6ebfe350c96bb76639a061bf6de96155d"

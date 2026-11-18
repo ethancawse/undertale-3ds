@@ -450,8 +450,7 @@ class Theme:
         selected_fg = style.lookup("Treeview", "foreground", ("selected",)) or fg
         if self.native:
             # Treeview's default row height is fixed pixels even when the system font grows.
-            style.configure("Treeview", rowheight=max(20, tkfont.nametofont("TkDefaultFont", self.root)
-                                                      .metrics("linespace") + 6))
+            style.configure("Treeview", rowheight=max(20, default_font(self.root).metrics("linespace") + 6))
         for key, value in (("background", field), ("foreground", fg),
                            ("selectBackground", selected), ("selectForeground", selected_fg),
                            ("font", "TkDefaultFont" if self.native else self.mono_font)):
@@ -926,7 +925,7 @@ class PixelLabel(Wrapping, ttk.Label):
     def _link_font(self):
         font = getattr(self._theme, "_link_font", None)
         if font is None:
-            font = tkfont.nametofont("TkDefaultFont", self._theme.root).copy()
+            font = default_font(self._theme.root).copy()
             font.configure(underline=True)
             self._theme._link_font = font
         return font
@@ -1539,6 +1538,11 @@ def text_of(widget):
         if not isinstance(w, ttk.Progressbar):
             out.extend(text_of(w))
     return out
+
+
+def default_font(root):
+    # tkfont.nametofont takes a root only from Python 3.10; this is what it does with one.
+    return tkfont.Font(root=root, name="TkDefaultFont", exists=True)
 
 
 def wheel_units(event, platform):
@@ -4212,7 +4216,10 @@ class App:
             root.bind_all(seq, self._wheel, add="+")
         # Mouse focus must not move a pressed button before its release event.
         root.bind_all("<KeyRelease-Tab>", self._focused, add="+")
-        root.bind_all("<KeyRelease-ISO_Left_Tab>", self._focused, add="+")
+        try:
+            root.bind_all("<KeyRelease-ISO_Left_Tab>", self._focused, add="+")
+        except tk.TclError:
+            pass  # Tk 8.5 off X11 (Apple's own Python) has no such key: Shift+Tab is Tab there, bound above.
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.bind("<Escape>", self._escape)
         self.show(0)

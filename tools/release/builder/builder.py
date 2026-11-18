@@ -493,6 +493,14 @@ def main(argv):
             help_text = "The builder window needs Python's Tk library. " + help_text
         print(help_text, file=sys.stderr)
         return 2
+    if gui.tk.TkVersion < 8.6:
+        # Apple's own Python 3.9 has Tk 8.5. The window does not settle there: it redraws without end and its
+        # memory keeps growing, so stop here with what to do instead.
+        help_text = ("Install Python's universal2 package from python.org (it includes a newer Tk), then use that "
+                     "Python." if sys.platform == "darwin" else "Use a Python whose Tk is 8.6 or newer.")
+        print("The builder window needs Tk 8.6 or newer, and this Python has Tk %s. %s The steps without a "
+              "window still work: add --cli." % (gui.tk.TkVersion, help_text), file=sys.stderr)
+        return 2
     plan = None
     confirm_overwrite = None
     if o["autopilot"]:
